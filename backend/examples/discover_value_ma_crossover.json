@@ -1,0 +1,29 @@
+{
+  "data_source": "a_stock_data",
+  "strategies": ["ma_crossover"],
+  "strategy_params": {
+    "ma_crossover": {
+      "fast_period": 10,
+      "slow_period": 30
+    }
+  },
+  "top_k": 10,
+  "max_universe": 100,
+  "seed": 42,
+  "bars": 500,
+  "initial_cash": 100000,
+  "commission": 0.0003,
+  "min_bars": 120,
+  "min_trades": 1,
+  "max_pe_ttm": 30,
+  "max_pb": 3,
+  "min_market_cap": 10000000000,
+  "max_drawdown": 0.35,
+  "robustness_windows": [252, 126],
+  "param_perturbation_pct": 0.1,
+  "max_perturbation_sets": 8,
+  "output_options": {
+    "json": false,
+    "output": "out/discover_value_ma_crossover.json"
+  }
+}

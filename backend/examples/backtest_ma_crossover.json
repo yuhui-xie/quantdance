@@ -1,0 +1,17 @@
+{
+  "data_source": "a_stock_data",
+  "strategy_id": "ma_crossover",
+  "symbol": "600000",
+  "start_date": "2023-01-01",
+  "end_date": "2024-12-31",
+  "initial_cash": 100000,
+  "commission": 0.0003,
+  "strategy_params": {
+    "fast_period": 10,
+    "slow_period": 30
+  },
+  "output_options": {
+    "json": false,
+    "plot": "out/backtest_ma_crossover.svg"
+  }
+}

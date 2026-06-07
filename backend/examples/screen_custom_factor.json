@@ -1,0 +1,30 @@
+{
+  "top_k": 10,
+  "max_universe": 80,
+  "bars": 120,
+  "seed": 42,
+  "factor_config": {
+    "factors": [
+      {
+        "field": "ret_60",
+        "weight": 0.4,
+        "direction": "higher"
+      },
+      {
+        "field": "vol_20",
+        "weight": 0.2,
+        "direction": "lower"
+      },
+      {
+        "field": "pe_ttm",
+        "weight": 0.25,
+        "direction": "lower"
+      },
+      {
+        "field": "roe",
+        "weight": 0.15,
+        "direction": "higher"
+      }
+    ]
+  }
+}

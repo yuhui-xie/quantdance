@@ -1,0 +1,9 @@
+./backend/.venv
+./backend/.pytest_cache
+./backend/out
+backend/data/
+./backend/pytest.ini
+**/__pycache__/**
+./third-party/akshare-stock-data-fetcher/
+./tests/__pycache__/**
+./backend/.pytest_cache/**
