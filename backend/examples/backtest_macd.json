@@ -1,0 +1,18 @@
+{
+  "data_source": "a_stock_data",
+  "strategy_id": "macd",
+  "symbol": "600519",
+  "start_date": "2022-01-01",
+  "end_date": "2024-12-31",
+  "initial_cash": 100000,
+  "commission": 0.0003,
+  "strategy_params": {
+    "fast_period": 12,
+    "slow_period": 26,
+    "signal_period": 9
+  },
+  "output_options": {
+    "json": false,
+    "plot": "out/backtest_macd.svg"
+  }
+}

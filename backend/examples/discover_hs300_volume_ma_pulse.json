@@ -1,0 +1,45 @@
+﻿{
+  "data_source": "a_stock_data",
+  "universe": "hs300",
+  "strategies": ["volume_ma_pulse"],
+  "start_date": "2025-01-01",
+  "end_date": "2026-07-07",
+  "strategy_params": {
+    "volume_ma_pulse": {
+      "volume_ma_period": 20,
+      "volume_metric": "amount",
+      "threshold_mode": "percentile",
+      "high_percentile": 0.8,
+      "low_percentile": 0.2,
+      "percentile_lookback": 120,
+      "require_bull_bar": true,
+      "require_bear_bar": true,
+      "price_ma_period": 20,
+      "trend_ma_period": 60,
+      "breakout_period": 20,
+      "require_price_above_ma": true,
+      "require_trend_up": false,
+      "require_breakout": true,
+      "stop_loss_pct": 0.08,
+      "take_profit_pct": 0.25
+    }
+  },
+  "top_k": 10,
+  "max_universe": 300,
+  "bars": 500,
+  "initial_cash": 100000,
+  "commission": 0.0003,
+  "include_benchmarks": true,
+  "min_bars": 160,
+  "min_trades": 1,
+  "min_avg_volume": 1000000,
+  "max_drawdown": 0.35,
+  "robustness_windows": [252, 126],
+  "param_perturbation_pct": 0.1,
+  "max_perturbation_sets": 8,
+  "output_options": {
+    "json": false,
+    "output": "out/discover_hs300_volume_ma_pulse.json",
+    "plot": "out/discover_hs300_volume_ma_pulse.svg"
+  }
+}

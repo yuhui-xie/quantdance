@@ -1,0 +1,31 @@
+{
+  "data_source": "a_stock_data",
+  "strategy_id": "volume_ma_pulse",
+  "symbol": "600368",
+  "start_date": "2024-01-01",
+  "end_date": "2025-07-12",
+  "initial_cash": 100000,
+  "commission": 0.0003,
+  "strategy_params": {
+    "volume_ma_period": 5,
+    "volume_metric": "amount",
+    "threshold_mode": "fixed",
+    "high_ratio": 1.8,
+    "low_ratio": 0.9,
+    "require_bull_bar": true,
+    "require_bear_bar": true,
+    "price_ma_period": 5,
+    "trend_ma_period": 60,
+    "breakout_period": 5,
+    "require_price_above_ma": true,
+    "require_trend_up": false,
+    "require_breakout": true,
+    "entry_confirm_bars": 0,
+    "stop_loss_pct": 0.08,
+    "take_profit_pct": 0.5
+  },
+  "output_options": {
+    "json": false,
+    "plot": "out/backtest_volume_ma_pulse.svg"
+  }
+}
