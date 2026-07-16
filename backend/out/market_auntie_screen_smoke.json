@@ -1,0 +1,38 @@
+{
+  "strategy_id": "market_auntie",
+  "mode": "screen",
+  "universe_note": "使用请求传入股票池，共 5 只。",
+  "asof": "2024-12-31",
+  "holdings": [
+    {
+      "symbol": "000002",
+      "name": "",
+      "asof": "2024-12-31",
+      "fund_date": "2024-12-31",
+      "close": 7.26,
+      "market_cap": 86616950759.46,
+      "peg": 0.00345419,
+      "dividend_yield": 0.0,
+      "pct_change": -1.358695652174
+    },
+    {
+      "symbol": "601288",
+      "name": "",
+      "asof": "2024-12-31",
+      "fund_date": "2024-12-31",
+      "close": 5.34,
+      "market_cap": 1868909400881.82,
+      "peg": 1.4022064,
+      "dividend_yield": 0.04323970037453184,
+      "pct_change": -0.558659217877
+    }
+  ],
+  "equity": [],
+  "trades": [],
+  "rebalances": [],
+  "metrics": {},
+  "warnings": [
+    "截面选股使用东财估值历史最新点；名称 ST 过滤依赖当前股票池名称，存在偏差。"
+  ],
+  "disclaimer": "演示用途，不构成投资建议。"
+}

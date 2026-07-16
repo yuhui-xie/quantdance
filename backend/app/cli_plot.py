@@ -490,3 +490,76 @@ def _fmt_percent(value: Any) -> str:
     if v is None:
         return "-"
     return f"{v * 100:.2f}%"
+
+
+def render_portfolio_figure(out: dict[str, Any], dest: Path) -> list[Path]:
+    """组合回测权益与回撤图。"""
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from matplotlib import gridspec
+    import numpy as np
+
+    _configure_chinese_fonts()
+
+    equity = out.get("equity") or []
+    metrics = out.get("metrics") or {}
+    if not equity:
+        raise ValueError("权益曲线为空，无法绘图")
+
+    dates = [_norm_date(str(row.get("date", ""))) for row in equity]
+    eq_vals = [float(row.get("equity", 0.0)) for row in equity]
+    ic = _nf(metrics.get("initial_cash")) or (eq_vals[0] if eq_vals else 1.0)
+    if ic <= 0:
+        ic = 1.0
+    norm = [v / ic for v in eq_vals]
+    peak = np.maximum.accumulate(np.asarray(norm, dtype=float))
+    dd = (peak - np.asarray(norm, dtype=float)) / np.where(peak > 0, peak, np.nan)
+
+    fig = plt.figure(figsize=(12, 7), facecolor="#0f1115")
+    gs = gridspec.GridSpec(2, 1, height_ratios=[1.4, 0.8], hspace=0.28)
+    ax0 = fig.add_subplot(gs[0])
+    ax1 = fig.add_subplot(gs[1], sharex=ax0)
+    for ax in (ax0, ax1):
+        ax.set_facecolor("#0f1115")
+        ax.tick_params(colors="#c5c8ce")
+        for spine in ax.spines.values():
+            spine.set_color("#2a2f3a")
+
+    xs = range(len(dates))
+    ax0.plot(xs, norm, color="#4fc3f7", linewidth=1.4, label="组合净值")
+    ax0.axhline(1.0, color="#9aa0a6", linestyle="--", linewidth=0.7, alpha=0.7)
+    ax0.set_ylabel("净值", color="#e8eaed")
+    title = f"组合回测 {out.get('strategy_id', '')} | asof={out.get('asof') or '-'}"
+    ax0.set_title(title, color="#e8eaed", fontsize=11)
+    ax0.legend(facecolor="#1a1d24", edgecolor="#2a2f3a", labelcolor="#e8eaed")
+    ax0.text(
+        0.01,
+        0.03,
+        (
+            f"总收益 {_fmt_percent(metrics.get('total_return'))} | "
+            f"年化 {_fmt_percent(metrics.get('annualized_return'))} | "
+            f"回撤 {_fmt_percent(metrics.get('max_drawdown'))} | "
+            f"Sharpe {_nf(metrics.get('sharpe')) or 0:.2f}"
+        ),
+        transform=ax0.transAxes,
+        color="#e8eaed",
+        fontsize=8,
+        bbox={"facecolor": "#0f1115", "edgecolor": "#2a2f3a", "alpha": 0.85, "pad": 5},
+    )
+
+    ax1.fill_between(list(xs), dd.tolist(), 0.0, color="#ef5350", alpha=0.35)
+    ax1.plot(xs, dd.tolist(), color="#ef5350", linewidth=1.0)
+    ax1.set_ylabel("回撤", color="#e8eaed")
+    ax1.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f"{y * 100:.0f}%"))
+
+    tick_step = max(1, len(dates) // 12)
+    tick_pos = list(range(0, len(dates), tick_step))
+    ax1.set_xticks(tick_pos)
+    ax1.set_xticklabels([dates[i] for i in tick_pos], rotation=35, ha="right")
+    plt.setp(ax0.get_xticklabels(), visible=False)
+
+    saved = _savefig(fig, dest)
+    plt.close(fig)
+    return saved

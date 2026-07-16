@@ -1,0 +1,41 @@
+{
+  "strategy_id": "small_cap_zz399101",
+  "mode": "screen",
+  "universe_note": "使用请求传入股票池，共 5 只。",
+  "asof": "2026-07-16",
+  "holdings": [
+    {
+      "symbol": "300001",
+      "name": "",
+      "asof": "2026-07-16",
+      "fund_date": "2026-07-16",
+      "close": 31.28,
+      "float_market_cap": 32119196981.44,
+      "market_cap": 33010650862.64,
+      "rank_market_cap": 32119196981.44,
+      "pct_change": -3.097893432466
+    },
+    {
+      "symbol": "002001",
+      "name": "",
+      "asof": "2026-07-16",
+      "fund_date": "2026-07-16",
+      "close": 28.73,
+      "float_market_cap": 87248698431.44,
+      "market_cap": 88299404866.4,
+      "rank_market_cap": 87248698431.44,
+      "pct_change": -0.931034482759
+    }
+  ],
+  "equity": [],
+  "trades": [],
+  "rebalances": [],
+  "metrics": {},
+  "warnings": [
+    "股票池为中小综指当前成分股，历史回测存在幸存者偏差。",
+    "按流通市值排序；若流通市值缺失则回退总市值。",
+    "微盘股流动性差，默认建议保留较高滑点假设。",
+    "截面选股使用当前成分股/名称过滤，存在幸存者偏差与 ST 名称时效偏差。"
+  ],
+  "disclaimer": "演示用途，不构成投资建议。"
+}

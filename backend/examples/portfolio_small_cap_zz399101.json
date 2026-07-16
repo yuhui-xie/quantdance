@@ -1,0 +1,34 @@
+{
+  "strategy_id": "small_cap_zz399101",
+  "mode": "backtest",
+  "data_source": "a_stock_data",
+  "universe": "zz399101",
+  "symbols": [],
+  "max_universe": 80,
+  "seed": 42,
+  "start_date": "2024-01-01",
+  "end_date": "2026-12-31",
+  "rebalance_freq": 20,
+  "initial_cash": 100000,
+  "commission": 0.0003,
+  "min_commission": 5.0,
+  "slippage": 0.01,
+  "lot_size": 100,
+  "use_cache": true,
+  "force_refresh": false,
+  "max_workers": 8,
+  "strategy_params": {
+    "top_n": 5,
+    "exclude_st": true,
+    "exclude_limit": true,
+    "exclude_suspended": true,
+    "limit_pct_threshold": 9.5,
+    "min_price": 0.0,
+    "max_price": null
+  },
+  "output_options": {
+    "output": "out/portfolio_small_cap_zz399101.json",
+    "plot": "out/portfolio_small_cap_zz399101.svg",
+    "json": false
+  }
+}

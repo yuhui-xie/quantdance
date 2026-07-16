@@ -1,0 +1,39 @@
+{
+  "strategy_id": "market_auntie",
+  "mode": "backtest",
+  "data_source": "a_stock_data",
+  "universe": "all_a",
+  "symbols": [],
+  "max_universe": 60,
+  "seed": 42,
+  "start_date": "2023-01-01",
+  "end_date": "2024-12-31",
+  "rebalance_freq": 20,
+  "initial_cash": 100000,
+  "commission": 0.0003,
+  "min_commission": 5.0,
+  "slippage": 0.01,
+  "lot_size": 100,
+  "use_cache": true,
+  "force_refresh": false,
+  "max_workers": 8,
+  "strategy_params": {
+    "top_n": 10,
+    "min_price": 2.0,
+    "max_price": 9.0,
+    "min_dividend_yield": 0.0,
+    "min_peg": 0.0,
+    "max_peg": 1.0,
+    "require_dividend": true,
+    "require_peg": true,
+    "exclude_st": true,
+    "exclude_limit": true,
+    "exclude_suspended": true,
+    "limit_pct_threshold": 9.5
+  },
+  "output_options": {
+    "output": "out/portfolio_market_auntie.json",
+    "plot": "out/portfolio_market_auntie.svg",
+    "json": false
+  }
+}
