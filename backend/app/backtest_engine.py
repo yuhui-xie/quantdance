@@ -154,6 +154,16 @@ def _annualized_return(eq_arr: np.ndarray, initial_cash: float, dates: Sequence[
     return float(total ** (1.0 / years) - 1.0)
 
 
+def metrics_from_equity(
+    eq_arr: np.ndarray,
+    initial_cash: float,
+    trades: list[dict[str, Any]],
+    dates: Sequence[str],
+) -> dict[str, float]:
+    """由权益曲线与成交记录计算统一绩效指标（单票/组合回测共用）。"""
+    return _metrics_from_equity(eq_arr, initial_cash, trades, dates)
+
+
 def _metrics_from_equity(
     eq_arr: np.ndarray,
     initial_cash: float,

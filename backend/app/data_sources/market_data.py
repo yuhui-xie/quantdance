@@ -177,16 +177,18 @@ def _first_existing_column(df: pd.DataFrame, names: tuple[str, ...]) -> str | No
     return None
 
 
-def _load_hs300_constituents_from_akshare() -> pd.DataFrame:
+def _load_index_constituents_from_akshare(index_code: str) -> pd.DataFrame:
     try:
         import akshare as ak  # type: ignore[import-not-found]
     except Exception as e:  # pragma: no cover - 依赖环境分支
-        raise MarketDataError(f"akshare 不可用，无法获取沪深300成分股: {e}") from e
+        raise MarketDataError(f"akshare 不可用，无法获取指数成分股: {e}") from e
 
+    code = str(index_code).strip()
     errors: list[str] = []
     calls: tuple[tuple[str, dict[str, Any]], ...] = (
-        ("index_stock_cons_csindex", {"symbol": "000300"}),
-        ("index_stock_cons", {"symbol": "000300"}),
+        ("index_stock_cons_csindex", {"symbol": code}),
+        ("index_stock_cons", {"symbol": code}),
+        ("index_stock_cons_sina", {"symbol": f"sz{code}" if code.startswith("399") else f"sh{code}"}),
     )
     for func_name, kwargs in calls:
         func = getattr(ak, func_name, None)
@@ -201,30 +203,32 @@ def _load_hs300_constituents_from_akshare() -> pd.DataFrame:
             return df
 
     detail = "；".join(errors) if errors else "未找到可用的 akshare 成分股接口"
-    raise MarketDataError(f"沪深300成分股获取失败: {detail}")
+    raise MarketDataError(f"指数 {code} 成分股获取失败: {detail}")
 
 
-def fetch_hs300_universe(
-    max_universe: int = 300,
+def fetch_index_universe(
+    index_code: str,
     *,
+    index_name: str,
+    max_universe: int = 300,
     seed: int | None = None,
 ) -> tuple[list[dict[str, str]], str]:
     """
-    通过 akshare 拉取沪深300当前成分股。
+    通过 akshare 拉取指数当前成分股。
 
     注意：该接口返回当前成分股，严格历史回测仍会有成分股幸存者偏差。
     """
     if max_universe < 1:
         raise ValueError("max_universe 至少为 1")
 
-    df = _load_hs300_constituents_from_akshare()
+    df = _load_index_constituents_from_akshare(index_code)
     code_col = _first_existing_column(
         df,
         ("成分券代码", "品种代码", "证券代码", "代码", "stock_code", "code", "symbol"),
     )
     if code_col is None:
-        raise MarketDataError("沪深300成分股缺少代码列")
-    name_col = _first_existing_column(df, ("成分券名称", "证券简称", "名称", "name"))
+        raise MarketDataError(f"{index_name}成分股缺少代码列")
+    name_col = _first_existing_column(df, ("成分券名称", "品种名称", "证券简称", "名称", "name"))
 
     rows: list[dict[str, str]] = []
     seen: set[str] = set()
@@ -241,11 +245,14 @@ def fetch_hs300_universe(
 
     total = len(rows)
     if total == 0:
-        raise MarketDataError("沪深300成分股解析后为空")
+        raise MarketDataError(f"{index_name}成分股解析后为空")
 
     n_take = min(max_universe, total)
     if total <= n_take:
-        note = f"沪深300当前成分股共 {total} 只，已全部纳入本次回测；注意存在当前成分股幸存者偏差。"
+        note = (
+            f"{index_name}当前成分股共 {total} 只，已全部纳入本次回测；"
+            "注意存在当前成分股幸存者偏差。"
+        )
         return rows, note
 
     if seed is not None:
@@ -254,14 +261,45 @@ def fetch_hs300_universe(
         rng.shuffle(sampled)
         out = sampled[:n_take]
         note = (
-            f"沪深300当前成分股共 {total} 只，已使用随机种子 {seed} 抽样 {n_take} 只；"
+            f"{index_name}当前成分股共 {total} 只，已使用随机种子 {seed} 抽样 {n_take} 只；"
             "注意存在当前成分股幸存者偏差。"
         )
         return out, note
 
     out = sorted(rows, key=lambda x: x["symbol"])[:n_take]
-    note = f"沪深300当前成分股共 {total} 只，已按代码升序截取前 {n_take} 只；注意存在当前成分股幸存者偏差。"
+    note = (
+        f"{index_name}当前成分股共 {total} 只，已按代码升序截取前 {n_take} 只；"
+        "注意存在当前成分股幸存者偏差。"
+    )
     return out, note
+
+
+def fetch_hs300_universe(
+    max_universe: int = 300,
+    *,
+    seed: int | None = None,
+) -> tuple[list[dict[str, str]], str]:
+    """通过 akshare 拉取沪深300当前成分股。"""
+    return fetch_index_universe(
+        "000300",
+        index_name="沪深300",
+        max_universe=max_universe,
+        seed=seed,
+    )
+
+
+def fetch_zz399101_universe(
+    max_universe: int = 500,
+    *,
+    seed: int | None = None,
+) -> tuple[list[dict[str, str]], str]:
+    """通过 akshare 拉取中小综指（399101）当前成分股。"""
+    return fetch_index_universe(
+        "399101",
+        index_name="中小综指(399101)",
+        max_universe=max_universe,
+        seed=seed,
+    )
 
 
 def fetch_a_share_valuation_snapshot(symbol: str) -> dict[str, float] | None:

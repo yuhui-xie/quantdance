@@ -252,3 +252,66 @@ class DiscoveryResponse(BaseModel):
     warnings: list[str] = Field(default_factory=list)
     universe_note: str = ""
     disclaimer: str = "演示用途，策略回测筛选不构成投资建议。"
+
+
+class PortfolioBacktestRequest(BaseModel):
+    """低频组合：截面选股 / 周期调仓回测请求。"""
+
+    strategy_id: str = Field("market_auntie", description="组合策略 id，见 portfolio --list-strategies")
+    mode: Literal["backtest", "screen"] = "backtest"
+    data_source: Literal["a_stock_data"] = "a_stock_data"
+    universe: Literal["all_a", "hs300", "zz399101"] = Field(
+        "all_a",
+        description="symbols 为空时的股票池；策略可提供默认值（如中小综指）",
+    )
+    symbols: list[str] = Field(default_factory=list)
+    max_universe: int = Field(80, ge=1, le=1000)
+    seed: int | None = Field(None, description="股票池抽样种子")
+    start_date: str | None = Field(None, description="回测起始 YYYY-MM-DD")
+    end_date: str | None = Field(None, description="回测结束 / 选股截面日 YYYY-MM-DD")
+    rebalance_freq: int = Field(
+        20,
+        ge=1,
+        le=252,
+        description="调仓间隔（交易日）。20≈月频，5≈周频；从回测首个交易日起每隔 N 日调仓",
+    )
+    initial_cash: float = Field(100_000, ge=1000)
+    commission: float = Field(0.0003, ge=0, le=0.05)
+    min_commission: float = Field(5.0, ge=0, description="单笔最低佣金（元）")
+    slippage: float = Field(0.01, ge=0, le=0.05, description="单边滑点比例，默认 1%")
+    lot_size: int = Field(100, ge=1, description="买入整手数（股）")
+    use_cache: bool = True
+    force_refresh: bool = False
+    max_workers: int = Field(8, ge=1, le=32)
+    strategy_params: dict[str, Any] = Field(
+        default_factory=dict,
+        description="当前组合策略专属参数，如 top_n / max_peg",
+    )
+
+    @model_validator(mode="after")
+    def check_portfolio_request(self) -> PortfolioBacktestRequest:
+        s = (self.start_date or "").strip()
+        e = (self.end_date or "").strip()
+        if self.mode == "backtest":
+            if not s or not e:
+                raise ValueError("backtest 模式须同时提供 start_date 与 end_date")
+        elif s and not e:
+            raise ValueError("填写 start_date 时须同时填写 end_date")
+        return self
+
+    model_config = {"extra": "ignore"}
+
+
+class PortfolioBacktestResponse(BaseModel):
+    strategy_id: str = ""
+    mode: str = "backtest"
+    universe_note: str = ""
+    asof: str | None = None
+    holdings: list[dict[str, Any]] = Field(default_factory=list)
+    equity: list[dict[str, Any]] = Field(default_factory=list)
+    trades: list[dict[str, Any]] = Field(default_factory=list)
+    rebalances: list[dict[str, Any]] = Field(default_factory=list)
+    metrics: dict[str, float] = Field(default_factory=dict)
+    warnings: list[str] = Field(default_factory=list)
+    disclaimer: str = "演示用途，不构成投资建议。"
+
