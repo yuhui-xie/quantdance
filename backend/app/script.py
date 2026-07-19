@@ -166,18 +166,31 @@ def _normalize_plot_path(path: Path | None) -> Path | None:
     return path.with_suffix(".svg")
 
 
+def _normalize_report_path(path: Path | None) -> Path | None:
+    """交互报告默认保存为 HTML。"""
+    if path is None:
+        return None
+    if path.suffix:
+        return path
+    return path.with_suffix(".html")
+
+
+def _load_output_options(args: argparse.Namespace) -> dict[str, Any]:
+    if args.request is None:
+        return {}
+    req_data = _load_json_file(args.request)
+    if not isinstance(req_data, dict):
+        raise ValueError("--request 需为 JSON 对象")
+    raw_options = req_data.get("output_options", {})
+    if raw_options is None:
+        raw_options = {}
+    if not isinstance(raw_options, dict):
+        raise ValueError("output_options 需为 JSON 对象")
+    return raw_options
+
+
 def _resolve_backtest_output_options(args: argparse.Namespace) -> tuple[Path | None, bool, Path | None]:
-    output_options: dict[str, Any] = {}
-    if args.request is not None:
-        req_data = _load_json_file(args.request)
-        if not isinstance(req_data, dict):
-            raise ValueError("--request 需为 JSON 对象")
-        raw_options = req_data.get("output_options", {})
-        if raw_options is None:
-            raw_options = {}
-        if not isinstance(raw_options, dict):
-            raise ValueError("output_options 需为 JSON 对象")
-        output_options = raw_options
+    output_options = _load_output_options(args)
 
     json_option = output_options.get("json", False)
     if not isinstance(json_option, bool):
@@ -190,17 +203,7 @@ def _resolve_backtest_output_options(args: argparse.Namespace) -> tuple[Path | N
 
 
 def _resolve_json_output_options(args: argparse.Namespace) -> tuple[Path | None, bool]:
-    output_options: dict[str, Any] = {}
-    if args.request is not None:
-        req_data = _load_json_file(args.request)
-        if not isinstance(req_data, dict):
-            raise ValueError("--request 需为 JSON 对象")
-        raw_options = req_data.get("output_options", {})
-        if raw_options is None:
-            raw_options = {}
-        if not isinstance(raw_options, dict):
-            raise ValueError("output_options 需为 JSON 对象")
-        output_options = raw_options
+    output_options = _load_output_options(args)
 
     json_option = output_options.get("json", False)
     if not isinstance(json_option, bool):
@@ -212,17 +215,7 @@ def _resolve_json_output_options(args: argparse.Namespace) -> tuple[Path | None,
 
 
 def _resolve_discovery_output_options(args: argparse.Namespace) -> tuple[Path | None, bool, Path | None]:
-    output_options: dict[str, Any] = {}
-    if args.request is not None:
-        req_data = _load_json_file(args.request)
-        if not isinstance(req_data, dict):
-            raise ValueError("--request 需为 JSON 对象")
-        raw_options = req_data.get("output_options", {})
-        if raw_options is None:
-            raw_options = {}
-        if not isinstance(raw_options, dict):
-            raise ValueError("output_options 需为 JSON 对象")
-        output_options = raw_options
+    output_options = _load_output_options(args)
 
     json_option = output_options.get("json", False)
     if not isinstance(json_option, bool):
@@ -232,6 +225,33 @@ def _resolve_discovery_output_options(args: argparse.Namespace) -> tuple[Path | 
     as_json = args.json or json_option
     plot = _normalize_plot_path(args.plot or _path_from_output_option(output_options.get("plot"), "plot"))
     return output, as_json, plot
+
+
+def _resolve_portfolio_output_options(
+    args: argparse.Namespace,
+) -> tuple[Path | None, bool, Path | None, Path | None]:
+    """组合回测输出：JSON / plot / 交互 HTML report。
+
+    report 优先级：显式 --report / output_options.report；
+    否则若配置了 plot，自动派生同 stem 的 .html。
+    """
+    output_options = _load_output_options(args)
+
+    json_option = output_options.get("json", False)
+    if not isinstance(json_option, bool):
+        raise ValueError("output_options.json 需为布尔值")
+
+    output = args.output or _path_from_output_option(output_options.get("output"), "output")
+    as_json = args.json or json_option
+    plot = _normalize_plot_path(args.plot or _path_from_output_option(output_options.get("plot"), "plot"))
+
+    report_arg = getattr(args, "report", None)
+    report = _normalize_report_path(
+        report_arg or _path_from_output_option(output_options.get("report"), "report")
+    )
+    if report is None and plot is not None:
+        report = plot.with_suffix(".html")
+    return output, as_json, plot, report
 
 
 def _resolve_backtest_body(args: argparse.Namespace) -> BacktestRequest:
@@ -613,7 +633,7 @@ def _cmd_portfolio(args: argparse.Namespace) -> int:
         for spec in list_portfolio_strategies():
             print(f"{spec.id}\t{spec.name}\t{spec.description}")
         return 0
-    output, as_json, plot = _resolve_discovery_output_options(args)
+    output, as_json, plot, report = _resolve_portfolio_output_options(args)
     body = _resolve_portfolio_body(args)
     out = run_portfolio_request(body).model_dump(mode="json")
     _write_json(out, output=output, as_json=as_json)
@@ -623,6 +643,12 @@ def _cmd_portfolio(args: argparse.Namespace) -> int:
         saved = render_portfolio_figure(out, plot)
         print("图表已保存: " + " | ".join(str(p) for p in saved))
         _open_file_with_default_app(plot)
+    if report is not None and out.get("equity"):
+        from app.cli_portfolio_report import render_portfolio_html
+
+        report_path = render_portfolio_html(out, report)
+        print(f"交互报告已保存: {report_path}")
+        _open_file_with_default_app(report_path)
     if as_json or output is not None:
         if not as_json:
             print(
@@ -808,6 +834,12 @@ def _build_portfolio_cmd(sub: argparse._SubParsersAction[argparse.ArgumentParser
     p.add_argument("--json", action="store_true")
     p.add_argument("--output", type=Path, metavar="FILE.json")
     p.add_argument("--plot", type=Path, metavar="PATH", help="保存权益曲线路径（默认 .svg）")
+    p.add_argument(
+        "--report",
+        type=Path,
+        metavar="PATH",
+        help="保存交互 HTML 报告路径（默认 .html；未指定时若有 --plot 则派生同名 .html）",
+    )
     p.add_argument("--list-strategies", action="store_true", dest="list_strategies")
     p.add_argument("--mode", choices=("backtest", "screen"), default=None)
     p.add_argument(

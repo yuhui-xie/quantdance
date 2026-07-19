@@ -8,6 +8,7 @@ import pandas as pd
 from pydantic import BaseModel
 
 from app.data_sources.em_fundamentals import load_fundamentals_panel
+from app.data_sources.financial_reports import load_financials_panel
 from app.data_sources.market_data import MarketDataError
 from app.portfolio.base import PortfolioSelectContext, PortfolioStrategySpec
 from app.portfolio.registry import get_portfolio_strategy
@@ -47,6 +48,7 @@ def _load_panel(
     req: PortfolioBacktestRequest,
     *,
     needs_dividend: bool,
+    needs_financials: bool = False,
 ) -> dict[str, dict[str, pd.DataFrame]]:
     panel = load_fundamentals_panel(
         symbols,
@@ -57,6 +59,17 @@ def _load_panel(
     )
     if not panel:
         raise MarketDataError("未能加载任何基本面数据")
+    if needs_financials:
+        fin = load_financials_panel(
+            list(panel.keys()),
+            use_cache=req.use_cache,
+            force_refresh=req.force_refresh,
+            max_workers=min(4, max(1, req.max_workers)),
+        )
+        for sym, payload in panel.items():
+            payload["financials"] = fin.get(
+                sym, pd.DataFrame(columns=["report_date", "notice_date"])
+            )
     return panel
 
 
@@ -68,7 +81,12 @@ def run_portfolio_screen(
     universe, note = resolve_universe(req, default_universe=spec.default_universe)
     symbols = [u["symbol"] for u in universe]
     names = {u["symbol"]: u.get("name") or "" for u in universe}
-    panel = _load_panel(symbols, req, needs_dividend=spec.needs_dividend)
+    panel = _load_panel(
+        symbols,
+        req,
+        needs_dividend=spec.needs_dividend,
+        needs_financials=spec.needs_financials,
+    )
 
     asof = (req.end_date or "").strip() or _latest_asof(panel)
     ctx = PortfolioSelectContext(panel=panel, names=names)
@@ -103,7 +121,12 @@ def run_portfolio_backtest(
     universe, note = resolve_universe(req, default_universe=spec.default_universe)
     symbols = [u["symbol"] for u in universe]
     names = {u["symbol"]: u.get("name") or "" for u in universe}
-    panel = _load_panel(symbols, req, needs_dividend=spec.needs_dividend)
+    panel = _load_panel(
+        symbols,
+        req,
+        needs_dividend=spec.needs_dividend,
+        needs_financials=spec.needs_financials,
+    )
 
     clipped: dict[str, pd.DataFrame] = {}
     for sym, payload in panel.items():

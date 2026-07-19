@@ -38,5 +38,6 @@ class PortfolioStrategySpec:
     select: PortfolioSelect
     default_universe: str = "all_a"
     needs_dividend: bool = False
+    needs_financials: bool = False
     default_top_n: int = 10
     warnings: tuple[str, ...] = ()
