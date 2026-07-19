@@ -10,30 +10,30 @@
 
 策略假设：当股票在价格走强的同时出现明显放量，说明资金参与度提升，后续可能延续上涨；如果后续缩量走弱，或价格触及止损/止盈阈值，则退出。
 
-当前单票回测示例（`backend/examples/backtest_volume_ma_pulse.json`）使用：
+当前单票回测示例（`backend/examples/backtest_volume_ma_pulse.json`）的 `strategy_params`：
 
 ```json
 {
-  "volume_ma_period": 20,
+  "volume_ma_period": 5,
   "volume_metric": "amount",
   "threshold_mode": "fixed",
-  "high_ratio": 1.6,
-  "low_ratio": 0.8,
+  "high_ratio": 1.8,
+  "low_ratio": 0.9,
   "require_bull_bar": true,
   "require_bear_bar": true,
-  "price_ma_period": 20,
+  "price_ma_period": 5,
   "trend_ma_period": 60,
-  "breakout_period": 20,
+  "breakout_period": 5,
   "require_price_above_ma": true,
   "require_trend_up": false,
-    "require_breakout": true,
-    "entry_confirm_bars": 1,
-    "stop_loss_pct": 0.08,
-    "take_profit_pct": 0.25
-  }
+  "require_breakout": true,
+  "entry_confirm_bars": 0,
+  "stop_loss_pct": 0.08,
+  "take_profit_pct": 0.5
+}
 ```
 
-沪深300发掘示例（`discover_hs300_volume_ma_pulse.json`）在同样口径上改用分位阈值：`threshold_mode=percentile`，`high_percentile=0.8`，`low_percentile=0.2`，`percentile_lookback=120`。
+沪深300发掘示例（`discover_hs300_volume_ma_pulse.json`）改用分位阈值：`threshold_mode=percentile`，`high_percentile=0.8`，`low_percentile=0.2`，`percentile_lookback=120`。
 
 相对旧版的三项改进：
 
@@ -41,7 +41,7 @@
 2. **默认用成交额**：跨股价水平更可比；无 `amount` 时回退到成交量。
 3. **可选分位阈值**：按个股自身量比分布自适应放量/缩量线，减少固定倍数过拟合。
 
-`entry_confirm_bars` 代码默认 `0`（放量日当天买）。当前单票示例设为 `1`：放量日只记候选，次日若收盘站稳放量日收盘价则买入，若跌破放量日最低价则候选作废。止损/止盈仍当日生效，不延迟。
+`entry_confirm_bars`：`0`=放量日当天买（当前单票示例）；`>0` 时放量日只记候选，确认日收盘站稳放量日收盘价才买，跌破放量日最低价则候选作废。止损/止盈仍当日生效，不延迟。
 
 ## 2. 变量定义
 
@@ -58,7 +58,7 @@ $$
 AM_t = \frac{1}{N_v}\sum_{i=1}^{N_v} A_{t-i}
 $$
 
-当前示例中 `N_v = 20`。
+当前示例中 `N_v = 5`。
 
 ### 量比
 
@@ -88,7 +88,7 @@ $$
 L_t = Q_{\texttt{low\_percentile}}(VR_{t-N_q},\ldots,VR_{t-1})
 $$
 
-沪深300发掘示例中 `N_q = 120`，`high_percentile = 0.8`，`low_percentile = 0.2`。单票回测示例使用固定倍数：`H=1.6`，`L=0.8`。
+沪深300发掘示例中 `N_q = 120`，`high_percentile = 0.8`，`low_percentile = 0.2`。单票回测示例使用固定倍数：`H=1.8`，`L=0.9`。
 
 ### 价格均线
 
@@ -96,7 +96,7 @@ $$
 PM_t = \frac{1}{N_p}\sum_{i=0}^{N_p-1} C_{t-i}
 $$
 
-当前示例中 `N_p = 20`。
+当前示例中 `N_p = 5`。
 
 ### 趋势均线
 
@@ -114,7 +114,7 @@ $$
 BH_t = \max(C_{t-1}, C_{t-2}, ..., C_{t-N_b})
 $$
 
-当前示例中 `N_b = 20`。
+当前示例中 `N_b = 5`。
 
 ## 3. 买入条件
 
@@ -219,10 +219,10 @@ $$
 
 ### 4.3 止盈退出
 
-设止盈比例为 `TP`。当前示例中 `TP = 0.25`：
+设止盈比例为 `TP`。当前示例中 `TP = 0.5`：
 
 $$
-C_t \ge P_{entry}(1 + TP) = 1.25P_{entry}
+C_t \ge P_{entry}(1 + TP) = 1.5P_{entry}
 $$
 
 ### 4.4 当前完整卖出公式
@@ -237,7 +237,7 @@ Position_{t-1}
 \lor
 \left(C_t \le 0.92P_{entry}\right)
 \lor
-\left(C_t \ge 1.25P_{entry}\right)
+\left(C_t \ge 1.5P_{entry}\right)
 \right]
 $$
 
@@ -293,7 +293,48 @@ $$
 - 可选 `entry_confirm_bars`：把放量视为分歧点燃，延后 1–2 日看多方是否胜出再进场。
 - 用止损/止盈控制失败突破与锁定脉冲利润。
 
-## 8. 风险与局限
+## 8. 示例请求参数
+
+对照 `backend/examples/backtest_volume_ma_pulse.json`。公共字段总表见 [策略总览](./strategy-guide.md)。
+
+### 8.1 请求级字段
+
+| 字段 | 示例值 | 含义 |
+| --- | --- | --- |
+| `data_source` | `a_stock_data` | 行情数据源 |
+| `strategy_id` | `volume_ma_pulse` | 本策略 id |
+| `symbol` | `600368` | 回测标的 |
+| `start_date` / `end_date` | `2024-01-01` / `2025-07-12` | 回测区间 |
+| `initial_cash` | `100000` | 初始资金（元） |
+| `commission` | `0.0003` | 手续费率（万三） |
+| `output_options.json` | `false` | 是否向 stdout 打印完整 JSON |
+| `output_options.plot` | `out/backtest_volume_ma_pulse.svg` | 权益曲线图路径 |
+
+### 8.2 `strategy_params`
+
+| 参数 | 示例值 | 默认 | 说明 |
+| --- | --- | --- | --- |
+| `volume_ma_period` | `5` | 20 | 活动量均线周期（SMA，不含当日） |
+| `volume_metric` | `amount` | amount | 量比用成交额或成交量（`amount` / `volume`） |
+| `threshold_mode` | `fixed` | fixed | `fixed`=固定倍数；`percentile`=滚动分位 |
+| `high_ratio` | `1.8` | 1.5 | 固定模式放量阈值（量比上穿触发买） |
+| `low_ratio` | `0.9` | 0.8 | 固定模式缩量阈值（量比下穿触发卖） |
+| `high_percentile` | （未写） | 0.8 | 分位模式放量高分位；本示例未用 |
+| `low_percentile` | （未写） | 0.2 | 分位模式缩量低分位；本示例未用 |
+| `percentile_lookback` | （未写） | 120 | 分位滚动窗口；本示例未用 |
+| `require_bull_bar` | `true` | true | 买入要求阳线 `close > open` |
+| `require_bear_bar` | `true` | true | 缩量卖出要求阴线 `close < open` |
+| `price_ma_period` | `5` | 20 | 价格均线过滤周期 |
+| `trend_ma_period` | `60` | 60 | 趋势均线周期（本示例未启用趋势过滤） |
+| `breakout_period` | `5` | 20 | 前高突破观察窗口 |
+| `require_price_above_ma` | `true` | false | 买入要求收盘站上价格均线 |
+| `require_trend_up` | `false` | false | 是否要求趋势均线向上 |
+| `require_breakout` | `true` | false | 买入要求突破前 `breakout_period` 日收盘高点 |
+| `entry_confirm_bars` | `0` | 0 | 放量后再观察 N 日确认；`0`=当日买 |
+| `stop_loss_pct` | `0.08` | null | 相对入场价跌幅止损（8%） |
+| `take_profit_pct` | `0.5` | null | 相对入场价涨幅止盈（50%） |
+
+## 9. 风险与局限
 
 - 分位阈值对 `percentile_lookback` 敏感，窗口过短会抖动，过长会滞后。
 - 对单只股票回测调出的参数可能过拟合，应该用更多股票、更多时间窗口验证。
@@ -301,7 +342,7 @@ $$
 - 全仓买卖会放大单次错误信号的影响。
 - 在震荡市中，放量突破可能是假突破，容易触发止损。
 
-## 9. 运行示例
+## 10. 运行示例
 
 沪深300股票池批量发掘：
 

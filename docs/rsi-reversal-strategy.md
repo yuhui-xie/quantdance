@@ -66,13 +66,13 @@ $$
 
 ## 4. 参数说明
 
+本策略暂无独立 example 文件；CLI 回测时 `strategy_params` 与下方一致。请求级公共字段见 [策略总览](./strategy-guide.md)。
+
 | 参数 | 默认 | 范围 | 说明 |
 | --- | --- | --- | --- |
 | `period` | 14 | 2~200 | RSI 周期 |
 | `oversold` | 30 | 1~50 | 超卖阈值 |
 | `overbought` | 70 | 50~99 | 超买阈值，必须大于 `oversold` |
-
-公共回测参数：`initial_cash`、`commission`（见 [策略总览](./strategy-guide.md)）。
 
 最少 K 线数：`period + 5`。
 

@@ -39,11 +39,11 @@ $$
 
 ## 4. 参数说明
 
+本策略暂无独立 example 文件；CLI 回测时 `strategy_params` 与下方一致。请求级公共字段见 [策略总览](./strategy-guide.md)。
+
 | 参数 | 默认 | 范围 | 说明 |
 | --- | --- | --- | --- |
 | `period` | 20 | 1~400 | 通道回看天数（不含当日） |
-
-公共回测参数：`initial_cash`、`commission`（见 [策略总览](./strategy-guide.md)）。
 
 最少 K 线数：`period + 5`。
 

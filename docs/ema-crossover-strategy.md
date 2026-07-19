@@ -45,12 +45,12 @@ $$
 
 ## 4. 参数说明
 
+本策略暂无独立 example 文件；CLI 回测时 `strategy_params` 与下方一致。请求级公共字段（`data_source`、`symbol`、`start_date`、`end_date`、`initial_cash`、`commission`、`output_options` 等）见 [策略总览](./strategy-guide.md)。
+
 | 参数 | 默认 | 范围 | 说明 |
 | --- | --- | --- | --- |
 | `fast_period` | 10 | 2~200 | 短期 EMA 周期 |
 | `slow_period` | 30 | 3~400 | 长期 EMA 周期，必须大于 `fast_period` |
-
-公共回测参数：`initial_cash`、`commission`（见 [策略总览](./strategy-guide.md)）。
 
 最少 K 线数：`slow_period`。
 

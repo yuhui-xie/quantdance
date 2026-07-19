@@ -23,9 +23,10 @@ python -m app.script --help
 
 支持子命令：
 
-- `backtest`：运行回测
+- `backtest`：运行单票回测
 - `screen`：运行选股
 - `discover`：批量回测驱动的股票发掘
+- `portfolio`：低频组合（截面选股 + 按交易日间隔调仓；如菜场大妈、中小综指微盘、涨停回落埋伏、订单开工拐点）
 
 ## 常用示例
 
@@ -51,6 +52,14 @@ python -m app.script discover --universe hs300 --strategy ma_crossover --top-k 1
 python -m app.script discover --universe hs300 --strategy ma_crossover --plot out/discover_hs300_ma_crossover.svg
 # 使用配置文件运行股票发掘，并按 output_options 保存结果
 python -m app.script discover --request examples/discover_value_ma_crossover.json
+
+# 低频组合：列出策略 / 截面选股 / 周期调仓回测
+python -m app.script portfolio --list-strategies
+python -m app.script portfolio --strategy market_auntie --mode screen --max-universe 80 --seed 42 --json
+python -m app.script portfolio --request examples/portfolio_market_auntie.json
+python -m app.script portfolio --request examples/portfolio_small_cap_zz399101.json
+python -m app.script portfolio --request examples/portfolio_limit_up_pullback.json
+python -m app.script portfolio --request examples/portfolio_order_inflection.json
 ```
 
 ## 数据与存储
@@ -92,6 +101,7 @@ print(vals["sh600519"]["pe_ttm"], vals["sz000858"]["market_cap"])
 
 - 总览与索引：[docs/strategy-guide.md](docs/strategy-guide.md)
 - 各策略专文：`docs/*-strategy.md`（如 [量比脉冲](docs/volume-ma-pulse-strategy.md)、[双均线](docs/ma-crossover-strategy.md)）
+- 低频组合：[菜场大妈](docs/market-auntie-strategy.md)、[中小综指微盘](docs/small-cap-zz399101-strategy.md)、[涨停回落埋伏](docs/limit-up-pullback-strategy.md)
 
 新增策略时请同步新增对应专文，并更新总览索引表。
 

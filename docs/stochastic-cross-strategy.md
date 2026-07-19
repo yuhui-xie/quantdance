@@ -59,6 +59,8 @@ $$
 
 ## 4. 参数说明
 
+本策略暂无独立 example 文件；CLI 回测时 `strategy_params` 与下方一致。请求级公共字段见 [策略总览](./strategy-guide.md)。
+
 | 参数 | 默认 | 范围 | 说明 |
 | --- | --- | --- | --- |
 | `k_period` | 14 | 2~200 | 高低区间回看周期 |
@@ -66,8 +68,6 @@ $$
 | `smooth` | 3 | 1~50 | 原始 `%K` 的平滑周期 |
 | `oversold` | 20 | 1~50 | 超卖阈值 |
 | `overbought` | 80 | 50~99 | 超买阈值，必须大于 `oversold` |
-
-公共回测参数：`initial_cash`、`commission`（见 [策略总览](./strategy-guide.md)）。
 
 最少 K 线数：`k_period + smooth + d_period + 5`。
 
