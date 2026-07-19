@@ -41,14 +41,29 @@ $$
 - **买入**：`SMA_f(t) > SMA_s(t)` 且 `SMA_f(t-1) <= SMA_s(t-1)`
 - **卖出**：`SMA_f(t) < SMA_s(t)` 且 `SMA_f(t-1) >= SMA_s(t-1)`
 
-## 4. 参数说明
+## 4. 示例请求参数
 
-| 参数 | 默认 | 范围 | 说明 |
-| --- | --- | --- | --- |
-| `fast_period` | 10 | 2~200 | 短期均线周期 |
-| `slow_period` | 30 | 3~400 | 长期均线周期，必须大于 `fast_period` |
+对照 `backend/examples/backtest_ma_crossover.json`。公共字段总表见 [策略总览](./strategy-guide.md)。
 
-公共回测参数：`initial_cash`、`commission`（见 [策略总览](./strategy-guide.md)）。
+### 4.1 请求级字段
+
+| 字段 | 示例值 | 含义 |
+| --- | --- | --- |
+| `data_source` | `a_stock_data` | 行情数据源 |
+| `strategy_id` | `ma_crossover` | 本策略 id |
+| `symbol` | `600000` | 回测标的（浦发银行） |
+| `start_date` / `end_date` | `2023-01-01` / `2024-12-31` | 回测区间 |
+| `initial_cash` | `100000` | 初始资金（元） |
+| `commission` | `0.0003` | 手续费率（万三） |
+| `output_options.json` | `false` | 是否向 stdout 打印完整 JSON |
+| `output_options.plot` | `out/backtest_ma_crossover.svg` | 权益曲线图路径 |
+
+### 4.2 `strategy_params`
+
+| 参数 | 示例值 | 默认 | 范围 | 说明 |
+| --- | --- | --- | --- | --- |
+| `fast_period` | `10` | 10 | 2~200 | 短期 SMA 周期 |
+| `slow_period` | `30` | 30 | 3~400 | 长期 SMA 周期，必须大于 `fast_period` |
 
 最少 K 线数：`slow_period`。
 

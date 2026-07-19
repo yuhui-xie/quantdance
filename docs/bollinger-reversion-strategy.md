@@ -52,12 +52,12 @@ $$
 
 ## 4. 参数说明
 
+本策略暂无独立 example 文件；CLI 回测时 `strategy_params` 与下方一致。请求级公共字段见 [策略总览](./strategy-guide.md)。
+
 | 参数 | 默认 | 范围 | 说明 |
 | --- | --- | --- | --- |
 | `period` | 20 | 2~400 | 中轨与标准差窗口 |
 | `num_std` | 2.0 | 0.1~10.0 | 上下轨标准差倍数 |
-
-公共回测参数：`initial_cash`、`commission`（见 [策略总览](./strategy-guide.md)）。
 
 最少 K 线数：`period`。
 
