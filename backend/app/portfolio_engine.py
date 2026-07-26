@@ -107,17 +107,36 @@ def run_equal_weight_rebalance(
     slippage: float = 0.0,
     lot_size: int = 100,
     context: Mapping[str, Any] | None = None,
+    take_profit_arm_pct: float | None = None,
+    take_profit_exit_pct: float | None = None,
+    stop_loss_pct: float | None = None,
 ) -> PortfolioBacktestResult:
     """
     等权再平衡组合回测。
 
     select_holdings(asof, context) -> 目标股票列表（等权）。
     成交价按调仓日收盘价，并叠加 slippage；卖出后再买入。
+
+    通用风控（可选，仅非调仓日）：
+    - 止损：相对成本浮亏达到 stop_loss_pct 则卖出；
+    - 止盈：浮盈达到 take_profit_arm_pct(x) 后启动，回落到 take_profit_exit_pct(y) 再卖。
     """
     if close_panel.empty:
         raise ValueError("close_panel 为空")
     if initial_cash <= 0:
         raise ValueError("initial_cash 必须为正")
+
+    arm = take_profit_arm_pct
+    exit_lvl = take_profit_exit_pct
+    if (arm is None) ^ (exit_lvl is None):
+        raise ValueError("take_profit_arm_pct 与 take_profit_exit_pct 须同时设置或同时为空")
+    if arm is not None and exit_lvl is not None:
+        if arm <= 0 or exit_lvl < 0:
+            raise ValueError("take_profit_arm_pct 须 > 0，take_profit_exit_pct 须 >= 0")
+        if exit_lvl >= arm:
+            raise ValueError("take_profit_exit_pct 必须小于 take_profit_arm_pct")
+    if stop_loss_pct is not None and stop_loss_pct <= 0:
+        raise ValueError("stop_loss_pct 须 > 0")
 
     ctx = dict(context or {})
     calendar = [str(d)[:10] for d in close_panel.index.tolist()]
@@ -127,6 +146,8 @@ def run_equal_weight_rebalance(
 
     cash = float(initial_cash)
     positions: dict[str, int] = {}
+    avg_cost: dict[str, float] = {}
+    tp_armed: set[str] = set()
     trades: list[dict[str, Any]] = []
     holdings_log: list[dict[str, Any]] = []
     rebalances: list[dict[str, Any]] = []
@@ -142,86 +163,132 @@ def run_equal_weight_rebalance(
             total += shares * float(px)
         return float(total)
 
+    def _sell_position(day: str, sym: str, *, reason: str) -> None:
+        nonlocal cash
+        shares = positions.get(sym, 0)
+        if shares <= 0:
+            return
+        row = close_panel.loc[day]
+        px = row.get(sym)
+        if px is None or not np.isfinite(float(px)) or float(px) <= 0:
+            return
+        price = float(px)
+        notional = shares * price
+        cost = _trade_cost(
+            notional,
+            commission=commission,
+            min_commission=min_commission,
+            slippage=slippage,
+            side="sell",
+        )
+        proceeds = notional - cost
+        cash += proceeds
+        trades.append(
+            {
+                "date": day,
+                "symbol": sym,
+                "side": "sell",
+                "price": price,
+                "shares": float(shares),
+                "cash_after": float(cash),
+                "cost": float(cost),
+                "reason": reason,
+            }
+        )
+        positions[sym] = 0
+        avg_cost.pop(sym, None)
+        tp_armed.discard(sym)
+
+    def _buy_position(day: str, sym: str, budget: float) -> None:
+        nonlocal cash
+        row = close_panel.loc[day]
+        px = row.get(sym)
+        if px is None or not np.isfinite(float(px)) or float(px) <= 0:
+            return
+        price = float(px)
+        exec_price = price * (1.0 + max(slippage, 0.0))
+        shares = _lot_shares(budget, exec_price, lot_size=lot_size)
+        if shares <= 0:
+            return
+        notional = shares * exec_price
+        fee = notional * max(commission, 0.0)
+        if min_commission > 0:
+            fee = max(fee, min_commission)
+        total_pay = notional + fee
+        if total_pay > cash:
+            shares = _lot_shares(cash - min_commission, exec_price, lot_size=lot_size)
+            if shares <= 0:
+                return
+            notional = shares * exec_price
+            fee = notional * max(commission, 0.0)
+            if min_commission > 0:
+                fee = max(fee, min_commission)
+            total_pay = notional + fee
+            if total_pay > cash:
+                return
+        cash -= total_pay
+        prev_shares = positions.get(sym, 0)
+        prev_cost = avg_cost.get(sym, exec_price)
+        new_shares = prev_shares + shares
+        if new_shares > 0:
+            avg_cost[sym] = (prev_cost * prev_shares + exec_price * shares) / new_shares
+        positions[sym] = new_shares
+        tp_armed.discard(sym)
+        trades.append(
+            {
+                "date": day,
+                "symbol": sym,
+                "side": "buy",
+                "price": exec_price,
+                "shares": float(shares),
+                "cash_after": float(cash),
+                "cost": float(fee + shares * exec_price * max(slippage, 0.0)),
+                "reason": "rebalance",
+            }
+        )
+
+    risk_enabled = stop_loss_pct is not None or (arm is not None and exit_lvl is not None)
     for day in calendar:
-        if day in rebalance_set:
-            target = list(select_holdings(day, ctx))
-            target = [s for s in target if s in close_panel.columns]
-            # 先全部卖出
+        # 非调仓日：止损 / 止盈
+        if day not in rebalance_set and risk_enabled:
             row = close_panel.loc[day]
             for sym in list(positions.keys()):
                 shares = positions.get(sym, 0)
                 if shares <= 0:
                     continue
+                cost_px = avg_cost.get(sym)
                 px = row.get(sym)
-                if px is None or not np.isfinite(float(px)) or float(px) <= 0:
+                if (
+                    cost_px is None
+                    or cost_px <= 0
+                    or px is None
+                    or not np.isfinite(float(px))
+                    or float(px) <= 0
+                ):
                     continue
-                price = float(px)
-                notional = shares * price
-                cost = _trade_cost(
-                    notional,
-                    commission=commission,
-                    min_commission=min_commission,
-                    slippage=slippage,
-                    side="sell",
-                )
-                proceeds = notional - cost
-                cash += proceeds
-                trades.append(
-                    {
-                        "date": day,
-                        "symbol": sym,
-                        "side": "sell",
-                        "price": price,
-                        "shares": float(shares),
-                        "cash_after": float(cash),
-                        "cost": float(cost),
-                    }
-                )
-                positions[sym] = 0
+                px_f = float(px)
+                if stop_loss_pct is not None and px_f <= cost_px * (1.0 - stop_loss_pct):
+                    _sell_position(day, sym, reason="stop_loss")
+                    continue
+                if arm is not None and exit_lvl is not None:
+                    ret = px_f / cost_px - 1.0
+                    if sym not in tp_armed and ret >= arm:
+                        tp_armed.add(sym)
+                    if sym in tp_armed and px_f <= cost_px * (1.0 + exit_lvl):
+                        _sell_position(day, sym, reason="take_profit")
             positions = {k: v for k, v in positions.items() if v > 0}
 
-            # 等权买入目标
+        if day in rebalance_set:
+            target = list(select_holdings(day, ctx))
+            target = [s for s in target if s in close_panel.columns]
+            for sym in list(positions.keys()):
+                _sell_position(day, sym, reason="rebalance")
+            positions = {k: v for k, v in positions.items() if v > 0}
+
             if target:
                 budget = cash / len(target)
                 for sym in target:
-                    px = row.get(sym)
-                    if px is None or not np.isfinite(float(px)) or float(px) <= 0:
-                        continue
-                    price = float(px)
-                    # 买入时滑点抬高成交价
-                    exec_price = price * (1.0 + max(slippage, 0.0))
-                    shares = _lot_shares(budget, exec_price, lot_size=lot_size)
-                    if shares <= 0:
-                        continue
-                    notional = shares * exec_price
-                    fee = notional * max(commission, 0.0)
-                    if min_commission > 0:
-                        fee = max(fee, min_commission)
-                    total_pay = notional + fee
-                    if total_pay > cash:
-                        shares = _lot_shares(cash - min_commission, exec_price, lot_size=lot_size)
-                        if shares <= 0:
-                            continue
-                        notional = shares * exec_price
-                        fee = notional * max(commission, 0.0)
-                        if min_commission > 0:
-                            fee = max(fee, min_commission)
-                        total_pay = notional + fee
-                        if total_pay > cash:
-                            continue
-                    cash -= total_pay
-                    positions[sym] = positions.get(sym, 0) + shares
-                    trades.append(
-                        {
-                            "date": day,
-                            "symbol": sym,
-                            "side": "buy",
-                            "price": exec_price,
-                            "shares": float(shares),
-                            "cash_after": float(cash),
-                            "cost": float(fee + shares * exec_price * max(slippage, 0.0)),
-                        }
-                    )
+                    _buy_position(day, sym, budget)
 
             rebalances.append(
                 {

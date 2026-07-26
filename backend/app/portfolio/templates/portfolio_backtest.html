@@ -1,0 +1,1115 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>组合回测报告 __TITLE__</title>
+<style>
+:root {
+  --bg: #0f1115;
+  --panel: #1a1d24;
+  --border: #2a2f3a;
+  --text: #e8eaed;
+  --muted: #9aa0a6;
+  --accent: #4fc3f7;
+  --buy: #66bb6a;
+  --sell: #ffb74d;
+  --warn: #ffb74d;
+  --bench: #ffb74d;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  font-family: "Microsoft YaHei", "Segoe UI", sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.45;
+}
+header {
+  padding: 20px 24px 8px;
+  border-bottom: 1px solid var(--border);
+}
+header h1 {
+  margin: 0 0 6px;
+  font-size: 20px;
+  font-weight: 600;
+}
+header .meta { color: var(--muted); font-size: 13px; }
+.wrap { padding: 16px 24px 40px; max-width: 1400px; margin: 0 auto; }
+.stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 10px;
+  margin: 16px 0;
+}
+.stat {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px 14px;
+}
+.stat .label { color: var(--muted); font-size: 12px; }
+.stat .value { font-size: 18px; margin-top: 4px; font-variant-numeric: tabular-nums; }
+.stat .value.pos { color: var(--buy); }
+.stat .value.neg { color: var(--sell); }
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px 14px;
+  margin-bottom: 14px;
+}
+.panel h2 {
+  margin: 0 0 10px;
+  font-size: 15px;
+  font-weight: 600;
+}
+.chart-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin: 0 0 8px;
+}
+.chart-toolbar button {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 6px;
+  padding: 4px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.chart-toolbar button:hover { border-color: var(--accent); color: var(--accent); }
+#chart {
+  width: 100%;
+  height: 320px;
+  display: block;
+  cursor: crosshair;
+  touch-action: none;
+  user-select: none;
+}
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  margin: 8px 0 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+.legend span { display: inline-flex; align-items: center; gap: 6px; }
+.legend i {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border-radius: 2px;
+}
+.legend .line { width: 18px; height: 3px; border-radius: 1px; }
+.legend .tri-up {
+  width: 0; height: 0; border-left: 5px solid transparent; border-right: 5px solid transparent;
+  border-bottom: 9px solid var(--buy); background: none;
+}
+.legend .tri-down {
+  width: 0; height: 0; border-left: 5px solid transparent; border-right: 5px solid transparent;
+  border-top: 9px solid var(--sell); background: none;
+}
+.legend .tri-down-mark {
+  width: 0; height: 0; border-left: 5px solid transparent; border-right: 5px solid transparent;
+  border-top: 9px solid #ffb74d; background: none;
+}
+.grid2 {
+  display: grid;
+  grid-template-columns: 280px 1fr;
+  gap: 12px;
+}
+@media (max-width: 900px) {
+  .grid2 { grid-template-columns: 1fr; }
+}
+.period-list {
+  max-height: 420px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.period-item {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+  font-size: 13px;
+}
+.period-item:hover { background: #22262f; }
+.period-item.active { background: #243040; border-left: 3px solid var(--accent); }
+.period-item .d { font-variant-numeric: tabular-nums; }
+.period-item .r { float: right; font-variant-numeric: tabular-nums; }
+.detail { font-size: 13px; }
+.detail .row { margin-bottom: 8px; color: var(--muted); }
+.detail .row b { color: var(--text); font-weight: 600; }
+.tables { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+@media (max-width: 900px) {
+  .tables { grid-template-columns: 1fr; }
+}
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+th, td {
+  border-bottom: 1px solid var(--border);
+  padding: 6px 8px;
+  text-align: left;
+  white-space: nowrap;
+}
+th { color: var(--muted); font-weight: 500; position: sticky; top: 0; background: var(--panel); }
+.scroll { max-height: 260px; overflow: auto; border: 1px solid var(--border); border-radius: 6px; }
+.side-buy { color: var(--buy); }
+.side-sell { color: var(--sell); }
+.pos { color: var(--buy); }
+.neg { color: var(--sell); }
+.filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 10px;
+  align-items: center;
+}
+.filters input {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 6px;
+  padding: 6px 10px;
+  font-size: 13px;
+  min-width: 160px;
+}
+.note { color: var(--muted); font-size: 12px; margin-top: 8px; }
+.empty { color: var(--muted); padding: 12px; }
+a.sym-link {
+  color: var(--accent);
+  text-decoration: none;
+  cursor: pointer;
+  border-bottom: 1px dotted rgba(79,195,247,.45);
+}
+a.sym-link:hover { color: #81d4fa; border-bottom-color: #81d4fa; }
+.symbol-list {
+  max-height: 260px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.symbol-item {
+  display: grid;
+  grid-template-columns: 72px 1fr auto auto;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+  font-size: 12px;
+  align-items: center;
+}
+.symbol-item:hover { background: #22262f; }
+.symbol-item .sym { color: var(--accent); font-variant-numeric: tabular-nums; }
+.symbol-item .nm { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.symbol-item .cnt { color: var(--muted); }
+.modal-mask {
+  position: fixed; inset: 0; background: rgba(0,0,0,.62);
+  display: none; align-items: center; justify-content: center;
+  z-index: 50; padding: 16px;
+}
+.modal-mask.open { display: flex; }
+.modal {
+  width: min(960px, 100%);
+  max-height: min(90vh, 860px);
+  overflow: auto;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 14px 16px 18px;
+  box-shadow: 0 12px 40px rgba(0,0,0,.45);
+}
+.modal-head {
+  display: flex; align-items: flex-start; justify-content: space-between;
+  gap: 12px; margin-bottom: 10px;
+}
+.modal-head h2 { margin: 0; font-size: 16px; }
+.modal-head .sub { color: var(--muted); font-size: 12px; margin-top: 4px; }
+.modal-close {
+  background: transparent; border: 1px solid var(--border); color: var(--text);
+  border-radius: 6px; padding: 4px 10px; cursor: pointer; font-size: 13px;
+}
+.modal-close:hover { border-color: var(--accent); color: var(--accent); }
+#symbolChart {
+  width: 100%;
+  height: 340px;
+  display: block;
+  background: #0f1115;
+  border-radius: 6px;
+  touch-action: none;
+  user-select: none;
+  cursor: crosshair;
+}
+.legend .candle-up {
+  width: 8px; height: 12px; background: #ef5350; border-radius: 1px;
+}
+.legend .candle-down {
+  width: 8px; height: 12px; background: #26a69a; border-radius: 1px;
+}
+</style>
+</head>
+<body>
+<header>
+  <h1>组合回测报告 · <span id="strategyId"></span></h1>
+  <div class="meta" id="headerMeta"></div>
+</header>
+<div class="wrap">
+  <div class="stats" id="stats"></div>
+  <div class="panel">
+    <h2>净值曲线（滚轮缩放 · 拖拽平移 · 点击调仓查看详情）</h2>
+    <div class="chart-toolbar">
+      <button type="button" id="chartZoomReset">重置视图</button>
+      <button type="button" id="chartZoomIn">放大</button>
+      <button type="button" id="chartZoomOut">缩小</button>
+      <span class="note" style="margin:0">同日多笔成交合并为单点，数字为笔数；买卖上下错开。</span>
+    </div>
+    <svg id="chart" viewBox="0 0 1000 320" preserveAspectRatio="none"></svg>
+    <div class="legend">
+      <span><i class="line" style="background:var(--accent)"></i>组合</span>
+      <span><i class="line" style="background:var(--bench)"></i>沪深300</span>
+      <span><i class="tri-up"></i>买入日</span>
+      <span><i class="tri-down-mark"></i>卖出日</span>
+      <span><i class="line" style="background:var(--accent);opacity:.4"></i>调仓日</span>
+    </div>
+    <div class="note" id="chartHint">悬停查看净值；绿▲买入 / 橙▼卖出（同日错开）；滚轮缩放，拖拽平移，双击重置。</div>
+  </div>
+  <div class="grid2">
+    <div class="panel">
+      <h2>调仓日</h2>
+      <div class="period-list" id="periodList"></div>
+    </div>
+    <div class="panel detail" id="detail">
+      <h2>调仓详情</h2>
+      <div class="empty">请选择左侧调仓日</div>
+    </div>
+  </div>
+  <div class="panel">
+    <h2>个股列表（点击查看买卖点）</h2>
+    <div class="filters">
+      <input id="filterSymList" placeholder="筛选代码/名称…" />
+    </div>
+    <div class="symbol-list" id="symbolList"></div>
+    <div class="note">点击任意代码可打开该股收盘价曲线与全部买/卖点；调仓详情、成交明细、回合表中的代码同样可点。</div>
+  </div>
+  <div class="panel">
+    <h2>成交明细</h2>
+    <div class="filters">
+      <input id="filterDate" placeholder="日期含… 如 2020-02" />
+      <input id="filterSymbol" placeholder="代码/名称含…" />
+    </div>
+    <div class="scroll">
+      <table>
+        <thead>
+          <tr>
+            <th>日期</th><th>方向</th><th>原因</th><th>代码</th><th>名称</th>
+            <th>价格</th><th>股数</th><th>成交额</th><th>费用</th>
+          </tr>
+        </thead>
+        <tbody id="tradeBody"></tbody>
+      </table>
+    </div>
+  </div>
+  <div class="panel">
+    <h2>单票回合盈亏（FIFO 估算）</h2>
+    <div class="scroll">
+      <table>
+        <thead>
+          <tr>
+            <th>代码</th><th>名称</th><th>买入日</th><th>卖出日</th>
+            <th>股数</th><th>买价</th><th>卖价</th><th>盈亏</th><th>收益率</th>
+          </tr>
+        </thead>
+        <tbody id="tripBody"></tbody>
+      </table>
+    </div>
+    <div class="note">费用/滑点已体现在成交价与费用字段中；回合盈亏为买卖价差近似，便于定位贡献来源。点击代码可查看该股买卖点。</div>
+  </div>
+  <div class="note" id="footerNote"></div>
+</div>
+<div class="modal-mask" id="symbolModal" role="dialog" aria-modal="true">
+  <div class="modal">
+    <div class="modal-head">
+      <div>
+        <h2 id="symbolModalTitle">个股买卖点</h2>
+        <div class="sub" id="symbolModalSub"></div>
+      </div>
+      <button type="button" class="modal-close" id="symbolModalClose">关闭</button>
+    </div>
+    <svg id="symbolChart" viewBox="0 0 900 340" preserveAspectRatio="none"></svg>
+    <div class="legend" style="margin:8px 0 12px">
+      <span><i class="candle-up"></i>阳线</span>
+      <span><i class="candle-down"></i>阴线</span>
+      <span><i class="tri-up"></i>买入</span>
+      <span><i class="tri-down-mark"></i>卖出</span>
+      <span><i class="line" style="background:var(--accent)"></i>无K线时收盘价</span>
+    </div>
+    <div class="tables">
+      <div>
+        <h2>买卖点明细</h2>
+        <div class="scroll"><table>
+          <thead><tr><th>日期</th><th>方向</th><th>价格</th><th>股数</th><th>成交额</th><th>费用</th></tr></thead>
+          <tbody id="symbolTradeBody"></tbody>
+        </table></div>
+      </div>
+      <div>
+        <h2>回合盈亏</h2>
+        <div class="scroll"><table>
+          <thead><tr><th>买入日</th><th>卖出日</th><th>买价</th><th>卖价</th><th>盈亏</th><th>收益率</th></tr></thead>
+          <tbody id="symbolTripBody"></tbody>
+        </table></div>
+      </div>
+    </div>
+  </div>
+</div>
+<script>
+const DATA = __DATA__;
+
+function pct(v) {
+  if (v === null || v === undefined || Number.isNaN(v)) return "-";
+  return (v * 100).toFixed(2) + "%";
+}
+function num(v, d=2) {
+  if (v === null || v === undefined || Number.isNaN(v)) return "-";
+  return Number(v).toLocaleString("zh-CN", { maximumFractionDigits: d, minimumFractionDigits: 0 });
+}
+function clsRet(v) {
+  if (v === null || v === undefined || Number.isNaN(v)) return "";
+  return v >= 0 ? "pos" : "neg";
+}
+function sideLabel(s) { return s === "buy" ? "买入" : (s === "sell" ? "卖出" : s); }
+function reasonLabel(r) {
+  if (r === "take_profit") return "止盈";
+  if (r === "stop_loss") return "止损";
+  if (r === "rebalance") return "调仓";
+  return r || "-";
+}
+function symLink(symbol, name) {
+  const s = symbol || "";
+  const label = s || "-";
+  return `<a href="#" class="sym-link" data-symbol="${s}" title="查看买卖点">${label}</a>`;
+}
+
+function renderStats() {
+  const m = DATA.metrics || {};
+  const bm = DATA.benchmark_metrics || {};
+  const items = [
+    ["总收益", pct(m.total_return), clsRet(m.total_return)],
+    ["年化", pct(m.annualized_return), clsRet(m.annualized_return)],
+    ["最大回撤", pct(m.max_drawdown), "neg"],
+    ["收益/回撤", num(m.return_drawdown_ratio, 2), clsRet(m.return_drawdown_ratio)],
+    ["沪深300收益", pct(bm.total_return != null ? bm.total_return : m.benchmark_total_return), ""],
+    ["相对超额", pct(m.excess_total_return), clsRet(m.excess_total_return)],
+    ["Sharpe", num(m.sharpe, 2), ""],
+    ["最终权益", num(m.final_equity, 0), ""],
+    ["调仓次数", String((DATA.periods || []).length), ""],
+    ["成交笔数", num(m.num_trades, 0), ""],
+    ["胜率(回合)", pct(m.win_rate), ""],
+  ];
+  document.getElementById("stats").innerHTML = items.map(([label, value, c]) =>
+    `<div class="stat"><div class="label">${label}</div><div class="value ${c}">${value}</div></div>`
+  ).join("");
+}
+
+function triUp(x, y, s) {
+  return `M${x},${y - s} L${x - s},${y + s * 0.7} L${x + s},${y + s * 0.7} Z`;
+}
+function triDown(x, y, s) {
+  return `M${x},${y + s} L${x - s},${y - s * 0.7} L${x + s},${y - s * 0.7} Z`;
+}
+
+const chartState = {
+  i0: 0,
+  i1: null,
+  dragging: false,
+  dragStartX: 0,
+  dragI0: 0,
+  dragI1: 0,
+  bound: false,
+};
+
+function tradeCountsByDate() {
+  const buy = {}, sell = {};
+  (DATA.trades || []).forEach(t => {
+    const d = t.date;
+    if (!d) return;
+    if (t.side === "buy") buy[d] = (buy[d] || 0) + 1;
+    else if (t.side === "sell") sell[d] = (sell[d] || 0) + 1;
+  });
+  return { buy, sell };
+}
+
+function clampChartView(n) {
+  if (n <= 1) {
+    chartState.i0 = 0;
+    chartState.i1 = Math.max(0, n - 1);
+    return;
+  }
+  if (chartState.i1 == null) chartState.i1 = n - 1;
+  let i0 = Math.max(0, Math.min(chartState.i0, n - 2));
+  let i1 = Math.max(i0 + 1, Math.min(chartState.i1, n - 1));
+  chartState.i0 = i0;
+  chartState.i1 = i1;
+}
+
+function zoomChartAround(frac, factor) {
+  const eq = DATA.equity || [];
+  const n = eq.length;
+  if (n < 3) return;
+  clampChartView(n);
+  const span = chartState.i1 - chartState.i0;
+  let newSpan = Math.max(8, Math.min(n - 1, Math.round(span * factor)));
+  const center = chartState.i0 + span * Math.max(0, Math.min(1, frac));
+  let i0 = Math.round(center - newSpan * frac);
+  let i1 = i0 + newSpan;
+  if (i0 < 0) { i1 -= i0; i0 = 0; }
+  if (i1 > n - 1) { i0 -= (i1 - (n - 1)); i1 = n - 1; }
+  chartState.i0 = Math.max(0, i0);
+  chartState.i1 = Math.min(n - 1, i1);
+  renderChart();
+}
+
+function bindChartInteractions() {
+  if (chartState.bound) return;
+  chartState.bound = true;
+  const svg = document.getElementById("chart");
+  svg.addEventListener("wheel", (ev) => {
+    ev.preventDefault();
+    const eq = DATA.equity || [];
+    if (eq.length < 3) return;
+    const rect = svg.getBoundingClientRect();
+    const frac = (ev.clientX - rect.left) / Math.max(rect.width, 1);
+    zoomChartAround(frac, ev.deltaY > 0 ? 1.25 : 0.8);
+  }, { passive: false });
+  svg.addEventListener("mousedown", (ev) => {
+    if (ev.button !== 0) return;
+    const eq = DATA.equity || [];
+    if (eq.length < 3) return;
+    clampChartView(eq.length);
+    chartState.dragging = true;
+    chartState.dragStartX = ev.clientX;
+    chartState.dragI0 = chartState.i0;
+    chartState.dragI1 = chartState.i1;
+    svg.style.cursor = "grabbing";
+  });
+  window.addEventListener("mousemove", (ev) => {
+    if (!chartState.dragging) return;
+    const eq = DATA.equity || [];
+    const n = eq.length;
+    const svgEl = document.getElementById("chart");
+    const rect = svgEl.getBoundingClientRect();
+    const span = chartState.dragI1 - chartState.dragI0;
+    const dx = ev.clientX - chartState.dragStartX;
+    const shift = Math.round((-dx / Math.max(rect.width, 1)) * span);
+    let i0 = chartState.dragI0 + shift;
+    let i1 = i0 + span;
+    if (i0 < 0) { i1 -= i0; i0 = 0; }
+    if (i1 > n - 1) { i0 -= (i1 - (n - 1)); i1 = n - 1; }
+    chartState.i0 = Math.max(0, i0);
+    chartState.i1 = Math.min(n - 1, i1);
+    renderChart();
+  });
+  window.addEventListener("mouseup", () => {
+    if (!chartState.dragging) return;
+    chartState.dragging = false;
+    const svgEl = document.getElementById("chart");
+    if (svgEl) svgEl.style.cursor = "crosshair";
+  });
+  svg.addEventListener("dblclick", () => {
+    const eq = DATA.equity || [];
+    chartState.i0 = 0;
+    chartState.i1 = Math.max(0, eq.length - 1);
+    renderChart();
+  });
+  document.getElementById("chartZoomReset").addEventListener("click", () => {
+    const eq = DATA.equity || [];
+    chartState.i0 = 0;
+    chartState.i1 = Math.max(0, eq.length - 1);
+    renderChart();
+  });
+  document.getElementById("chartZoomIn").addEventListener("click", () => zoomChartAround(0.5, 0.7));
+  document.getElementById("chartZoomOut").addEventListener("click", () => zoomChartAround(0.5, 1.4));
+}
+
+function renderChart() {
+  const svg = document.getElementById("chart");
+  const eqAll = DATA.equity || [];
+  const bm = DATA.benchmark || [];
+  const rbSet = new Set(DATA.rebalance_dates || []);
+  const { buy: buyCount, sell: sellCount } = tradeCountsByDate();
+  if (!eqAll.length) {
+    svg.innerHTML = "";
+    return;
+  }
+  clampChartView(eqAll.length);
+  const i0 = chartState.i0;
+  const i1 = chartState.i1;
+  const eq = eqAll.slice(i0, i1 + 1);
+  const W = 1000, H = 320;
+  const pad = { l: 48, r: 16, t: 20, b: 28 };
+  const bmMap = Object.fromEntries(bm.map(p => [p.date, p.nav]));
+  const ys = eq.map(p => p.nav);
+  const bmYs = eq.map(p => bmMap[p.date]).filter(v => v != null && !Number.isNaN(v));
+  const minY = Math.min(...ys, ...(bmYs.length ? bmYs : ys));
+  const maxY = Math.max(...ys, ...(bmYs.length ? bmYs : ys));
+  const spanY = (maxY - minY) || 1;
+  const xOf = i => pad.l + (i / Math.max(eq.length - 1, 1)) * (W - pad.l - pad.r);
+  const yOf = v => pad.t + (1 - (v - minY) / spanY) * (H - pad.t - pad.b);
+  const markOff = Math.max(10, Math.min(22, (H - pad.t - pad.b) * 0.08));
+  const path = eq.map((p, i) => `${i === 0 ? "M" : "L"}${xOf(i).toFixed(2)},${yOf(p.nav).toFixed(2)}`).join(" ");
+  let bmPath = "";
+  eq.forEach((p, i) => {
+    const v = bmMap[p.date];
+    if (v == null || Number.isNaN(v)) return;
+    bmPath += `${bmPath ? "L" : "M"}${xOf(i).toFixed(2)},${yOf(v).toFixed(2)} `;
+  });
+  let marks = "";
+  eq.forEach((p, i) => {
+    const x = xOf(i);
+    const y = yOf(p.nav);
+    if (rbSet.has(p.date)) {
+      marks += `<line class="rb-line" data-date="${p.date}" x1="${x}" y1="${pad.t}" x2="${x}" y2="${H - pad.b}"
+        stroke="#4fc3f7" stroke-opacity="0.28" stroke-width="1.2" style="cursor:pointer" />`;
+    }
+    const nBuy = buyCount[p.date] || 0;
+    const nSell = sellCount[p.date] || 0;
+    if (nSell) {
+      const yy = nBuy ? y + markOff : y + markOff * 0.35;
+      marks += `<path class="trade-mark" data-date="${p.date}" d="${triDown(x, yy, 6)}"
+        fill="#ffb74d" stroke="#1a1d24" stroke-width="0.8" style="cursor:pointer" />`;
+      if (nSell > 1) {
+        marks += `<text x="${x}" y="${yy + 16}" fill="#ffb74d" font-size="10" text-anchor="middle">${nSell}</text>`;
+      }
+    }
+    if (nBuy) {
+      const yy = nSell ? y - markOff : y - markOff * 0.35;
+      marks += `<path class="trade-mark" data-date="${p.date}" d="${triUp(x, yy, 6)}"
+        fill="#66bb6a" stroke="#1a1d24" stroke-width="0.8" style="cursor:pointer" />`;
+      if (nBuy > 1) {
+        marks += `<text x="${x}" y="${yy - 10}" fill="#66bb6a" font-size="10" text-anchor="middle">${nBuy}</text>`;
+      }
+    }
+  });
+  const y0 = yOf(1);
+  const viewLabel = (i0 > 0 || i1 < eqAll.length - 1)
+    ? `${eq[0].date} ~ ${eq[eq.length - 1].date}（${eq.length}/${eqAll.length}）`
+    : `${eq[0].date} ~ ${eq[eq.length - 1].date}`;
+  svg.innerHTML = `
+    <rect x="0" y="0" width="${W}" height="${H}" fill="#0f1115"/>
+    <line x1="${pad.l}" y1="${y0}" x2="${W - pad.r}" y2="${y0}" stroke="#9aa0a6" stroke-dasharray="4 4" stroke-opacity="0.5"/>
+    ${bmPath ? `<path d="${bmPath.trim()}" fill="none" stroke="#ffb74d" stroke-width="1.6" stroke-dasharray="5 3"/>` : ""}
+    <path d="${path}" fill="none" stroke="#4fc3f7" stroke-width="2"/>
+    ${marks}
+    <text x="${pad.l}" y="14" fill="#9aa0a6" font-size="11">净值</text>
+    <text x="${pad.l}" y="${H - 8}" fill="#9aa0a6" font-size="11">${viewLabel}</text>
+    <text x="${W - pad.r}" y="${H - 8}" fill="#9aa0a6" font-size="11" text-anchor="end">${eq[eq.length - 1].date}</text>
+  `;
+  svg.querySelectorAll(".rb-line, .trade-mark").forEach(el => {
+    el.addEventListener("click", (ev) => {
+      if (chartState.dragging) return;
+      ev.stopPropagation();
+      selectPeriodByDate(el.getAttribute("data-date"));
+    });
+  });
+  svg.onmousemove = (ev) => {
+    if (chartState.dragging) return;
+    const rect = svg.getBoundingClientRect();
+    const rel = (ev.clientX - rect.left) / Math.max(rect.width, 1);
+    const idx = Math.round(rel * (eq.length - 1));
+    const p = eq[Math.max(0, Math.min(eq.length - 1, idx))];
+    const bNav = bmMap[p.date];
+    const tags = [];
+    const nb = buyCount[p.date] || 0;
+    const ns = sellCount[p.date] || 0;
+    if (nb) tags.push(`买入×${nb}`);
+    if (ns) tags.push(`卖出×${ns}`);
+    if (rbSet.has(p.date)) tags.push("调仓");
+    document.getElementById("chartHint").textContent =
+      `${p.date} · 组合 ${p.nav.toFixed(4)}` +
+      (bNav != null ? ` · 沪深300 ${Number(bNav).toFixed(4)}` : "") +
+      ` · 权益 ${num(p.equity, 0)}` +
+      (tags.length ? ` · ${tags.join("/")}` : "") +
+      " · 滚轮缩放 / 拖拽平移 / 双击重置";
+  };
+  bindChartInteractions();
+}
+
+let selectedIndex = 0;
+
+function selectPeriodByDate(date) {
+  const idx = (DATA.periods || []).findIndex(p => p.date === date);
+  if (idx >= 0) selectPeriod(idx);
+}
+
+function selectPeriod(index) {
+  selectedIndex = index;
+  const periods = DATA.periods || [];
+  document.querySelectorAll(".period-item").forEach((el, i) => {
+    el.classList.toggle("active", i === index);
+  });
+  const p = periods[index];
+  const box = document.getElementById("detail");
+  if (!p) {
+    box.innerHTML = `<h2>调仓详情</h2><div class="empty">无调仓数据</div>`;
+    return;
+  }
+  const sellRows = (p.sells || []).map(t =>
+    `<tr><td class="side-sell">卖出</td><td>${symLink(t.symbol)}</td><td>${t.name || ""}</td>
+     <td>${num(t.price, 3)}</td><td>${num(t.shares, 0)}</td><td>${num(t.notional, 0)}</td></tr>`
+  ).join("");
+  const buyRows = (p.buys || []).map(t =>
+    `<tr><td class="side-buy">买入</td><td>${symLink(t.symbol)}</td><td>${t.name || ""}</td>
+     <td>${num(t.price, 3)}</td><td>${num(t.shares, 0)}</td><td>${num(t.notional, 0)}</td></tr>`
+  ).join("");
+  const selRows = (p.selection || []).map(s =>
+    `<tr><td>${symLink(s.symbol)}</td><td>${s.name || ""}</td><td>${num(s.close, 2)}</td>
+     <td>${num(s.float_market_cap || s.rank_market_cap, 0)}</td></tr>`
+  ).join("");
+  box.innerHTML = `
+    <h2>调仓详情 · ${p.date}</h2>
+    <div class="row">持有区间至 <b>${p.next_date || "-"}</b>
+      · 期初权益 <b>${num(p.equity_start, 0)}</b>
+      · 期末权益 <b>${num(p.equity_end, 0)}</b>
+      · 区间盈亏 <b class="${clsRet(p.period_pnl)}">${num(p.period_pnl, 0)}</b>
+      · 区间收益 <b class="${clsRet(p.period_return)}">${pct(p.period_return)}</b>
+    </div>
+    <div class="row">卖出 ${p.sell_count} / 买入 ${p.buy_count} · 调仓后现金 ${num(p.cash, 0)}</div>
+    <div class="tables">
+      <div>
+        <h2>当日卖出</h2>
+        <div class="scroll"><table>
+          <thead><tr><th>方向</th><th>代码</th><th>名称</th><th>价格</th><th>股数</th><th>成交额</th></tr></thead>
+          <tbody>${sellRows || '<tr><td colspan="6" class="empty">无卖出</td></tr>'}</tbody>
+        </table></div>
+      </div>
+      <div>
+        <h2>当日买入</h2>
+        <div class="scroll"><table>
+          <thead><tr><th>方向</th><th>代码</th><th>名称</th><th>价格</th><th>股数</th><th>成交额</th></tr></thead>
+          <tbody>${buyRows || '<tr><td colspan="6" class="empty">无买入</td></tr>'}</tbody>
+        </table></div>
+      </div>
+    </div>
+    <h2 style="margin-top:12px">目标持仓（选股）</h2>
+    <div class="scroll"><table>
+      <thead><tr><th>代码</th><th>名称</th><th>收盘价</th><th>流通市值</th></tr></thead>
+      <tbody>${selRows || '<tr><td colspan="4" class="empty">无</td></tr>'}</tbody>
+    </table></div>
+  `;
+  const active = document.querySelector(`.period-item[data-index="${index}"]`);
+  if (active) active.scrollIntoView({ block: "nearest" });
+}
+
+function renderPeriodList() {
+  const list = document.getElementById("periodList");
+  const periods = DATA.periods || [];
+  list.innerHTML = periods.map((p, i) => `
+    <div class="period-item" data-index="${i}">
+      <span class="d">${p.date}</span>
+      <span class="r ${clsRet(p.period_return)}">${pct(p.period_return)}</span>
+      <div style="color:var(--muted);margin-top:2px">卖${p.sell_count} / 买${p.buy_count}</div>
+    </div>
+  `).join("") || `<div class="empty">无调仓</div>`;
+  list.querySelectorAll(".period-item").forEach(el => {
+    el.addEventListener("click", () => selectPeriod(Number(el.getAttribute("data-index"))));
+  });
+}
+
+function renderTrades() {
+  const dateQ = (document.getElementById("filterDate").value || "").trim();
+  const symQ = (document.getElementById("filterSymbol").value || "").trim().toLowerCase();
+  const rows = (DATA.trades || []).filter(t => {
+    if (dateQ && !(t.date || "").includes(dateQ)) return false;
+    if (symQ) {
+      const blob = `${t.symbol} ${t.name || ""}`.toLowerCase();
+      if (!blob.includes(symQ)) return false;
+    }
+    return true;
+  });
+  document.getElementById("tradeBody").innerHTML = rows.map(t => `
+    <tr>
+      <td>${t.date}</td>
+      <td class="${t.side === "buy" ? "side-buy" : "side-sell"}">${sideLabel(t.side)}</td>
+      <td>${reasonLabel(t.reason)}</td>
+      <td>${symLink(t.symbol)}</td><td>${t.name || ""}</td>
+      <td>${num(t.price, 3)}</td><td>${num(t.shares, 0)}</td>
+      <td>${num(t.notional, 0)}</td><td>${num(t.cost, 2)}</td>
+    </tr>
+  `).join("") || `<tr><td colspan="9" class="empty">无匹配成交</td></tr>`;
+}
+
+function renderTrips() {
+  document.getElementById("tripBody").innerHTML = (DATA.round_trips || []).map(t => `
+    <tr>
+      <td>${symLink(t.symbol)}</td><td>${t.name || ""}</td>
+      <td>${t.buy_date}</td><td>${t.sell_date}</td>
+      <td>${num(t.shares, 0)}</td>
+      <td>${num(t.buy_price, 3)}</td><td>${num(t.sell_price, 3)}</td>
+      <td class="${clsRet(t.pnl)}">${num(t.pnl, 0)}</td>
+      <td class="${clsRet(t.pnl_pct)}">${pct(t.pnl_pct)}</td>
+    </tr>
+  `).join("") || `<tr><td colspan="9" class="empty">无已平仓回合</td></tr>`;
+}
+
+function renderSymbolList() {
+  const q = (document.getElementById("filterSymList").value || "").trim().toLowerCase();
+  const rows = (DATA.symbol_index || []).filter(s => {
+    if (!q) return true;
+    return `${s.symbol} ${s.name || ""}`.toLowerCase().includes(q);
+  });
+  document.getElementById("symbolList").innerHTML = rows.map(s => `
+    <div class="symbol-item" data-symbol="${s.symbol}">
+      <span class="sym">${s.symbol}</span>
+      <span class="nm">${s.name || ""}</span>
+      <span class="cnt">成交${s.trade_count}</span>
+      <span class="${clsRet(s.pnl)}">${num(s.pnl, 0)}</span>
+    </div>
+  `).join("") || `<div class="empty">无成交个股</div>`;
+}
+
+function parseBar(p) {
+  if (!p || !p.length) return null;
+  if (p.length >= 5) {
+    return { date: p[0], open: p[1], high: p[2], low: p[3], close: p[4], ohlc: true };
+  }
+  return { date: p[0], open: p[1], high: p[1], low: p[1], close: p[1], ohlc: false };
+}
+
+function normDate(d) {
+  const s = String(d || "").trim();
+  return s.length >= 10 ? s.slice(0, 10) : s;
+}
+
+function findBarIndex(series, date) {
+  if (!series.length) return -1;
+  const target = normDate(date);
+  if (!target) return -1;
+  // 成交日早于价格序列：不可回落到第 0 根，否则买卖点会堆在开头
+  if (target < normDate(series[0].date)) return -1;
+  const exact = series.findIndex(p => normDate(p.date) === target);
+  if (exact >= 0) return exact;
+  if (target > normDate(series[series.length - 1].date)) return series.length - 1;
+  let lo = 0, hi = series.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (normDate(series[mid].date) < target) lo = mid + 1;
+    else hi = mid;
+  }
+  let i = lo;
+  if (i > 0 && normDate(series[i].date) > target) i = i - 1;
+  return i;
+}
+
+function zoomAroundTrades(series, trades, padBars) {
+  if (!series.length || !trades.length) return { lo: 0, hi: series.length - 1 };
+  const idxs = trades.map(t => findBarIndex(series, t.date)).filter(i => i >= 0);
+  if (!idxs.length) return { lo: 0, hi: Math.min(series.length - 1, 80) };
+  let lo = Math.max(0, Math.min(...idxs) - padBars);
+  let hi = Math.min(series.length - 1, Math.max(...idxs) + padBars);
+  const minSpan = Math.min(series.length, 60);
+  if (hi - lo + 1 < minSpan) {
+    const mid = Math.round((lo + hi) / 2);
+    const half = Math.floor(minSpan / 2);
+    lo = Math.max(0, mid - half);
+    hi = Math.min(series.length - 1, lo + minSpan - 1);
+  }
+  return { lo, hi };
+}
+
+const symbolChartState = {
+  full: [],
+  hasOhlc: false,
+  trades: [],
+  i0: 0,
+  i1: 0,
+  dragging: false,
+  dragStartX: 0,
+  dragI0: 0,
+  dragI1: 0,
+  bound: false,
+};
+
+function clampSymbolView() {
+  const n = symbolChartState.full.length;
+  if (n <= 1) {
+    symbolChartState.i0 = 0;
+    symbolChartState.i1 = Math.max(0, n - 1);
+    return;
+  }
+  let i0 = Math.max(0, Math.min(symbolChartState.i0, n - 2));
+  let i1 = Math.max(i0 + 1, Math.min(symbolChartState.i1, n - 1));
+  symbolChartState.i0 = i0;
+  symbolChartState.i1 = i1;
+}
+
+function zoomSymbolAround(frac, factor) {
+  const n = symbolChartState.full.length;
+  if (n < 3) return;
+  clampSymbolView();
+  const span = symbolChartState.i1 - symbolChartState.i0;
+  let newSpan = Math.max(12, Math.min(n - 1, Math.round(span * factor)));
+  const center = symbolChartState.i0 + span * Math.max(0, Math.min(1, frac));
+  let i0 = Math.round(center - newSpan * frac);
+  let i1 = i0 + newSpan;
+  if (i0 < 0) { i1 -= i0; i0 = 0; }
+  if (i1 > n - 1) { i0 -= (i1 - (n - 1)); i1 = n - 1; }
+  symbolChartState.i0 = Math.max(0, i0);
+  symbolChartState.i1 = Math.min(n - 1, i1);
+  drawSymbolChart();
+}
+
+function bindSymbolChartInteractions() {
+  if (symbolChartState.bound) return;
+  symbolChartState.bound = true;
+  const svg = document.getElementById("symbolChart");
+  svg.addEventListener("wheel", (ev) => {
+    ev.preventDefault();
+    if (symbolChartState.full.length < 3) return;
+    const rect = svg.getBoundingClientRect();
+    const frac = (ev.clientX - rect.left) / Math.max(rect.width, 1);
+    zoomSymbolAround(frac, ev.deltaY > 0 ? 1.25 : 0.8);
+  }, { passive: false });
+  svg.addEventListener("mousedown", (ev) => {
+    if (ev.button !== 0) return;
+    if (symbolChartState.full.length < 3) return;
+    clampSymbolView();
+    symbolChartState.dragging = true;
+    symbolChartState.dragStartX = ev.clientX;
+    symbolChartState.dragI0 = symbolChartState.i0;
+    symbolChartState.dragI1 = symbolChartState.i1;
+    svg.style.cursor = "grabbing";
+  });
+  window.addEventListener("mousemove", (ev) => {
+    if (!symbolChartState.dragging) return;
+    const n = symbolChartState.full.length;
+    const svgEl = document.getElementById("symbolChart");
+    const rect = svgEl.getBoundingClientRect();
+    const span = symbolChartState.dragI1 - symbolChartState.dragI0;
+    const dx = ev.clientX - symbolChartState.dragStartX;
+    const shift = Math.round((-dx / Math.max(rect.width, 1)) * span);
+    let i0 = symbolChartState.dragI0 + shift;
+    let i1 = i0 + span;
+    if (i0 < 0) { i1 -= i0; i0 = 0; }
+    if (i1 > n - 1) { i0 -= (i1 - (n - 1)); i1 = n - 1; }
+    symbolChartState.i0 = Math.max(0, i0);
+    symbolChartState.i1 = Math.min(n - 1, i1);
+    drawSymbolChart();
+  });
+  window.addEventListener("mouseup", () => {
+    if (!symbolChartState.dragging) return;
+    symbolChartState.dragging = false;
+    const svgEl = document.getElementById("symbolChart");
+    if (svgEl) svgEl.style.cursor = "crosshair";
+  });
+  svg.addEventListener("dblclick", () => {
+    const win = zoomAroundTrades(symbolChartState.full, symbolChartState.trades, 45);
+    symbolChartState.i0 = win.lo;
+    symbolChartState.i1 = win.hi;
+    drawSymbolChart();
+  });
+}
+
+function drawSymbolChart() {
+  const svg = document.getElementById("symbolChart");
+  const full = symbolChartState.full;
+  const trades = symbolChartState.trades;
+  const hasOhlc = symbolChartState.hasOhlc;
+  const W = 900, H = 340;
+  const pad = { l: 52, r: 16, t: 20, b: 30 };
+  if (!full.length) {
+    svg.innerHTML = `<text x="20" y="40" fill="#9aa0a6" font-size="13">无价格序列（本地缓存缺失）</text>`;
+    return;
+  }
+  clampSymbolView();
+  const series = full.slice(symbolChartState.i0, symbolChartState.i1 + 1);
+  const ysHigh = series.map(p => p.high);
+  const ysLow = series.map(p => p.low);
+  const tradeYs = trades.map(t => t.price).filter(v => v != null && !Number.isNaN(v));
+  const minY = Math.min(...ysLow, ...(tradeYs.length ? tradeYs : ysLow));
+  const maxY = Math.max(...ysHigh, ...(tradeYs.length ? tradeYs : ysHigh));
+  const spanY = (maxY - minY) || 1;
+  const xOf = i => pad.l + (i / Math.max(series.length - 1, 1)) * (W - pad.l - pad.r);
+  const yOf = v => pad.t + (1 - (v - minY) / spanY) * (H - pad.t - pad.b);
+  const slot = (W - pad.l - pad.r) / Math.max(series.length, 1);
+  const halfW = Math.max(0.8, Math.min(4.5, slot * 0.35));
+  const markOffY = Math.max(8, Math.min(16, (H - pad.t - pad.b) * 0.06));
+  const markOffX = Math.max(4, halfW + 3);
+
+  let body = "";
+  if (hasOhlc) {
+    series.forEach((p, i) => {
+      const x = xOf(i);
+      const up = p.close >= p.open;
+      const color = up ? "#ef5350" : "#26a69a";
+      const yH = yOf(p.high), yL = yOf(p.low), yO = yOf(p.open), yC = yOf(p.close);
+      const top = Math.min(yO, yC);
+      const bodyH = Math.max(Math.abs(yC - yO), 1.2);
+      body += `<line x1="${x.toFixed(2)}" y1="${yH.toFixed(2)}" x2="${x.toFixed(2)}" y2="${yL.toFixed(2)}" stroke="${color}" stroke-width="1"/>`;
+      body += `<rect x="${(x - halfW).toFixed(2)}" y="${top.toFixed(2)}" width="${(halfW * 2).toFixed(2)}" height="${bodyH.toFixed(2)}" fill="${color}">
+        <title>${p.date} O${p.open.toFixed(2)} H${p.high.toFixed(2)} L${p.low.toFixed(2)} C${p.close.toFixed(2)}</title></rect>`;
+    });
+  } else {
+    const path = series.map((p, i) => `${i === 0 ? "M" : "L"}${xOf(i).toFixed(2)},${yOf(p.close).toFixed(2)}`).join(" ");
+    body = `<path d="${path}" fill="none" stroke="#4fc3f7" stroke-width="1.8"/>`;
+  }
+
+  const daySides = {};
+  trades.forEach(t => {
+    if (!t.date) return;
+    const slotDay = daySides[t.date] || (daySides[t.date] = { buy: 0, sell: 0 });
+    if (t.side === "buy") slotDay.buy += 1;
+    if (t.side === "sell") slotDay.sell += 1;
+  });
+
+  let marks = "";
+  trades.forEach(t => {
+    const absIdx = findBarIndex(full, t.date);
+    if (absIdx < symbolChartState.i0 || absIdx > symbolChartState.i1) return;
+    const i = absIdx - symbolChartState.i0;
+    const bar = series[i];
+    const sides = daySides[t.date] || { buy: 0, sell: 0 };
+    const both = sides.buy > 0 && sides.sell > 0;
+    let x = xOf(i);
+    let y = yOf(t.price != null ? t.price : bar.close);
+    if (t.side === "sell") {
+      if (both) { x += markOffX; y += markOffY; }
+      else { y += markOffY * 0.35; }
+      marks += `<path d="${triDown(x, y, 7)}" fill="#ffb74d" stroke="#0f1115" stroke-width="1.2">
+        <title>${t.date} 卖出 ${num(t.price, 3)} × ${num(t.shares, 0)}</title></path>`;
+    } else if (t.side === "buy") {
+      if (both) { x -= markOffX; y -= markOffY; }
+      else { y -= markOffY * 0.35; }
+      marks += `<path d="${triUp(x, y, 7)}" fill="#66bb6a" stroke="#0f1115" stroke-width="1.2">
+        <title>${t.date} 买入 ${num(t.price, 3)} × ${num(t.shares, 0)}</title></path>`;
+    }
+  });
+  const viewNote = (symbolChartState.i0 > 0 || symbolChartState.i1 < full.length - 1)
+    ? `${series[0].date} ~ ${series[series.length - 1].date}（${series.length}/${full.length} · 滚轮缩放）`
+    : `${series[0].date} ~ ${series[series.length - 1].date}`;
+  svg.innerHTML = `
+    <rect x="0" y="0" width="${W}" height="${H}" fill="#0f1115"/>
+    ${body}
+    ${marks}
+    <text x="${pad.l}" y="14" fill="#9aa0a6" font-size="11">${hasOhlc ? "日K" : "收盘价"} · 滚轮缩放/拖拽/双击复位</text>
+    <text x="${pad.l}" y="${H - 8}" fill="#9aa0a6" font-size="11">${viewNote}</text>
+    <text x="${W - pad.r}" y="${H - 8}" fill="#9aa0a6" font-size="11" text-anchor="end">${series[series.length - 1].date}</text>
+    <text x="${pad.l - 6}" y="${yOf(maxY) + 4}" fill="#9aa0a6" font-size="10" text-anchor="end">${maxY.toFixed(2)}</text>
+    <text x="${pad.l - 6}" y="${yOf(minY) + 4}" fill="#9aa0a6" font-size="10" text-anchor="end">${minY.toFixed(2)}</text>
+  `;
+}
+
+function renderSymbolChart(info) {
+  const hasOhlc = !!info.has_ohlc;
+  let series = (info.prices || []).map(parseBar).filter(Boolean);
+  const trades = info.trades || [];
+  if (!series.length) {
+    const byDate = {};
+    trades.forEach(t => {
+      if (!t.date || t.price == null) return;
+      byDate[t.date] = t.price;
+    });
+    series = Object.keys(byDate).sort().map(d => ({
+      date: d, open: byDate[d], high: byDate[d], low: byDate[d], close: byDate[d], ohlc: false
+    }));
+  }
+  symbolChartState.full = series;
+  symbolChartState.hasOhlc = hasOhlc;
+  symbolChartState.trades = trades;
+  const win = zoomAroundTrades(series, trades, 45);
+  symbolChartState.i0 = win.lo;
+  symbolChartState.i1 = win.hi;
+  drawSymbolChart();
+  bindSymbolChartInteractions();
+}
+
+function openSymbol(symbol) {
+  const info = (DATA.by_symbol || {})[symbol];
+  const modal = document.getElementById("symbolModal");
+  if (!info) {
+    return;
+  }
+  document.getElementById("symbolModalTitle").textContent =
+    `${info.symbol} ${info.name || ""}`.trim();
+  const buys = (info.trades || []).filter(t => t.side === "buy").length;
+  const sells = (info.trades || []).filter(t => t.side === "sell").length;
+  const pnl = (info.round_trips || []).reduce((a, t) => a + (t.pnl || 0), 0);
+  document.getElementById("symbolModalSub").textContent =
+    `买入 ${buys} 笔 · 卖出 ${sells} 笔 · 回合盈亏合计 ${num(pnl, 0)}` +
+    (info.has_ohlc
+      ? ` · 日K ${(info.prices || []).length} 根（默认围绕买卖点；滚轮/拖拽可缩放）`
+      : ((info.prices || []).length
+        ? ` · 仅收盘价 ${(info.prices || []).length} 根（无OHLC缓存）`
+        : " · 无本地日线，按成交价示意"));
+  renderSymbolChart(info);
+  document.getElementById("symbolTradeBody").innerHTML = (info.trades || []).map(t => `
+    <tr>
+      <td>${t.date}</td>
+      <td class="${t.side === "buy" ? "side-buy" : "side-sell"}">${sideLabel(t.side)}</td>
+      <td>${num(t.price, 3)}</td><td>${num(t.shares, 0)}</td>
+      <td>${num(t.notional, 0)}</td><td>${num(t.cost, 2)}</td>
+    </tr>
+  `).join("") || `<tr><td colspan="6" class="empty">无成交</td></tr>`;
+  document.getElementById("symbolTripBody").innerHTML = (info.round_trips || []).map(t => `
+    <tr>
+      <td>${t.buy_date}</td><td>${t.sell_date}</td>
+      <td>${num(t.buy_price, 3)}</td><td>${num(t.sell_price, 3)}</td>
+      <td class="${clsRet(t.pnl)}">${num(t.pnl, 0)}</td>
+      <td class="${clsRet(t.pnl_pct)}">${pct(t.pnl_pct)}</td>
+    </tr>
+  `).join("") || `<tr><td colspan="6" class="empty">无已平仓回合</td></tr>`;
+  modal.classList.add("open");
+}
+
+function closeSymbolModal() {
+  document.getElementById("symbolModal").classList.remove("open");
+}
+
+function boot() {
+  document.getElementById("strategyId").textContent = DATA.strategy_id || "-";
+  const eq = DATA.equity || [];
+  const start = eq[0]?.date || "-";
+  const end = eq[eq.length - 1]?.date || "-";
+  document.getElementById("headerMeta").textContent =
+    `区间 ${start} ~ ${end} · asof=${DATA.asof || "-"} · mode=${DATA.mode || "-"} · 个股 ${(DATA.symbol_index || []).length}`;
+  const notes = [];
+  if (DATA.universe_note) notes.push(DATA.universe_note);
+  (DATA.warnings || []).forEach(w => notes.push(w));
+  if (DATA.disclaimer) notes.push(DATA.disclaimer);
+  document.getElementById("footerNote").textContent = notes.join(" · ");
+  renderStats();
+  renderChart();
+  renderPeriodList();
+  renderSymbolList();
+  renderTrades();
+  renderTrips();
+  if ((DATA.periods || []).length) selectPeriod(0);
+  document.getElementById("filterDate").addEventListener("input", renderTrades);
+  document.getElementById("filterSymbol").addEventListener("input", renderTrades);
+  document.getElementById("filterSymList").addEventListener("input", renderSymbolList);
+  document.getElementById("symbolModalClose").addEventListener("click", closeSymbolModal);
+  document.getElementById("symbolModal").addEventListener("click", (ev) => {
+    if (ev.target.id === "symbolModal") closeSymbolModal();
+  });
+  document.addEventListener("keydown", (ev) => {
+    if (ev.key === "Escape") closeSymbolModal();
+  });
+  document.body.addEventListener("click", (ev) => {
+    const el = ev.target.closest("[data-symbol]");
+    if (!el) return;
+    const sym = el.getAttribute("data-symbol");
+    if (!sym || !(DATA.by_symbol || {})[sym]) return;
+    ev.preventDefault();
+    openSymbol(sym);
+  });
+}
+boot();
+</script>
+</body>
+</html>

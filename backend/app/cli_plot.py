@@ -529,11 +529,94 @@ def render_portfolio_figure(out: dict[str, Any], dest: Path) -> list[Path]:
 
     xs = range(len(dates))
     ax0.plot(xs, norm, color="#4fc3f7", linewidth=1.4, label="组合净值")
+
+    bm = (out.get("benchmarks") or {}).get("hs300") or {}
+    bm_rows = bm.get("equity") or []
+    bm_map = {}
+    for row in bm_rows:
+        d = _norm_date(str(row.get("date", "")))
+        nav = _nf(row.get("nav"))
+        if nav is None:
+            eqv = _nf(row.get("equity"))
+            bm_cash = _nf((bm.get("metrics") or {}).get("initial_cash")) or ic
+            if eqv is not None and bm_cash and bm_cash > 0:
+                nav = eqv / bm_cash
+        if d and nav is not None:
+            bm_map[d] = nav
+    if bm_map:
+        bm_vals = [bm_map.get(d, float("nan")) for d in dates]
+        ax0.plot(xs, bm_vals, color="#ffb74d", linewidth=1.2, linestyle="--", label="沪深300")
+
+    # 按日聚合买卖：同日多笔成交叠在同一净值点会糊成一团
+    trades = out.get("trades") or []
+    date_to_i = {d: i for i, d in enumerate(dates)}
+    day_buy: dict[str, int] = {}
+    day_sell: dict[str, int] = {}
+    for t in trades:
+        d = _norm_date(str(t.get("date", "")))
+        if d not in date_to_i:
+            continue
+        side = str(t.get("side") or "").lower()
+        if side == "buy":
+            day_buy[d] = day_buy.get(d, 0) + 1
+        elif side == "sell":
+            day_sell[d] = day_sell.get(d, 0) + 1
+
+    finite_norm = [v for v in norm if v == v]
+    y_span = (max(finite_norm) - min(finite_norm)) if finite_norm else 0.1
+    y_off = max(0.01, y_span * 0.045)
+
+    buy_x, buy_y, sell_x, sell_y = [], [], [], []
+    for d in day_buy:
+        i = date_to_i[d]
+        # 同日有卖出时买点上移，避免与卖点重合
+        buy_x.append(i)
+        buy_y.append(norm[i] + (y_off if d in day_sell else y_off * 0.35))
+    for d in day_sell:
+        i = date_to_i[d]
+        sell_x.append(i)
+        sell_y.append(norm[i] - (y_off if d in day_buy else y_off * 0.35))
+
+    if buy_x:
+        ax0.scatter(buy_x, buy_y, marker="^", c="#66bb6a", s=36, zorder=5, label="买入日")
+    if sell_x:
+        ax0.scatter(sell_x, sell_y, marker="v", c="#ffb74d", s=36, zorder=5, label="卖出日")
+    for d, n_buy in day_buy.items():
+        if n_buy <= 1:
+            continue
+        i = date_to_i[d]
+        ax0.annotate(
+            str(n_buy),
+            (i, norm[i] + (y_off if d in day_sell else y_off * 0.35)),
+            textcoords="offset points",
+            xytext=(0, 6),
+            ha="center",
+            fontsize=7,
+            color="#66bb6a",
+            zorder=6,
+        )
+    for d, n_sell in day_sell.items():
+        if n_sell <= 1:
+            continue
+        i = date_to_i[d]
+        ax0.annotate(
+            str(n_sell),
+            (i, norm[i] - (y_off if d in day_buy else y_off * 0.35)),
+            textcoords="offset points",
+            xytext=(0, -10),
+            ha="center",
+            fontsize=7,
+            color="#ffb74d",
+            zorder=6,
+        )
+
     ax0.axhline(1.0, color="#9aa0a6", linestyle="--", linewidth=0.7, alpha=0.7)
     ax0.set_ylabel("净值", color="#e8eaed")
     title = f"组合回测 {out.get('strategy_id', '')} | asof={out.get('asof') or '-'}"
     ax0.set_title(title, color="#e8eaed", fontsize=11)
-    ax0.legend(facecolor="#1a1d24", edgecolor="#2a2f3a", labelcolor="#e8eaed")
+    ax0.legend(facecolor="#1a1d24", edgecolor="#2a2f3a", labelcolor="#e8eaed", fontsize=8)
+    rd_ratio = _nf(metrics.get("return_drawdown_ratio"))
+    rd_txt = f"{rd_ratio:.2f}" if rd_ratio is not None else "-"
     ax0.text(
         0.01,
         0.03,
@@ -541,6 +624,8 @@ def render_portfolio_figure(out: dict[str, Any], dest: Path) -> list[Path]:
             f"总收益 {_fmt_percent(metrics.get('total_return'))} | "
             f"年化 {_fmt_percent(metrics.get('annualized_return'))} | "
             f"回撤 {_fmt_percent(metrics.get('max_drawdown'))} | "
+            f"收益/回撤 {rd_txt} | "
+            f"超额 {_fmt_percent(metrics.get('excess_total_return'))} | "
             f"Sharpe {_nf(metrics.get('sharpe')) or 0:.2f}"
         ),
         transform=ax0.transAxes,

@@ -1,4 +1,4 @@
-"""涨停回落埋伏：近 N 日有涨停但未大幅上涨，低价小盘盈利，低位均线整理后等权持有。"""
+"""涨停回落埋伏：近 N 日有涨停且窗口内未亏损、未大幅上涨，低价小盘盈利，低位均线整理后等权持有。"""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ import pandas as pd
 from pydantic import BaseModel, Field, model_validator
 
 from app.portfolio.base import PortfolioSelectContext, PortfolioStrategySpec
-from app.portfolio.common import asof_tradeable_row, is_st_stock
+from app.portfolio.common import asof_tradeable_row, is_hs_main_board_symbol, is_st_stock
 
 
 class LimitUpPullbackParams(BaseModel):
@@ -23,8 +23,11 @@ class LimitUpPullbackParams(BaseModel):
     forbid_consecutive_limit_ups: bool = Field(
         True, description="排除窗口内出现连板（连续两日涨停）"
     )
+    min_period_return: float = Field(
+        0.0, ge=-1.0, le=5.0, description="观察窗口累计涨幅下限（默认0=窗口内股价未亏损）"
+    )
     max_period_return: float = Field(
-        0.35, ge=0.0, le=5.0, description="观察窗口累计涨幅上限（未大幅上涨）"
+        0.20, ge=0.0, le=5.0, description="观察窗口累计涨幅上限（默认<20%）"
     )
     min_price: float = Field(2.0, ge=0)
     max_price: float = Field(20.0, gt=0)
@@ -52,6 +55,10 @@ class LimitUpPullbackParams(BaseModel):
         default_factory=list,
         description="可选概念叠加白名单（空=不启用；非空则仅保留名单内标的）",
     )
+    main_board_only: bool = Field(
+        True,
+        description="仅沪深主板（含原中小板），排除创业板/科创板/北交所",
+    )
     exclude_st: bool = True
     exclude_limit: bool = True
     exclude_suspended: bool = True
@@ -61,6 +68,8 @@ class LimitUpPullbackParams(BaseModel):
     def check_ranges(self) -> LimitUpPullbackParams:
         if self.max_price < self.min_price:
             raise ValueError("max_price 不能小于 min_price")
+        if self.max_period_return < self.min_period_return:
+            raise ValueError("max_period_return 不能小于 min_period_return")
         if not (self.ma_fast < self.ma_mid < self.ma_slow):
             raise ValueError("须满足 ma_fast < ma_mid < ma_slow")
         if not self.allow_mild_ma_up and not self.allow_platform:
@@ -167,6 +176,8 @@ def select_limit_up_pullback(
     for symbol, payload in ctx.panel.items():
         if concept and symbol not in concept:
             continue
+        if params.main_board_only and not is_hs_main_board_symbol(symbol):
+            continue
         value_df = payload.get("value")
         if value_df is None or value_df.empty:
             continue
@@ -217,7 +228,7 @@ def select_limit_up_pullback(
         if not np.isfinite(c0) or not np.isfinite(c1) or c0 <= 0:
             continue
         period_ret = c1 / c0 - 1.0
-        if period_ret > params.max_period_return:
+        if period_ret < params.min_period_return or period_ret >= params.max_period_return:
             continue
 
         pos_hist = hist.tail(params.position_lookback)
@@ -272,14 +283,14 @@ def select_limit_up_pullback(
 STRATEGY = PortfolioStrategySpec(
     id="limit_up_pullback",
     name="涨停回落埋伏",
-    description="近40日有涨停且回落、未大幅上涨；低价小盘盈利、月线相对低位、均线略多或平台整理",
+    description="近40日有涨停且回落、窗口内未亏损亦未大幅上涨；低价小盘盈利、月线相对低位、均线略多或平台整理",
     params_model=LimitUpPullbackParams,
     select=select_limit_up_pullback,
     default_universe="all_a",
     needs_dividend=False,
     default_top_n=10,
     warnings=(
-        "涨停用日涨跌幅阈值近似，非交易所正式涨停状态；科创/创业板 20% 阈值需自行放宽 limit_up_pct。",
+        "涨停用日涨跌幅阈值近似，非交易所正式涨停状态；默认 main_board_only=true 排除创业/科创/北交。",
         "「相对低位」用日线高低分位近似月线位置；概念叠加请用 concept_symbols 白名单人工筛入。",
         "小盘低价股容量有限，建议保留较高滑点；截面与名称过滤存在幸存者偏差。",
     ),

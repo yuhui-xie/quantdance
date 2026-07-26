@@ -127,7 +127,6 @@ def fetch_a_share_daily(
 def fetch_a_share_universe(
     max_universe: int = 200,
     *,
-    universe_cap: int = 500,
     seed: int | None = None,
 ) -> tuple[list[dict[str, str]], str]:
     """
@@ -137,9 +136,7 @@ def fetch_a_share_universe(
     """
     if max_universe < 1:
         raise ValueError("max_universe 至少为 1")
-    if universe_cap < 1:
-        raise ValueError("universe_cap 至少为 1")
-    n_take = min(max_universe, universe_cap)
+    n_take = max_universe
 
     try:
         rows = AStockDataSDK().get_universe()
@@ -175,6 +172,73 @@ def _first_existing_column(df: pd.DataFrame, names: tuple[str, ...]) -> str | No
         if name in df.columns:
             return name
     return None
+
+
+def fetch_hs300_index_daily(
+    start: str | date | datetime,
+    end: str | date | datetime,
+) -> pd.DataFrame:
+    """拉取沪深300指数日线，返回列 date/close（date 为 YYYY-MM-DD）。"""
+    start_s = _to_yyyymmdd(start)
+    end_s = _to_yyyymmdd(end)
+    try:
+        import akshare as ak  # type: ignore[import-not-found]
+    except Exception as e:  # pragma: no cover - 依赖环境分支
+        raise MarketDataError(f"akshare 不可用，无法获取沪深300指数: {e}") from e
+
+    errors: list[str] = []
+    raw: pd.DataFrame | None = None
+    calls: tuple[tuple[str, dict[str, Any]], ...] = (
+        (
+            "index_zh_a_hist",
+            {
+                "symbol": "000300",
+                "period": "daily",
+                "start_date": start_s,
+                "end_date": end_s,
+            },
+        ),
+        ("stock_zh_index_daily_em", {"symbol": "sh000300"}),
+        ("stock_zh_index_daily", {"symbol": "sh000300"}),
+    )
+    for func_name, kwargs in calls:
+        func = getattr(ak, func_name, None)
+        if not callable(func):
+            continue
+        try:
+            df = func(**kwargs)
+        except Exception as e:
+            errors.append(f"{func_name}: {e}")
+            continue
+        if isinstance(df, pd.DataFrame) and not df.empty:
+            raw = df
+            break
+
+    if raw is None:
+        detail = "；".join(errors) if errors else "未找到可用的 akshare 指数接口"
+        raise MarketDataError(f"沪深300指数行情获取失败: {detail}")
+
+    date_col = _first_existing_column(raw, ("日期", "date", "time", "datetime"))
+    close_col = _first_existing_column(raw, ("收盘", "close", "Close"))
+    if date_col is None or close_col is None:
+        raise MarketDataError("沪深300指数行情缺少日期或收盘列")
+
+    out = pd.DataFrame(
+        {
+            "date": pd.to_datetime(raw[date_col], errors="coerce"),
+            "close": pd.to_numeric(raw[close_col], errors="coerce"),
+        }
+    )
+    out = out.dropna(subset=["date", "close"])
+    out = out[out["close"] > 0]
+    start_ts = pd.to_datetime(start_s, format="%Y%m%d")
+    end_ts = pd.to_datetime(end_s, format="%Y%m%d")
+    out = out[(out["date"] >= start_ts) & (out["date"] <= end_ts)]
+    out = out.sort_values("date").drop_duplicates("date", keep="last")
+    if out.empty:
+        raise MarketDataError("指定区间内沪深300指数行情为空")
+    out["date"] = out["date"].dt.strftime("%Y-%m-%d")
+    return out.reset_index(drop=True)
 
 
 def _load_index_constituents_from_akshare(index_code: str) -> pd.DataFrame:

@@ -7,11 +7,33 @@ from typing import Any
 import pandas as pd
 
 from app.data_sources.em_fundamentals import asof_fundamental_row
+from app.data_sources.market_data import normalize_a_share_symbol
 
 
 def is_st_stock(name: str | None) -> bool:
     n = (name or "").upper()
     return "ST" in n or "退" in n
+
+
+def is_hs_main_board_symbol(symbol: str) -> bool:
+    """是否沪深主板 A 股（含原深市中小板）。
+
+    保留：沪市 60xxxx、深市 000/001/002/003。
+    排除：创业板 300/301、科创板 688/689、北交所 4/8/92 开头。
+    """
+    try:
+        code = normalize_a_share_symbol(symbol)
+    except ValueError:
+        return False
+    if code.startswith(("300", "301", "688", "689")):
+        return False
+    if code.startswith(("4", "8")) or code.startswith("92"):
+        return False
+    if code.startswith("60"):
+        return True
+    if code.startswith(("000", "001", "002", "003")):
+        return True
+    return False
 
 
 def asof_tradeable_row(

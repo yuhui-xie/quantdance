@@ -265,7 +265,12 @@ class PortfolioBacktestRequest(BaseModel):
         description="symbols 为空时的股票池；策略可提供默认值（如中小综指）",
     )
     symbols: list[str] = Field(default_factory=list)
-    max_universe: int = Field(80, ge=1, le=1000)
+    max_universe: int = Field(
+        80,
+        ge=1,
+        le=10000,
+        description="股票池上限；全 A 约 5000+，设够大即可纳入全部（首次拉估值较慢）",
+    )
     seed: int | None = Field(None, description="股票池抽样种子")
     start_date: str | None = Field(None, description="回测起始 YYYY-MM-DD")
     end_date: str | None = Field(None, description="回测结束 / 选股截面日 YYYY-MM-DD")
@@ -280,6 +285,24 @@ class PortfolioBacktestRequest(BaseModel):
     min_commission: float = Field(5.0, ge=0, description="单笔最低佣金（元）")
     slippage: float = Field(0.01, ge=0, le=0.05, description="单边滑点比例，默认 1%")
     lot_size: int = Field(100, ge=1, description="买入整手数（股）")
+    take_profit_arm_pct: float | None = Field(
+        None,
+        gt=0,
+        le=5,
+        description="通用止盈启动阈值 x：相对成本浮盈达到该比例后启动，继续持有",
+    )
+    take_profit_exit_pct: float | None = Field(
+        None,
+        ge=0,
+        le=5,
+        description="通用止盈回落阈值 y：启动后浮盈回落到该比例则卖出（须 < arm）",
+    )
+    stop_loss_pct: float | None = Field(
+        None,
+        gt=0,
+        le=0.8,
+        description="通用止损：相对成本浮亏达到该比例则卖出（如 0.1=跌10%）",
+    )
     use_cache: bool = True
     force_refresh: bool = False
     max_workers: int = Field(8, ge=1, le=32)
@@ -297,6 +320,12 @@ class PortfolioBacktestRequest(BaseModel):
                 raise ValueError("backtest 模式须同时提供 start_date 与 end_date")
         elif s and not e:
             raise ValueError("填写 start_date 时须同时填写 end_date")
+        arm = self.take_profit_arm_pct
+        exit_lvl = self.take_profit_exit_pct
+        if (arm is None) ^ (exit_lvl is None):
+            raise ValueError("take_profit_arm_pct 与 take_profit_exit_pct 须同时设置或同时为空")
+        if arm is not None and exit_lvl is not None and exit_lvl >= arm:
+            raise ValueError("take_profit_exit_pct 必须小于 take_profit_arm_pct")
         return self
 
     model_config = {"extra": "ignore"}
@@ -312,6 +341,10 @@ class PortfolioBacktestResponse(BaseModel):
     trades: list[dict[str, Any]] = Field(default_factory=list)
     rebalances: list[dict[str, Any]] = Field(default_factory=list)
     metrics: dict[str, float] = Field(default_factory=dict)
+    benchmarks: dict[str, Any] = Field(
+        default_factory=dict,
+        description="基准曲线，如 hs300=沪深300指数买入持有",
+    )
     warnings: list[str] = Field(default_factory=list)
     disclaimer: str = "演示用途，不构成投资建议。"
 

@@ -11,7 +11,7 @@ from app.portfolio.base import PortfolioStrategySpec
 def _plugin_module_names() -> list[str]:
     import app.portfolio as portfolio_pkg
 
-    skip = frozenset({"base", "registry", "runner", "common", "universe"})
+    skip = frozenset({"base", "registry", "runner", "common", "universe", "benchmarks"})
     out: list[str] = []
     for mod in pkgutil.iter_modules(portfolio_pkg.__path__):
         if mod.name.startswith("_") or mod.name in skip:

@@ -45,7 +45,7 @@
 | `data_source` | 行情源，目前仅支持 `a_stock_data` |
 | `universe` | `symbols` 为空时的股票池：`all_a` / `hs300` / `zz399101` |
 | `symbols` | 显式股票列表；非空时覆盖 `universe` |
-| `max_universe` | 股票池上限；超出时截取或按 `seed` 抽样（演示用） |
+| `max_universe` | 股票池上限（组合请求 1~10000）；超出时截取或按 `seed` 抽样；全 A 约设 `6000` |
 | `seed` | 抽样随机种子，便于复现 |
 | `start_date` / `end_date` | 回测区间；`screen` 时 `end_date` 为截面日 |
 | `rebalance_freq` | 调仓间隔（**交易日**）：`20`≈月频，`5`≈周频，`1`=每日 |
@@ -54,6 +54,9 @@
 | `min_commission` | 单笔最低佣金（元） |
 | `slippage` | 单边滑点比例（默认 `0.01` = 1%） |
 | `lot_size` | 买入整手数（股，A 股通常 100） |
+| `take_profit_arm_pct` | 通用止盈启动阈值 x：相对成本浮盈达到后继续持有（如 `0.2`）；与 exit 成对出现 |
+| `take_profit_exit_pct` | 通用止盈回落阈值 y：启动后浮盈回落到该比例则卖出（须 `< arm`，如 `0.1`）；仅非调仓日生效 |
+| `stop_loss_pct` | 通用止损：相对成本浮亏达到该比例则卖出（如 `0.1`=跌 10%）；仅非调仓日生效 |
 | `use_cache` | 是否使用本地基本面/财报缓存 |
 | `force_refresh` | 是否强制重新拉取并覆盖缓存 |
 | `max_workers` | 并行拉取估值/财报的线程数 |

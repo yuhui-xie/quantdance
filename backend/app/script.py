@@ -588,6 +588,12 @@ def _resolve_portfolio_body(args: argparse.Namespace) -> PortfolioBacktestReques
         cli_map["min_commission"] = args.min_commission
     if getattr(args, "slippage", None) is not None:
         cli_map["slippage"] = args.slippage
+    if getattr(args, "take_profit_arm_pct", None) is not None:
+        cli_map["take_profit_arm_pct"] = args.take_profit_arm_pct
+    if getattr(args, "take_profit_exit_pct", None) is not None:
+        cli_map["take_profit_exit_pct"] = args.take_profit_exit_pct
+    if getattr(args, "portfolio_stop_loss_pct", None) is not None:
+        cli_map["stop_loss_pct"] = args.portfolio_stop_loss_pct
     if getattr(args, "force_refresh", False):
         cli_map["force_refresh"] = True
     if getattr(args, "no_cache", False):
@@ -635,20 +641,39 @@ def _cmd_portfolio(args: argparse.Namespace) -> int:
         return 0
     output, as_json, plot, report = _resolve_portfolio_output_options(args)
     body = _resolve_portfolio_body(args)
-    out = run_portfolio_request(body).model_dump(mode="json")
+    profile = bool(getattr(args, "profile", True))
+
+    from app.portfolio import runner as portfolio_runner
+    from app.portfolio.timing import StageTimer
+
+    out_timer = StageTimer(title="portfolio output")
+    out = run_portfolio_request(body, profile=False).model_dump(mode="json")
+    out_timer.mark("compute")
+
     _write_json(out, output=output, as_json=as_json)
+    out_timer.mark("write_json")
+
     if plot is not None and out.get("equity"):
         from app.cli_plot import render_portfolio_figure
 
         saved = render_portfolio_figure(out, plot)
+        out_timer.mark("plot")
         print("图表已保存: " + " | ".join(str(p) for p in saved))
         _open_file_with_default_app(plot)
     if report is not None and out.get("equity"):
         from app.cli_portfolio_report import render_portfolio_html
 
         report_path = render_portfolio_html(out, report)
+        out_timer.mark("report")
         print(f"交互报告已保存: {report_path}")
         _open_file_with_default_app(report_path)
+
+    if profile:
+        compute_timer = portfolio_runner.LAST_PROFILE
+        if compute_timer is not None:
+            compute_timer.print()
+        out_timer.print()
+
     if as_json or output is not None:
         if not as_json:
             print(
@@ -864,6 +889,24 @@ def _build_portfolio_cmd(sub: argparse._SubParsersAction[argparse.ArgumentParser
     p.add_argument("--commission", type=float)
     p.add_argument("--min-commission", type=float, dest="min_commission")
     p.add_argument("--slippage", type=float)
+    p.add_argument(
+        "--take-profit-arm-pct",
+        type=float,
+        dest="take_profit_arm_pct",
+        help="通用止盈启动阈值 x（相对成本浮盈，如 0.2=20%%）",
+    )
+    p.add_argument(
+        "--take-profit-exit-pct",
+        type=float,
+        dest="take_profit_exit_pct",
+        help="通用止盈回落卖出阈值 y（须 < arm，如 0.1=10%%）",
+    )
+    p.add_argument(
+        "--stop-loss-pct",
+        type=float,
+        dest="portfolio_stop_loss_pct",
+        help="通用止损：相对成本浮亏阈值（如 0.1=跌10%%）",
+    )
     p.add_argument("--max-workers", type=int, dest="max_workers")
     p.add_argument("--force-refresh", action="store_true", dest="force_refresh")
     p.add_argument("--no-cache", action="store_true", dest="no_cache")
@@ -876,6 +919,12 @@ def _build_portfolio_cmd(sub: argparse._SubParsersAction[argparse.ArgumentParser
     p.add_argument("--limit-pct-threshold", type=float, dest="limit_pct_threshold")
     p.add_argument("--no-dividend-filter", action="store_true", dest="no_dividend_filter")
     p.add_argument("--no-peg-filter", action="store_true", dest="no_peg_filter")
+    p.add_argument(
+        "--profile",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="打印分阶段耗时（默认开启；--no-profile 关闭）",
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:

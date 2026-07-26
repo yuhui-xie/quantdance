@@ -103,11 +103,11 @@ def test_select_picks_limit_up_pullback_and_filters():
 
     asof = str(good["date"].iloc[-1])
     panel = {
-        "GOOD": {"value": good},
-        "BIG": {"value": big},
-        "LOSS": {"value": loss},
-        "NOLU": {"value": no_limit},
-        "LIAN": {"value": consecutive},
+        "000001": {"value": good},
+        "000002": {"value": big},
+        "000004": {"value": loss},
+        "000005": {"value": no_limit},
+        "000006": {"value": consecutive},
     }
     names = {k: "普通" for k in panel}
     # 调仓日不要涨停：最后一根已是小涨
@@ -116,23 +116,70 @@ def test_select_picks_limit_up_pullback_and_filters():
         PortfolioSelectContext(panel=panel, names=names),
         LimitUpPullbackParams(top_n=5, max_market_cap=1e10),
     )
-    assert syms == ["GOOD"]
+    assert syms == ["000001"]
     assert details[0]["limit_up_count"] >= 1
     assert details[0]["platform"] or details[0]["mild_ma_up"]
+
+
+def test_main_board_only_excludes_chinext_star_bse():
+    main = _make_qualifying_history(market_cap=2e9)
+    cyb = _make_qualifying_history(market_cap=1.8e9)
+    kcb = _make_qualifying_history(market_cap=1.9e9)
+    bse = _make_qualifying_history(market_cap=1.7e9)
+    asof = str(main["date"].iloc[-1])
+    panel = {
+        "600000": {"value": main},
+        "300001": {"value": cyb},
+        "688001": {"value": kcb},
+        "830001": {"value": bse},
+    }
+    names = {k: "普通" for k in panel}
+    syms, _ = select_limit_up_pullback(
+        asof,
+        PortfolioSelectContext(panel=panel, names=names),
+        LimitUpPullbackParams(top_n=5, main_board_only=True),
+    )
+    assert syms == ["600000"]
+    syms_all, _ = select_limit_up_pullback(
+        asof,
+        PortfolioSelectContext(panel=panel, names=names),
+        LimitUpPullbackParams(top_n=5, main_board_only=False),
+    )
+    assert set(syms_all) == {"600000", "300001", "688001", "830001"}
+
+
+def test_min_period_return_filters_window_loss():
+    """窗口累计涨幅为负时，默认 min_period_return=0 应剔除。"""
+    good = _make_qualifying_history(market_cap=2e9)
+    lost = _make_qualifying_history(market_cap=1.8e9)
+    # 抬高窗口起点收盘价，使 lookback 累计收益为负
+    asof_idx = lost.index[-1]
+    look_start = asof_idx - 39
+    lost.loc[look_start, "close"] = float(lost.loc[asof_idx, "close"]) * 1.5
+
+    asof = str(good["date"].iloc[-1])
+    panel = {"000001": {"value": good}, "000002": {"value": lost}}
+    names = {k: "普通" for k in panel}
+    syms, _ = select_limit_up_pullback(
+        asof,
+        PortfolioSelectContext(panel=panel, names=names),
+        LimitUpPullbackParams(top_n=5, min_period_return=0.0),
+    )
+    assert syms == ["000001"]
 
 
 def test_concept_symbols_whitelist():
     a = _make_qualifying_history(market_cap=2e9)
     b = _make_qualifying_history(market_cap=2.5e9)
     asof = str(a["date"].iloc[-1])
-    panel = {"AAA": {"value": a}, "BBB": {"value": b}}
-    names = {"AAA": "甲", "BBB": "乙"}
+    panel = {"000001": {"value": a}, "000002": {"value": b}}
+    names = {"000001": "甲", "000002": "乙"}
     syms, _ = select_limit_up_pullback(
         asof,
         PortfolioSelectContext(panel=panel, names=names),
-        LimitUpPullbackParams(top_n=5, concept_symbols=["BBB"]),
+        LimitUpPullbackParams(top_n=5, concept_symbols=["000002"]),
     )
-    assert syms == ["BBB"]
+    assert syms == ["000002"]
 
 
 def test_run_limit_up_pullback_backtest_mocked(monkeypatch):
