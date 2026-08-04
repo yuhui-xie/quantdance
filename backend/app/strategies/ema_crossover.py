@@ -45,6 +45,7 @@ def _run(
         signal,
         base.initial_cash,
         commission=base.commission,
+        stop_loss_pct=base.stop_loss_pct,
         overlays={"fast_ma": fast_ema, "slow_ma": slow_ema},
     )
 

@@ -5,11 +5,16 @@ from __future__ import annotations
 from typing import Any
 
 import numpy as np
-import pandas as pd
 from pydantic import BaseModel, Field, model_validator
 
+from app.indicators import llt
 from app.portfolio.base import PortfolioSelectContext, PortfolioStrategySpec
-from app.portfolio.common import asof_tradeable_row, is_hs_main_board_symbol, is_st_stock
+from app.portfolio.common import is_hs_main_board_symbol, is_st_stock
+from app.portfolio.value_bars import (
+    ValueBars,
+    asof_tradeable_from_bars,
+    build_panel_value_bars,
+)
 
 
 class LimitUpPullbackParams(BaseModel):
@@ -50,7 +55,10 @@ class LimitUpPullbackParams(BaseModel):
     platform_max_range: float = Field(
         0.15, ge=0.02, le=1.0, description="平台振幅上限 (high-low)/mean"
     )
-    ma_slope_lookback: int = Field(5, ge=1, le=20, description="慢线斜率回看交易日")
+    llt_period: int = Field(20, ge=2, le=250, description="LLT 平滑周期")
+    llt_slope_lookback: int = Field(
+        5, ge=1, le=20, description="LLT 趋势斜率回看交易日"
+    )
     concept_symbols: list[str] = Field(
         default_factory=list,
         description="可选概念叠加白名单（空=不启用；非空则仅保留名单内标的）",
@@ -77,86 +85,92 @@ class LimitUpPullbackParams(BaseModel):
         return self
 
 
-def _history_asof(value_df: pd.DataFrame, asof: str, n: int) -> pd.DataFrame | None:
-    hist = value_df[value_df["date"] <= asof]
-    if len(hist) < n:
-        return None
-    return hist.tail(n).copy()
+def _limit_up_flags(pct: np.ndarray, threshold: float) -> np.ndarray:
+    return np.isfinite(pct) & (pct >= threshold)
 
 
-def _limit_up_flags(pct: pd.Series, threshold: float) -> np.ndarray:
-    arr = pd.to_numeric(pct, errors="coerce").to_numpy(dtype=float)
-    return np.isfinite(arr) & (arr >= threshold)
-
-
-def _has_pullback_after_limit(flags: np.ndarray, pct: pd.Series) -> bool:
-    arr = pd.to_numeric(pct, errors="coerce").to_numpy(dtype=float)
-    for i in range(len(flags) - 1):
-        if flags[i] and np.isfinite(arr[i + 1]) and arr[i + 1] < 0:
-            return True
-    return False
+def _has_pullback_after_limit(flags: np.ndarray, pct: np.ndarray) -> bool:
+    if len(flags) < 2:
+        return False
+    hit = flags[:-1] & np.isfinite(pct[1:]) & (pct[1:] < 0)
+    return bool(np.any(hit))
 
 
 def _has_consecutive_limit_ups(flags: np.ndarray) -> bool:
     return bool(np.any(flags[:-1] & flags[1:])) if len(flags) >= 2 else False
 
 
-def _price_position(closes: pd.Series) -> float | None:
-    vals = pd.to_numeric(closes, errors="coerce").dropna()
+def _price_position(closes: np.ndarray) -> float | None:
+    vals = closes[np.isfinite(closes)]
     if len(vals) < 2:
         return None
     lo = float(vals.min())
     hi = float(vals.max())
-    last = float(vals.iloc[-1])
+    last = float(closes[-1])
+    if not np.isfinite(last):
+        return None
     if hi <= lo:
         return 0.5
     return (last - lo) / (hi - lo)
 
 
-def _sma(closes: pd.Series, window: int) -> float | None:
-    vals = pd.to_numeric(closes, errors="coerce")
-    if len(vals) < window:
+def _sma_last(closes: np.ndarray, window: int) -> float | None:
+    if len(closes) < window:
         return None
-    chunk = vals.iloc[-window:]
-    if chunk.isna().any():
+    chunk = closes[-window:]
+    if not np.all(np.isfinite(chunk)):
         return None
     return float(chunk.mean())
 
 
 def _mild_ma_up(
-    closes: pd.Series,
+    closes: np.ndarray,
     *,
     fast: int,
     mid: int,
     slow: int,
-    slope_lookback: int,
+    llt_period: int,
+    llt_slope_lookback: int,
 ) -> bool:
-    need = slow + slope_lookback
+    need = max(slow, llt_period) + llt_slope_lookback
     if len(closes) < need:
         return False
-    sma_f = _sma(closes, fast)
-    sma_m = _sma(closes, mid)
-    sma_s = _sma(closes, slow)
-    sma_s_prev = _sma(closes.iloc[: -slope_lookback], slow)
-    if None in (sma_f, sma_m, sma_s, sma_s_prev):
+    sma_f = _sma_last(closes, fast)
+    sma_m = _sma_last(closes, mid)
+    sma_s = _sma_last(closes, slow)
+    if None in (sma_f, sma_m, sma_s):
         return False
-    # 略微多头：允许小幅粘合，但整体向上
+    trend = llt(closes, period=llt_period)
+    current_llt = trend[-1]
+    previous_llt = trend[-1 - llt_slope_lookback]
+    if not np.isfinite(current_llt) or not np.isfinite(previous_llt):
+        return False
     ordered = sma_f >= sma_m * 0.995 and sma_m >= sma_s * 0.995
-    sloping = sma_s >= sma_s_prev
+    sloping = current_llt >= previous_llt
     return bool(ordered and sloping)
 
 
-def _is_platform(closes: pd.Series, days: int, max_range: float) -> bool:
+def _is_platform(closes: np.ndarray, days: int, max_range: float) -> bool:
     if len(closes) < days:
         return False
-    chunk = pd.to_numeric(closes.iloc[-days:], errors="coerce").dropna()
-    if len(chunk) < max(5, days // 2):
+    chunk = closes[-days:]
+    vals = chunk[np.isfinite(chunk)]
+    if len(vals) < max(5, days // 2):
         return False
-    mean = float(chunk.mean())
+    mean = float(vals.mean())
     if mean <= 0:
         return False
-    amplitude = (float(chunk.max()) - float(chunk.min())) / mean
+    amplitude = (float(vals.max()) - float(vals.min())) / mean
     return amplitude <= max_range
+
+
+def _panel_bars(ctx: PortfolioSelectContext) -> dict[str, ValueBars]:
+    cached = ctx.cache.get("limit_up_pullback_bars")
+    if isinstance(cached, dict):
+        return cached
+    bars = build_panel_value_bars(ctx.panel)
+    ctx.cache["limit_up_pullback_bars"] = bars
+    return bars
 
 
 def select_limit_up_pullback(
@@ -168,30 +182,31 @@ def select_limit_up_pullback(
     need_bars = max(
         params.lookback_days,
         params.position_lookback,
-        params.ma_slow + params.ma_slope_lookback,
+        max(params.ma_slow, params.llt_period) + params.llt_slope_lookback,
         params.platform_days,
     )
+    bars_map = _panel_bars(ctx)
 
     candidates: list[dict[str, Any]] = []
-    for symbol, payload in ctx.panel.items():
+    for symbol, bars in bars_map.items():
         if concept and symbol not in concept:
             continue
         if params.main_board_only and not is_hs_main_board_symbol(symbol):
             continue
-        value_df = payload.get("value")
-        if value_df is None or value_df.empty:
-            continue
         if params.exclude_st and is_st_stock(ctx.names.get(symbol)):
             continue
 
-        row = asof_tradeable_row(
-            value_df,
+        tradeable = asof_tradeable_from_bars(
+            bars,
             asof,
             exclude_suspended=params.exclude_suspended,
             exclude_limit=params.exclude_limit,
             limit_pct_threshold=params.limit_pct_threshold,
         )
-        if row is None:
+        if tradeable is None:
+            continue
+        end_i, row = tradeable
+        if end_i + 1 < need_bars:
             continue
 
         close = float(row["close"])
@@ -207,42 +222,43 @@ def select_limit_up_pullback(
             if pe_ttm is None or not np.isfinite(float(pe_ttm)) or float(pe_ttm) <= 0:
                 continue
 
-        hist = _history_asof(value_df, asof, need_bars)
-        if hist is None:
-            continue
+        start_i = end_i + 1 - need_bars
+        closes = bars.close[start_i : end_i + 1]
+        pcts = bars.pct_change[start_i : end_i + 1]
 
-        look = hist.tail(params.lookback_days)
-        flags = _limit_up_flags(look["pct_change"], params.limit_up_pct)
+        look_pct = pcts[-params.lookback_days :]
+        look_close = closes[-params.lookback_days :]
+        flags = _limit_up_flags(look_pct, params.limit_up_pct)
         n_limit = int(flags.sum())
         if n_limit < params.min_limit_ups:
             continue
         if params.forbid_consecutive_limit_ups and _has_consecutive_limit_ups(flags):
             continue
         if params.require_pullback_after_limit and not _has_pullback_after_limit(
-            flags, look["pct_change"]
+            flags, look_pct
         ):
             continue
 
-        c0 = float(pd.to_numeric(look["close"].iloc[0], errors="coerce"))
-        c1 = float(pd.to_numeric(look["close"].iloc[-1], errors="coerce"))
+        c0 = float(look_close[0])
+        c1 = float(look_close[-1])
         if not np.isfinite(c0) or not np.isfinite(c1) or c0 <= 0:
             continue
         period_ret = c1 / c0 - 1.0
         if period_ret < params.min_period_return or period_ret >= params.max_period_return:
             continue
 
-        pos_hist = hist.tail(params.position_lookback)
-        price_pos = _price_position(pos_hist["close"])
+        pos_closes = closes[-params.position_lookback :]
+        price_pos = _price_position(pos_closes)
         if price_pos is None or price_pos > params.max_price_position:
             continue
 
-        closes = hist["close"]
         mild_up = params.allow_mild_ma_up and _mild_ma_up(
             closes,
             fast=params.ma_fast,
             mid=params.ma_mid,
             slow=params.ma_slow,
-            slope_lookback=params.ma_slope_lookback,
+            llt_period=params.llt_period,
+            llt_slope_lookback=params.llt_slope_lookback,
         )
         platform = params.allow_platform and _is_platform(
             closes, params.platform_days, params.platform_max_range
@@ -283,10 +299,10 @@ def select_limit_up_pullback(
 STRATEGY = PortfolioStrategySpec(
     id="limit_up_pullback",
     name="涨停回落埋伏",
-    description="近40日有涨停且回落、窗口内未亏损亦未大幅上涨；低价小盘盈利、月线相对低位、均线略多或平台整理",
+    description="近40日有涨停且回落、窗口内未亏损亦未大幅上涨；低价小盘盈利、月线相对低位、均线与 LLT 趋势略多或平台整理",
     params_model=LimitUpPullbackParams,
     select=select_limit_up_pullback,
-    default_universe="all_a",
+    default_universe="zz500",
     needs_dividend=False,
     default_top_n=10,
     warnings=(

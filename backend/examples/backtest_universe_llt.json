@@ -1,0 +1,26 @@
+{
+  "mode": "universe",
+  "data_source": "a_stock_data",
+  "strategy_id": "higher_moment",
+  "universe": "hs300",
+  "max_universe": 300,
+  "seed": 42,
+  "start_date": "2023-01-01",
+  "end_date": "2026-08-01",
+  "initial_cash": 100000,
+  "commission": 0.0003,
+  "max_workers": 8,
+  "include_equity": true,
+  "include_trades": true,
+  "include_price": true,
+  "strategy_params": {
+    "period": 20,
+    "slope_lookback": 1
+  },
+  "output_options": {
+    "json": false,
+    "output": "out/backtest_universe_higher_moment.json",
+    "plot": "out/backtest_universe_higher_moment.svg",
+    "report": "out/backtest_universe_higher_moment.html"
+  }
+}

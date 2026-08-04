@@ -36,3 +36,17 @@ def test_run_from_signals_executes_full_position_round_trip():
     assert result.equity[-1]["equity"] == 74.25
     assert result.price[0]["custom_indicator"] is None
     assert result.price[1]["custom_indicator"] == 1.5
+
+
+def test_run_from_signals_applies_common_stop_loss_and_waits_for_signal_reset():
+    result = run_from_signals(
+        _ohlcv([100, 100, 95, 90, 110, 105, 100, 101]),
+        signal=[0, 1, 0, 0, 0, -1, 1, 0],
+        initial_cash=1000.0,
+        commission=0.0,
+        stop_loss_pct=0.1,
+    )
+
+    assert result.signal == [0, 1, 0, -1, 0, 0, 1, 0]
+    assert [trade["side"] for trade in result.trades] == ["buy", "sell", "buy"]
+    assert result.trades[1]["price"] == 90.0

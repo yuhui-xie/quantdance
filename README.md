@@ -25,7 +25,6 @@ python -m app.script --help
 
 - `backtest`：运行单票回测
 - `screen`：运行选股
-- `discover`：批量回测驱动的股票发掘
 - `portfolio`：低频组合（截面选股 + 按交易日间隔调仓；如菜场大妈、中小综指微盘、涨停回落埋伏、订单开工拐点）
 
 ## 常用示例
@@ -37,6 +36,7 @@ python -m app.script backtest --list-strategies
 python -m app.script backtest --request examples/backtest_ma_crossover.json
 python -m app.script backtest --request examples/backtest_macd.json
 python -m app.script backtest --request examples/backtest_volume_ma_pulse.json
+python -m app.script backtest --request examples/backtest_signal_composite.json
 # 如需完整 JSON，追加 --json；如需保存完整结果，追加 --output out/backtest.json
 
 # 选股
@@ -44,20 +44,12 @@ python -m app.script screen --list-presets
 python -m app.script screen --preset momentum --top-k 10 --max-universe 80 --seed 42 --json
 python -m app.script screen --request examples/screen_custom_factor.json --json
 
-# 股票发掘：先做基本面过滤，再批量回测排序
-python -m app.script discover --max-pe-ttm 30 --max-pb 3 --min-market-cap 10000000000 --top-k 10 --json
-# 沪深300股票池：同时输出沪深300成分股等权基准和候选超额收益
-python -m app.script discover --universe hs300 --strategy ma_crossover --top-k 10
-# 保存策略等权净值与沪深300等权基准的对比图（默认 SVG）
-python -m app.script discover --universe hs300 --strategy ma_crossover --plot out/discover_hs300_ma_crossover.svg
-# 使用配置文件运行股票发掘，并按 output_options 保存结果
-python -m app.script discover --request examples/discover_value_ma_crossover.json
-
 # 低频组合：列出策略 / 截面选股 / 周期调仓回测
 python -m app.script portfolio --list-strategies
 python -m app.script portfolio --strategy market_auntie --mode screen --max-universe 80 --seed 42 --json
 python -m app.script portfolio --request examples/portfolio_market_auntie.json
 python -m app.script portfolio --request examples/portfolio_small_cap_zz399101.json
+python -m app.script portfolio --request examples/portfolio_etf_rotation.json
 python -m app.script portfolio --request examples/portfolio_limit_up_pullback.json
 python -m app.script portfolio --request examples/portfolio_order_inflection.json
 ```
@@ -66,9 +58,8 @@ python -m app.script portfolio --request examples/portfolio_order_inflection.jso
 
 - 回测行情：`backtest` 仅使用 `a_stock_data` 拉取 A 股日线；行情失败时会直接返回错误，不会自动回退到其他源或合成数据
 - 选股行情、估值与全 A 股票池列表：均通过 `a_stock_data` 获取；行情失败时会直接返回错误，不会自动回退到其他源或合成数据
-- 沪深300股票池：`discover --universe hs300` 通过 `akshare` 获取当前沪深300成分股，并额外合成沪深300成分股等权基准；严格历史验证仍需历史成分股数据以避免幸存者偏差
 
-## a_stock_data SDK（mootdx + 腾讯财经）
+## 数据源
 
 在 `backend` 目录可直接使用统一门面：
 

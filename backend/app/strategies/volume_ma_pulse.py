@@ -223,6 +223,7 @@ def _run(
         signal,
         base.initial_cash,
         commission=base.commission,
+        stop_loss_pct=base.stop_loss_pct,
         overlays={
             "volume_ma": vol_ma,
             "vol_ratio": vol_ratio,

@@ -352,6 +352,20 @@ def fetch_hs300_universe(
     )
 
 
+def fetch_zz500_universe(
+    max_universe: int = 500,
+    *,
+    seed: int | None = None,
+) -> tuple[list[dict[str, str]], str]:
+    """通过 akshare 拉取中证500当前成分股。"""
+    return fetch_index_universe(
+        "000905",
+        index_name="中证500",
+        max_universe=max_universe,
+        seed=seed,
+    )
+
+
 def fetch_zz399101_universe(
     max_universe: int = 500,
     *,

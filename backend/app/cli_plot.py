@@ -8,10 +8,22 @@ import warnings
 
 warnings.simplefilter("ignore", ResourceWarning)
 
-SubplotKind = Literal["macd", "vol_ratio", "stoch", "rsi", "bollinger", "donchian", "ma"]
+SubplotKind = Literal[
+    "macd",
+    "vol_ratio",
+    "stoch",
+    "rsi",
+    "bollinger",
+    "donchian",
+    "higher_moment",
+    "bbi",
+    "ma",
+]
 
 
 def _detect_subplot_kind(price: list[dict[str, Any]]) -> SubplotKind:
+    if any(p.get("higher_moment_ema") is not None for p in price):
+        return "higher_moment"
     if any(p.get("macd") is not None for p in price):
         return "macd"
     if any(p.get("vol_ratio") is not None for p in price):
@@ -24,6 +36,8 @@ def _detect_subplot_kind(price: list[dict[str, Any]]) -> SubplotKind:
         return "bollinger"
     if any(p.get("donchian_high") is not None for p in price):
         return "donchian"
+    if any(p.get("bbi") is not None for p in price):
+        return "bbi"
     return "ma"
 
 
@@ -251,6 +265,8 @@ def render_backtest_figure(out: dict[str, Any], dest: Path) -> list[Path]:
     if kind == "donchian":
         add_price_line("donchian_high", "#ffab91", "唐奇安上")
         add_price_line("donchian_low", "#4fc3f7", "唐奇安下")
+    if kind == "bbi":
+        add_price_line("bbi", "#ffb74d", "BBI")
 
     trade_points: dict[str, list[tuple[int, float]]] = {"buy": [], "sell": []}
     date_to_i = {_norm_date(d): j for j, d in enumerate(dates)}
@@ -352,6 +368,25 @@ def render_backtest_figure(out: dict[str, Any], dest: Path) -> list[Path]:
     elif kind == "donchian":
         ax3.plot(x_idx, _fseries(pr, "donchian_high"), color="#ffab91", label="上轨")
         ax3.plot(x_idx, _fseries(pr, "donchian_low"), color="#4fc3f7", label="下轨")
+    elif kind == "higher_moment":
+        ax3.axhline(0, color="#9aa0a6", linestyle="--", linewidth=0.6, alpha=0.7)
+        ax3.plot(
+            x_idx,
+            _fseries(pr, "higher_moment"),
+            color="#90caf9",
+            linewidth=0.7,
+            alpha=0.55,
+            label="高阶矩",
+        )
+        ax3.plot(
+            x_idx,
+            _fseries(pr, "higher_moment_ema"),
+            color="#ffb74d",
+            linewidth=1.2,
+            label="EMA 高阶矩",
+        )
+    elif kind == "bbi":
+        ax3.plot(x_idx, _fseries(pr, "bbi"), color="#ffb74d", linewidth=1.2, label="BBI")
     else:
         ax3.plot(x_idx, _fseries(pr, "fast_ma"), color="#ffb74d", linewidth=1, label="快线")
         ax3.plot(x_idx, _fseries(pr, "slow_ma"), color="#81c784", linewidth=1, label="慢线")
@@ -390,8 +425,8 @@ def _equity_by_date(rows: list[dict[str, Any]], initial_cash: float | None) -> d
     return out
 
 
-def render_discovery_figure(out: dict[str, Any], dest: Path) -> list[Path]:
-    """将批量策略发现结果写成策略 vs 基准对比图（保存规则同 render_backtest_figure）。"""
+def render_backtest_universe_figure(out: dict[str, Any], dest: Path) -> list[Path]:
+    """绘制独立资金批量回测的等权净值、优胜单票与汇总回撤。"""
     import matplotlib
 
     matplotlib.use("Agg")
@@ -399,39 +434,28 @@ def render_discovery_figure(out: dict[str, Any], dest: Path) -> list[Path]:
     from matplotlib import gridspec
 
     _configure_chinese_fonts()
-
-    benchmarks = out.get("benchmarks", {})
-    strategy = benchmarks.get("strategy_equal_weight")
-    baseline = benchmarks.get("hs300_equal_weight")
-    if not strategy:
-        raise ValueError("缺少 strategy_equal_weight 净值曲线，无法绘制策略对比图")
-
-    strategy_metrics = strategy.get("metrics", {})
-    baseline_metrics = baseline.get("metrics", {}) if baseline else {}
-    strategy_rows = strategy.get("equity", [])
-    baseline_rows = baseline.get("equity", []) if baseline else []
-    if not strategy_rows:
-        raise ValueError("策略净值曲线为空，无法绘图")
-
-    strategy_initial = _nf(strategy_metrics.get("initial_cash"))
-    baseline_initial = _nf(baseline_metrics.get("initial_cash"))
-    strategy_map = _equity_by_date(strategy_rows, strategy_initial)
-    baseline_map = _equity_by_date(baseline_rows, baseline_initial)
-    dates = sorted(set(strategy_map) | set(baseline_map))
+    aggregate = out.get("aggregate", {})
+    metrics = aggregate.get("metrics", {})
+    rows = aggregate.get("equity", [])
+    initial_cash = _nf(metrics.get("initial_cash"))
+    aggregate_map = _equity_by_date(rows, initial_cash)
+    dates = sorted(aggregate_map)
     if not dates:
-        raise ValueError("净值日期为空，无法绘图")
+        raise ValueError("批量等权净值曲线为空，无法绘图")
 
-    strategy_vals = [strategy_map.get(date, float("nan")) for date in dates]
-    baseline_vals = [baseline_map.get(date, float("nan")) for date in dates]
-    excess_dates = [date for date in dates if date in strategy_map and date in baseline_map and baseline_map[date] > 0]
-    excess_vals = [strategy_map[date] / baseline_map[date] - 1.0 for date in excess_dates]
-    excess_x = [dates.index(date) for date in excess_dates]
+    ranked = sorted(
+        (
+            run
+            for run in out.get("runs", [])
+            if run.get("status") == "ok" and run.get("equity")
+        ),
+        key=lambda run: int(run.get("rank") or 10**9),
+    )[:5]
 
     fig = plt.figure(figsize=(12, 7), facecolor="#0f1115")
-    gs = gridspec.GridSpec(2, 1, height_ratios=[1.35, 0.85], hspace=0.28)
+    gs = gridspec.GridSpec(2, 1, height_ratios=[1.45, 0.75], hspace=0.28)
     ax0 = fig.add_subplot(gs[0])
     ax1 = fig.add_subplot(gs[1], sharex=ax0)
-
     for ax in (ax0, ax1):
         ax.set_facecolor("#1a1d24")
         ax.tick_params(colors="#9aa0a6", labelsize=8)
@@ -439,45 +463,48 @@ def render_discovery_figure(out: dict[str, Any], dest: Path) -> list[Path]:
         for spine in ax.spines.values():
             spine.set_color("#2a2f3a")
 
-    x_idx = range(len(dates))
-    ax0.plot(x_idx, strategy_vals, color="#ce93d8", linewidth=1.4, label="策略等权")
-    if baseline_map:
-        ax0.plot(x_idx, baseline_vals, color="#90caf9", linewidth=1.2, label="沪深300等权基准")
-    ax0.axhline(1.0, color="#9aa0a6", linestyle="--", linewidth=0.7, alpha=0.7)
-    ax0.set_ylabel("净值", color="#e8eaed", fontsize=9)
-    ax0.set_title("策略 vs 基准净值对比", color="#e8eaed", fontsize=11)
-    ax0.legend(loc="upper left", fontsize=8, facecolor="#1a1d24", edgecolor="#2a2f3a", labelcolor="#e8eaed")
-
-    summary = out.get("summary", {})
-    text = (
-        f"策略平均收益 {_fmt_percent(summary.get('average_total_return'))} | "
-        f"平均超额 {_fmt_percent(summary.get('average_excess_total_return'))} | "
-        f"基准收益 {_fmt_percent(baseline_metrics.get('total_return'))}"
+    x_idx = list(range(len(dates)))
+    aggregate_values = [aggregate_map[date] for date in dates]
+    ax0.plot(x_idx, aggregate_values, color="#ce93d8", linewidth=1.8, label="独立回测等权")
+    colors = ("#90caf9", "#80cbc4", "#ffcc80", "#ef9a9a", "#b39ddb")
+    for color, run in zip(colors, ranked, strict=False):
+        run_initial = _nf(run.get("metrics", {}).get("initial_cash"))
+        run_map = _equity_by_date(run.get("equity", []), run_initial)
+        values = [run_map.get(date, float("nan")) for date in dates]
+        label = f"#{run.get('rank')} {run.get('symbol')}"
+        ax0.plot(x_idx, values, color=color, linewidth=0.9, alpha=0.65, label=label)
+    ax0.axhline(1.0, color="#9aa0a6", linestyle="--", linewidth=0.7)
+    ax0.set_ylabel("归一化净值", color="#e8eaed", fontsize=9)
+    ax0.set_title("股票池独立资金批量回测", color="#e8eaed", fontsize=11)
+    ax0.legend(
+        loc="upper left",
+        fontsize=7,
+        facecolor="#1a1d24",
+        edgecolor="#2a2f3a",
+        labelcolor="#e8eaed",
     )
-    ax0.text(
-        0.01,
-        0.03,
-        text,
-        transform=ax0.transAxes,
+
+    peak = 0.0
+    drawdowns: list[float] = []
+    for value in aggregate_values:
+        peak = max(peak, value)
+        drawdowns.append(value / peak - 1.0 if peak > 0 else 0.0)
+    ax1.fill_between(x_idx, drawdowns, 0.0, color="#ef5350", alpha=0.32)
+    ax1.plot(x_idx, drawdowns, color="#ef5350", linewidth=0.9)
+    ax1.set_ylabel("回撤", color="#e8eaed", fontsize=9)
+    ax1.set_title(
+        "等权汇总回撤 | "
+        f"收益 {_fmt_percent(metrics.get('total_return'))} | "
+        f"最大回撤 {_fmt_percent(metrics.get('max_drawdown'))}",
         color="#e8eaed",
-        fontsize=8,
-        bbox={"facecolor": "#0f1115", "edgecolor": "#2a2f3a", "alpha": 0.85, "pad": 5},
+        fontsize=10,
     )
-
-    if excess_vals:
-        colors = ["#66bb6a" if value >= 0 else "#ef5350" for value in excess_vals]
-        ax1.bar(excess_x, excess_vals, color=colors, alpha=0.55, width=0.8)
-        ax1.plot(excess_x, excess_vals, color="#ffb74d", linewidth=1.0, alpha=0.95)
-    ax1.axhline(0.0, color="#9aa0a6", linestyle="--", linewidth=0.7, alpha=0.7)
-    ax1.set_ylabel("超额", color="#e8eaed", fontsize=9)
-    ax1.set_title("策略相对沪深300等权基准的超额净值", color="#e8eaed", fontsize=10)
     ax1.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f"{y * 100:.0f}%"))
 
     tick_step = max(1, len(dates) // 12)
     tick_pos = list(range(0, len(dates), tick_step))
-    tick_lbl = [dates[i] for i in tick_pos]
     ax1.set_xticks(tick_pos)
-    ax1.set_xticklabels(tick_lbl, rotation=35, ha="right")
+    ax1.set_xticklabels([dates[i] for i in tick_pos], rotation=35, ha="right")
     plt.setp(ax0.get_xticklabels(), visible=False)
 
     saved = _savefig(fig, dest)

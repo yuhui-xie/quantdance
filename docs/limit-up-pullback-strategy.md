@@ -1,6 +1,6 @@
 # 涨停回落埋伏策略说明
 
-本文档描述组合策略 `limit_up_pullback`：近 N 个交易日出现涨停且随后回落、股价未大幅上涨；再过滤高价、大市值、亏损，要求相对低位与均线略多/平台整理，按周期等权调仓。
+本文档描述组合策略 `limit_up_pullback`：近 N 个交易日出现涨停且随后回落、股价未大幅上涨；再过滤高价、大市值、亏损，要求相对低位与均线、低延迟趋势线（LLT）略多/平台整理，按周期等权调仓。
 
 实现代码：`backend/app/portfolio/limit_up_pullback.py`统一执行：`backend/app/portfolio/runner.py`（CLI 子命令 `portfolio`）
 
@@ -40,7 +40,7 @@
 6. **价格 / 市值 / 盈利**：收盘价 ∈ `[min_price, max_price]`；总市值 ≤ `max_market_cap`；`require_profit` 时要求 `PE(TTM) > 0`。
 7. **相对低位**：近 `position_lookback`（默认 120）日高低点分位 ≤ `max_price_position`（默认 0.5）。
 8. **均线形态**（满足其一即可）
-   - 略微多头：MA5/10/20 近似多排且慢线向上；
+   - 略微多头：MA5/10/20 近似多排且 LLT 趋势向上；
    - 平台整理：近 `platform_days` 日振幅 ≤ `platform_max_range`。
 9. **概念叠加（可选）**：`concept_symbols` 非空时，仅保留白名单内标的。
 10. **排序持仓**：按总市值升序，其次涨停次数多、分位更低、窗口涨幅更小；取前 `top_n` 只等权。
@@ -69,15 +69,18 @@
 | `min_commission`            | `5.0`                                  | 单笔最低佣金（元）                                 |
 | `slippage`                  | `0.01`                                 | 单边滑点 1%                                        |
 | `lot_size`                  | `100`                                  | 买入整手数（股）                                   |
-| `take_profit_arm_pct`       | `0.40`                                 | 通用止盈启动 x：浮盈≥该比例后继续持有               |
-| `take_profit_exit_pct`      | `0.39`                                 | 通用止盈回落 y：启动后浮盈回落至该比例则卖出         |
-| `stop_loss_pct`             | `0.10`                                 | 通用止损：相对成本浮亏≥10% 则卖出                   |
+| `position_management`      | 见下文                                  | 系统化渐进建仓、加仓、止损与追踪止盈                 |
 | `use_cache`                 | `true`                                 | 使用本地估值缓存                                   |
 | `force_refresh`             | `false`                                | 不强制重新拉取                                     |
 | `max_workers`               | `8`                                    | 并行拉取线程数                                     |
 | `output_options.output`     | `out/portfolio_limit_up_pullback.json` | 结果 JSON 路径                                     |
 | `output_options.plot`       | `out/portfolio_limit_up_pullback.svg`  | 权益曲线图路径                                     |
 | `output_options.json`       | `false`                                | 是否向 stdout 打印完整 JSON                        |
+
+示例中最大持仓 5 只，因此每只股票的资金上限为初始资金的 20%；首次投入该上限的
+50%，股价相对首次成交价每上涨 10% 加仓上限的 25%，直到达到单票上限。相对加权
+平均成本亏损 10% 时止损；浮盈达到 30% 后启动追踪止盈，从启动后的最高价回撤
+10% 时卖出。
 
 ### 3.2 `strategy_params`
 
@@ -98,6 +101,8 @@
 | `max_price_position`                 | `0.5`                 | 0.5     | 现价在窗口高低点中的最高分位                  |
 | `ma_fast` / `ma_mid` / `ma_slow` | `5` / `10` / `20` | 5/10/20 | 均线形态用的三档 SMA 周期                     |
 | `allow_mild_ma_up`                   | `true`                | true    | 允许「略微多头」形态通过                      |
+| `llt_period`                         | `20`                  | 20      | LLT 平滑周期                                  |
+| `llt_slope_lookback`                 | `5`                   | 5       | LLT 趋势斜率回看交易日                        |
 | `allow_platform`                     | `true`                | true    | 允许「平台整理」形态通过                      |
 | `platform_days`                      | `20`                  | 20      | 平台振幅观察天数                              |
 | `platform_max_range`                 | `0.15`                | 0.15    | 平台振幅上限`(high-low)/mean`               |

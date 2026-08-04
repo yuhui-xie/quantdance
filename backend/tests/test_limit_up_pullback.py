@@ -215,3 +215,35 @@ def test_run_limit_up_pullback_backtest_mocked(monkeypatch):
     assert resp.strategy_id == "limit_up_pullback"
     assert len(resp.rebalances) >= 1
     assert resp.metrics["final_equity"] > 0
+
+
+def test_screen_future_date_falls_back_to_latest_data(monkeypatch):
+    value = _make_qualifying_history(market_cap=2e9)
+    latest = str(value["date"].iloc[-1])
+    panel = {"000001": {"value": value}}
+
+    monkeypatch.setattr(
+        "app.portfolio.runner.resolve_universe",
+        lambda _req, default_universe=None: (
+            [{"symbol": "000001", "name": "测试"}],
+            "mock",
+        ),
+    )
+    monkeypatch.setattr(
+        "app.portfolio.runner.load_fundamentals_panel",
+        lambda symbols, **_kw: panel,
+    )
+
+    resp = run_portfolio_request(
+        PortfolioBacktestRequest(
+            strategy_id="limit_up_pullback",
+            mode="screen",
+            symbols=["000001"],
+            end_date="2099-01-01",
+            strategy_params={"top_n": 1},
+        )
+    )
+
+    assert resp.asof == latest
+    assert [holding["symbol"] for holding in resp.holdings] == ["000001"]
+    assert any("已回退至" in warning for warning in resp.warnings)

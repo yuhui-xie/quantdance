@@ -10,9 +10,12 @@ from app.strategies.registry import STRATEGIES
 
 
 EXPECTED_OVERLAYS = {
+    "bbi_trend": {"bbi"},
     "bollinger_reversion": {"bb_upper", "bb_middle", "bb_lower"},
     "donchian_breakout": {"donchian_high", "donchian_low"},
     "ema_crossover": {"fast_ma", "slow_ma"},
+    "higher_moment": {"higher_moment", "higher_moment_ema", "ema_alpha"},
+    "llt_trend": {"llt"},
     "ma_crossover": {"fast_ma", "slow_ma"},
     "macd": {"macd", "macd_signal", "macd_hist"},
     "rsi_reversal": {"rsi"},

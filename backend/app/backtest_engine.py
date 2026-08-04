@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Mapping, Sequence
 
 import numpy as np
@@ -15,6 +15,7 @@ class BacktestResult:
     trades: list[dict[str, Any]]
     metrics: dict[str, float]
     price: list[dict[str, Any]]
+    signal: list[int] = field(default_factory=list)
 
 
 def _max_drawdown(equity: np.ndarray) -> float:
@@ -114,6 +115,51 @@ def _run_full_position_backtest(
     return equity_curve, trades, eq_arr
 
 
+def apply_stop_loss(
+    signal: Sequence[int] | np.ndarray,
+    close: Sequence[float] | np.ndarray,
+    stop_loss_pct: float | None,
+) -> np.ndarray:
+    """对任意 long-only 事件信号应用统一止损，并等待原信号退出后再允许入场。"""
+    events = np.asarray(signal, dtype=np.int8)
+    if stop_loss_pct is None:
+        return events.copy()
+    if not 0 < stop_loss_pct <= 0.8:
+        raise ValueError("stop_loss_pct 须在 0 与 0.8 之间")
+
+    prices = np.asarray(close, dtype=float)
+    managed = np.zeros(len(events), dtype=np.int8)
+    strategy_active = False
+    holding = False
+    stopped_out = False
+    entry_price = np.nan
+
+    for i, event in enumerate(events):
+        if event == 1:
+            strategy_active = True
+        elif event == -1:
+            strategy_active = False
+            stopped_out = False
+
+        if holding and prices[i] <= entry_price * (1.0 - stop_loss_pct):
+            managed[i] = -1
+            holding = False
+            stopped_out = True
+            entry_price = np.nan
+            continue
+        if holding and not strategy_active:
+            managed[i] = -1
+            holding = False
+            entry_price = np.nan
+            continue
+        if strategy_active and not holding and not stopped_out:
+            managed[i] = 1
+            holding = True
+            entry_price = prices[i]
+
+    return managed
+
+
 def _round_trip_pnls(trades: list[dict[str, Any]]) -> list[float]:
     pnls: list[float] = []
     open_buy: dict[str, Any] | None = None
@@ -203,6 +249,7 @@ def run_from_signals(
     signal: Sequence[int] | np.ndarray,
     initial_cash: float,
     commission: float = 0.0003,
+    stop_loss_pct: float | None = None,
     overlays: Mapping[str, Sequence[Any] | np.ndarray] | None = None,
 ) -> BacktestResult:
     """用策略生成的买卖信号执行通用全仓回测。"""
@@ -218,6 +265,7 @@ def run_from_signals(
     sig = np.asarray(signal, dtype=np.int8)
     if len(sig) != len(close):
         raise ValueError("signal 长度必须与行情数据一致")
+    sig = apply_stop_loss(sig, close, stop_loss_pct)
 
     overlay_arrays: dict[str, np.ndarray] = {}
     for key, values in (overlays or {}).items():
@@ -251,4 +299,5 @@ def run_from_signals(
         trades=trades,
         metrics=metrics,
         price=price_out,
+        signal=sig.astype(int).tolist(),
     )

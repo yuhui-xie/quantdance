@@ -1,0 +1,23 @@
+{
+  "data_source": "a_stock_data",
+  "strategy_id": "higher_moment",
+  "symbol": "600000",
+  "start_date": "2020-01-01",
+  "end_date": "2024-12-31",
+  "initial_cash": 100000,
+  "commission": 0.0003,
+  "strategy_params": {
+    "order": 5,
+    "window": 20,
+    "alpha": 0.2,
+    "optimize_interval": 90,
+    "optimize_lookback": 252,
+    "alpha_min": 0.05,
+    "alpha_max": 0.5,
+    "alpha_step": 0.05
+  },
+  "output_options": {
+    "json": false,
+    "plot": "out/backtest_higher_moment.svg"
+  }
+}

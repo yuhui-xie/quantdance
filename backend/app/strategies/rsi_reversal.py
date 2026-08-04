@@ -71,6 +71,7 @@ def _run(
         signal,
         base.initial_cash,
         commission=base.commission,
+        stop_loss_pct=base.stop_loss_pct,
         overlays={"rsi": rsi},
     )
 

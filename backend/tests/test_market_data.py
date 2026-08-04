@@ -8,7 +8,12 @@ from types import SimpleNamespace
 import pandas as pd
 import pytest
 
-from app.data_sources.market_data import fetch_a_share_daily, fetch_a_share_universe, fetch_hs300_universe
+from app.data_sources.market_data import (
+    fetch_a_share_daily,
+    fetch_a_share_universe,
+    fetch_hs300_universe,
+    fetch_zz500_universe,
+)
 
 
 def _a_stock_data_raw_bars():
@@ -126,3 +131,28 @@ def test_fetch_hs300_universe_parses_akshare_constituents(monkeypatch):
     ]
     assert "沪深300当前成分股共 3 只" in note
     assert "截取前 2 只" in note
+
+
+def test_fetch_zz500_universe_uses_csi_000905(monkeypatch):
+    requested: list[str] = []
+
+    def constituents(symbol: str) -> pd.DataFrame:
+        requested.append(symbol)
+        return pd.DataFrame(
+            {
+                "成分券代码": ["600000"],
+                "成分券名称": ["浦发银行"],
+            }
+        )
+
+    monkeypatch.setitem(
+        sys.modules,
+        "akshare",
+        SimpleNamespace(index_stock_cons_csindex=constituents),
+    )
+
+    rows, note = fetch_zz500_universe()
+
+    assert requested == ["000905"]
+    assert rows == [{"symbol": "600000", "name": "浦发银行"}]
+    assert "中证500当前成分股共 1 只" in note

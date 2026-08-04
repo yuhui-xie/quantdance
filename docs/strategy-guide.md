@@ -34,6 +34,35 @@
 | `output_options.plot` | 可选，权益曲线图路径（`.svg` / `.png`） |
 | `output_options.json` | 是否向 stdout 打印完整 JSON |
 
+### 股票池独立资金批量回测
+
+`backtest` 也支持把同一个单票策略和参数应用到一批股票。参考
+`backend/examples/backtest_universe_llt_trend.json`：
+
+- 设置 `mode: "universe"`，并提供 `universe`，或用 `symbols` 显式指定代码。
+- 批量模式必须同时提供 `start_date` 和 `end_date`。
+- 每只股票都独立使用完整的 `initial_cash`，交易互不占用资金。
+- `aggregate` 将各票净值除以 `initial_cash` 后按日期等权平均；它是结果汇总，
+  不模拟共享资金、换仓或持仓上限。
+- `runs` 按股票池顺序输出，成功项包含收益 `rank`；单票失败或 K 线不足不会中断整批。
+- `include_equity`、`include_trades`、`include_price` 控制逐票明细体积，
+  其中 `include_price` 默认关闭。
+- `max_workers` 控制并发数；`max_universe` 和 `seed` 控制股票池规模与抽样复现。
+
+命令行示例：
+
+```bash
+cd backend
+python -m app.script backtest --mode universe --universe hs300 \
+  --strategy llt_trend --start-date 2023-01-01 --end-date 2024-12-31 \
+  --max-universe 30 --plot out/backtest_universe_llt_trend.svg
+```
+
+两类批量能力的资金语义不同：
+
+- `backtest mode=universe`：逐票独立资金运行相同策略，再统计性等权汇总。
+- `portfolio`：所有股票共享一个账户，按调仓日进行截面选股与实际换仓。
+
 ### 组合回测 example 公共字段（`portfolio --request`）
 
 以 `backend/examples/portfolio_*.json` 为例，除 `strategy_params` 外各字段含义：
@@ -65,12 +94,33 @@
 
 各策略文档的「示例请求参数」一节会对照其 example 文件逐字段说明（含 `strategy_params`）。
 
+#### 系统化仓位管理（可选）
+
+组合请求可设置 `position_management`。启用后不再在每个调仓日全卖全买：
+仍在目标池中的仓位会保留，移出目标池时卖出，新标的先建立初始仓位。
+该字段不能与旧版顶层 `stop_loss_pct`、`take_profit_arm_pct`、
+`take_profit_exit_pct` 同时使用。
+
+- `max_positions`：最大持仓数 `x`；每只股票的固定资金上限为初始资金 `N / x`。
+- `initial_allocation_pct`：首次买入占单票资金上限的比例。
+- `add_allocation_pct`：每次加仓占单票资金上限的比例。
+- `add_trigger_pct`：相对首次成交价每上涨一个档位加仓一次；每天最多加一份，
+  且加仓后的市值不会主动超过单票资金上限。
+- `stop_loss_pct`：相对加权平均成本的止损比例；设为 `null` 可关闭。
+- `take_profit_mode`：`none` 关闭；`fixed` 达到 `take_profit_pct` 直接卖出；
+  `trailing` 达到该阈值后，按最高价回撤 `trailing_drawdown_pct` 卖出。
+
+每日处理时止损/止盈优先于加仓。止损或止盈当天即使仍被策略选中，也不会重新买入。
+价格上涨本身可能使持仓市值被动超过 `N / x`，模块不会为此强制减仓。
+
 ## 二、策略文档索引
 
 | strategy_id | 名称 | 类型 | 文档 |
 | --- | --- | --- | --- |
 | `ma_crossover` | 双均线交叉 | 趋势跟随 | [ma-crossover-strategy.md](./ma-crossover-strategy.md) |
 | `ema_crossover` | 双 EMA 交叉 | 趋势跟随 | [ema-crossover-strategy.md](./ema-crossover-strategy.md) |
+| `llt_trend` | LLT 趋势拐点 | 趋势跟随 | [llt-trend-strategy.md](./llt-trend-strategy.md) |
+| `higher_moment` | 高阶矩自适应 EMA | 分布形态 | [higher-moment-strategy.md](./higher-moment-strategy.md) |
 | `macd` | MACD 交叉 | 趋势跟随 | [macd-strategy.md](./macd-strategy.md) |
 | `bollinger_reversion` | 布林带均值回归 | 均值回归 | [bollinger-reversion-strategy.md](./bollinger-reversion-strategy.md) |
 | `donchian_breakout` | 唐奇安突破 | 趋势突破 | [donchian-breakout-strategy.md](./donchian-breakout-strategy.md) |

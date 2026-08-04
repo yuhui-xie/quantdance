@@ -1,0 +1,48 @@
+{
+  "mode": "universe",
+  "data_source": "a_stock_data",
+  "strategy_id": "signal_composite",
+  "universe": "hs300",
+  "max_universe": 500,
+  "seed": 42,
+  "start_date": "2020-01-01",
+  "end_date": "2026-08-01",
+  "initial_cash": 100000,
+  "commission": 0.0003,
+  "stop_loss_pct": 0.1,
+  "strategy_params": {
+    "mode": "all",
+    "entry_threshold": 0.6,
+    "exit_threshold": 0.4,
+    "legs": [
+      {
+        "strategy_id": "llt_trend",
+        "weight": 0.4,
+        "params": {
+          "period": 20,
+          "slope_lookback": 1
+        }
+      },
+      {
+        "strategy_id": "higher_moment",
+        "weight": 0.35,
+        "params": {
+          "order": 5,
+          "window": 20
+        }
+      },
+      {
+        "strategy_id": "ema_crossover",
+        "weight": 0.25,
+        "params": {
+          "fast_period": 10,
+          "slow_period": 30
+        }
+      }
+    ]
+  },
+  "output_options": {
+    "json": false,
+    "plot": "out/backtest_signal_composite.svg"
+  }
+}

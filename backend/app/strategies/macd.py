@@ -49,6 +49,7 @@ def _run(
         signal,
         base.initial_cash,
         commission=base.commission,
+        stop_loss_pct=base.stop_loss_pct,
         overlays={
             "macd": macd_line,
             "macd_signal": signal_line,

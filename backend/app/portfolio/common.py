@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import date
 from typing import Any
 
 import pandas as pd
@@ -50,7 +51,10 @@ def asof_tradeable_row(
     if row is None:
         return None
     try:
-        lag = (pd.Timestamp(asof) - pd.Timestamp(row["date"])).days
+        lag = (
+            date.fromisoformat(str(asof)[:10])
+            - date.fromisoformat(str(row["date"])[:10])
+        ).days
     except Exception:
         lag = 999
     if lag > max_lag_days:

@@ -7,6 +7,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable
 
+import numpy as np
 import pandas as pd
 
 from app.data_sources.market_data import MarketDataError, normalize_a_share_symbol
@@ -257,19 +258,41 @@ def trailing_dividend_yield(
     return float(total / float(price))
 
 
+_DATE_STR_CACHE: dict[int, np.ndarray] = {}
+
+
+def _date_str_array(value_df: pd.DataFrame) -> np.ndarray:
+    """按 DataFrame 身份缓存 YYYY-MM-DD 字符串列，避免反复 to_datetime。"""
+    key = id(value_df)
+    cached = _DATE_STR_CACHE.get(key)
+    if cached is not None:
+        return cached
+    dates = value_df["date"].astype(str).str[:10].to_numpy()
+    _DATE_STR_CACHE[key] = dates
+    # 粗暴限长，防止长期进程无限增长
+    if len(_DATE_STR_CACHE) > 20000:
+        _DATE_STR_CACHE.clear()
+        _DATE_STR_CACHE[key] = dates
+    return dates
+
+
 def asof_fundamental_row(
     value_df: pd.DataFrame,
     asof: str | date,
 ) -> dict[str, Any] | None:
-    """取 asof 当日或之前最近一条估值行。"""
-    asof_s = _to_date(asof)
-    if asof_s is None or value_df is None or value_df.empty:
+    """取 asof 当日或之前最近一条估值行。
+
+    假定 value_df 已按 date 升序（load/normalize 保证）；用二分查找替代全表 to_datetime。
+    """
+    asof_d = _to_date(asof)
+    if asof_d is None or value_df is None or value_df.empty:
         return None
-    dates = pd.to_datetime(value_df["date"], errors="coerce")
-    mask = dates.notna() & (dates.dt.date <= asof_s)
-    if not mask.any():
+    asof_s = asof_d.isoformat()
+    dates = _date_str_array(value_df)
+    i = int(np.searchsorted(dates, asof_s, side="right") - 1)
+    if i < 0:
         return None
-    row = value_df.loc[mask].iloc[-1]
+    row = value_df.iloc[i]
     out: dict[str, Any] = {"date": str(row["date"])[:10]}
     for key in (
         "close",

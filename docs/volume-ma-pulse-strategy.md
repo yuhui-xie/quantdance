@@ -33,8 +33,6 @@
 }
 ```
 
-沪深300发掘示例（`discover_hs300_volume_ma_pulse.json`）改用分位阈值：`threshold_mode=percentile`，`high_percentile=0.8`，`low_percentile=0.2`，`percentile_lookback=120`。
-
 相对旧版的三项改进：
 
 1. **均量不含当日**：放量日不会抬高分母、压低量比。
@@ -343,13 +341,6 @@ $$
 - 在震荡市中，放量突破可能是假突破，容易触发止损。
 
 ## 10. 运行示例
-
-沪深300股票池批量发掘：
-
-```powershell
-cd d:\book\quantdance\backend
-python -m app.script discover --request "examples/discover_hs300_volume_ma_pulse.json"
-```
 
 单只股票回测（分位阈值 + 成交额）：
 

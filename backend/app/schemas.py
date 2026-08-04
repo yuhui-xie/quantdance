@@ -8,12 +8,30 @@ from pydantic import BaseModel, Field, model_validator
 
 
 class BacktestRequest(BaseModel):
+    mode: Literal["single", "universe"] = "single"
     data_source: Literal["a_stock_data"] = "a_stock_data"
     strategy_id: str = "ma_crossover"
     initial_cash: float = Field(100_000, ge=1000)
     commission: float = Field(0.0003, ge=0, le=0.05)
+    stop_loss_pct: float | None = Field(
+        None,
+        gt=0,
+        le=0.8,
+        description="通用止损：相对本次买入价下跌该比例时卖出；null 表示关闭",
+    )
     bars: int = Field(500, ge=50, le=5000)
     symbol: str | None = Field(None, description="A 股 6 位代码或带 SH/SZ 后缀")
+    universe: Literal["all_a", "hs300", "zz500", "zz399101"] = Field(
+        "all_a",
+        description="universe 模式且 symbols 为空时使用的股票池",
+    )
+    symbols: list[str] = Field(default_factory=list, description="universe 模式的自定义股票池")
+    max_universe: int = Field(80, ge=1, le=10000)
+    seed: int | None = Field(None, description="股票池超上限时的可复现抽样种子")
+    max_workers: int = Field(8, ge=1, le=32)
+    include_equity: bool = True
+    include_trades: bool = True
+    include_price: bool = False
     start_date: str | None = Field(None, description="A 股区间起始 YYYY-MM-DD，与 end_date 成对")
     end_date: str | None = Field(None, description="A 股区间结束 YYYY-MM-DD")
     strategy_params: dict[str, Any] = Field(default_factory=dict, description="当前策略专属参数")
@@ -46,7 +64,6 @@ class BacktestRequest(BaseModel):
             "require_trend_up",
             "require_breakout",
             "entry_confirm_bars",
-            "stop_loss_pct",
             "take_profit_pct",
             "period",
             "oversold",
@@ -61,6 +78,52 @@ class BacktestRequest(BaseModel):
             joined = ", ".join(found)
             raise ValueError(f"策略专属参数需放入 strategy_params，不应出现在顶层: {joined}")
         return data
+
+    @model_validator(mode="after")
+    def check_backtest_request(self) -> BacktestRequest:
+        start = (self.start_date or "").strip()
+        end = (self.end_date or "").strip()
+        if (start and not end) or (end and not start):
+            raise ValueError("start_date 与 end_date 须同时填写或同时留空")
+        if self.mode == "universe":
+            if not start or not end:
+                raise ValueError("universe 模式须同时提供 start_date 与 end_date")
+            if self.symbol and self.symbol.strip():
+                raise ValueError("universe 模式请使用 symbols，不应填写 symbol")
+        return self
+
+
+class BacktestSymbolRun(BaseModel):
+    symbol: str
+    name: str | None = None
+    status: Literal["ok", "skipped", "failed"]
+    rank: int | None = None
+    reason: str | None = None
+    metrics: dict[str, float] = Field(default_factory=dict)
+    equity: list[dict[str, Any]] = Field(default_factory=list)
+    trades: list[dict[str, Any]] = Field(default_factory=list)
+    price: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class BacktestUniverseSummary(BaseModel):
+    requested: int = 0
+    succeeded: int = 0
+    skipped: int = 0
+    failed: int = 0
+    average_total_return: float = 0.0
+    average_max_drawdown: float = 0.0
+    average_sharpe: float = 0.0
+
+
+class BacktestUniverseResponse(BaseModel):
+    mode: Literal["universe"] = "universe"
+    strategy_id: str
+    universe_note: str = ""
+    summary: BacktestUniverseSummary
+    aggregate: dict[str, Any]
+    runs: list[BacktestSymbolRun] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    disclaimer: str = "演示用途，独立资金批量回测不构成投资建议。"
 
 
 class ScreenItem(BaseModel):
@@ -140,118 +203,58 @@ class ScreenResponse(BaseModel):
     disclaimer: str = "演示用途，技术面筛选不构成投资建议。"
 
 
-class DiscoveryCandidate(BaseModel):
-    symbol: str
-    name: str | None = None
-    strategy_id: str
-    score: float
-    metrics: dict[str, float] = Field(default_factory=dict)
-    latest_signal: str = "hold"
-    last_trade_date: str | None = None
-    filters: dict[str, float] = Field(default_factory=dict)
-    robustness: dict[str, float] = Field(default_factory=dict)
+class PositionManagementConfig(BaseModel):
+    """组合级渐进建仓、加仓与退出规则。"""
 
-
-class DiscoveryRun(BaseModel):
-    symbol: str
-    name: str | None = None
-    strategy_id: str
-    metrics: dict[str, float] = Field(default_factory=dict)
-    latest_signal: str = "hold"
-    last_trade_date: str | None = None
-    filters: dict[str, float] = Field(default_factory=dict)
-    robustness: dict[str, float] = Field(default_factory=dict)
-    score: float
-
-
-class DiscoveryRequest(BaseModel):
-    """策略回测驱动的股票发现：股票池批量回测、排序与稳健性过滤。"""
-
-    data_source: Literal["a_stock_data"] = "a_stock_data"
-    universe: Literal["all_a", "hs300"] = Field(
-        "all_a",
-        description="symbols 为空时使用的股票池：all_a 为全 A 股，hs300 为沪深300当前成分股",
+    max_positions: int = Field(..., ge=1, le=1000, description="最大持仓股票数量 x")
+    initial_allocation_pct: float = Field(
+        0.5,
+        gt=0,
+        le=1,
+        description="首次买入占单票资金上限 N/x 的比例",
     )
-    symbols: list[str] = Field(default_factory=list, description="为空时从全 A 股 universe 拉取")
-    strategies: list[str] = Field(default_factory=lambda: ["ma_crossover"])
-    strategy_params: dict[str, dict[str, Any]] = Field(
-        default_factory=dict,
-        description="按 strategy_id 分组的策略参数，例如 {'ma_crossover': {'fast_period': 5}}",
+    add_allocation_pct: float = Field(
+        0.25,
+        gt=0,
+        le=1,
+        description="每次加仓占单票资金上限 N/x 的比例",
     )
-    top_k: int = Field(20, ge=1, le=100)
-    max_universe: int = Field(300, ge=1, le=500)
-    seed: int | None = Field(None, description="symbols 为空且 universe 超上限时可复现抽样")
-    include_benchmarks: bool = Field(
-        True,
-        description="为 hs300 股票池计算沪深300成分股等权基准，并写入超额收益指标",
+    add_trigger_pct: float = Field(
+        0.10,
+        gt=0,
+        le=5,
+        description="相对首次买入价每上涨一个档位触发一次加仓",
     )
-    initial_cash: float = Field(100_000, ge=1000)
-    commission: float = Field(0.0003, ge=0, le=0.05)
-    bars: int = Field(500, ge=80, le=5000)
-    start_date: str | None = Field(None, description="与 end_date 成对，YYYY-MM-DD")
-    end_date: str | None = Field(None, description="与 start_date 成对，YYYY-MM-DD")
-    min_bars: int = Field(120, ge=50, le=5000)
-    min_avg_volume: float = Field(0.0, ge=0)
-    min_last_close: float = Field(0.0, ge=0)
-    max_last_close: float | None = Field(None, ge=0)
-    min_trades: int = Field(1, ge=0)
-    min_total_return: float | None = None
-    max_drawdown: float | None = Field(None, ge=0, le=1)
-    min_pe_ttm: float | None = Field(None, gt=0)
-    max_pe_ttm: float | None = Field(None, gt=0)
-    min_pb: float | None = Field(None, gt=0)
-    max_pb: float | None = Field(None, gt=0)
-    min_market_cap: float | None = Field(None, gt=0)
-    max_market_cap: float | None = Field(None, gt=0)
-    min_float_market_cap: float | None = Field(None, gt=0)
-    max_float_market_cap: float | None = Field(None, gt=0)
-    min_turnover_rate: float | None = Field(None, gt=0)
-    max_turnover_rate: float | None = Field(None, gt=0)
-    robustness_windows: list[int] = Field(
-        default_factory=lambda: [252, 126],
-        description="用最近 N 根 K 线重跑策略，统计通过率与最差收益",
+    stop_loss_pct: float | None = Field(
+        0.10,
+        gt=0,
+        le=0.8,
+        description="相对当前平均成本的止损比例；null 表示关闭",
     )
-    param_perturbation_pct: float = Field(
-        0.1,
-        ge=0,
-        le=0.5,
-        description="数值型策略参数上下扰动比例；0 表示关闭参数扰动验证",
+    take_profit_mode: Literal["none", "fixed", "trailing"] = Field(
+        "none",
+        description="止盈模式：关闭、达到阈值直接止盈、启动后按最高价回撤止盈",
     )
-    max_perturbation_sets: int = Field(8, ge=0, le=50)
+    take_profit_pct: float | None = Field(
+        None,
+        gt=0,
+        le=5,
+        description="fixed 的直接止盈阈值，或 trailing 的启动阈值",
+    )
+    trailing_drawdown_pct: float | None = Field(
+        None,
+        gt=0,
+        lt=1,
+        description="trailing 启动后相对最高价的回撤比例",
+    )
 
     @model_validator(mode="after")
-    def check_discovery_request(self) -> DiscoveryRequest:
-        s = (self.start_date or "").strip()
-        e = (self.end_date or "").strip()
-        if (s and not e) or (e and not s):
-            raise ValueError("start_date 与 end_date 须同时填写或同时留空")
-        if not self.strategies:
-            raise ValueError("strategies 至少需要 1 个策略")
-        if self.max_last_close is not None and self.max_last_close < self.min_last_close:
-            raise ValueError("max_last_close 不能小于 min_last_close")
-        pairs = (
-            ("pe_ttm", self.min_pe_ttm, self.max_pe_ttm),
-            ("pb", self.min_pb, self.max_pb),
-            ("market_cap", self.min_market_cap, self.max_market_cap),
-            ("float_market_cap", self.min_float_market_cap, self.max_float_market_cap),
-            ("turnover_rate", self.min_turnover_rate, self.max_turnover_rate),
-        )
-        for name, min_value, max_value in pairs:
-            if min_value is not None and max_value is not None and max_value < min_value:
-                raise ValueError(f"max_{name} 不能小于 min_{name}")
+    def check_take_profit(self) -> PositionManagementConfig:
+        if self.take_profit_mode != "none" and self.take_profit_pct is None:
+            raise ValueError("启用止盈时须设置 take_profit_pct")
+        if self.take_profit_mode == "trailing" and self.trailing_drawdown_pct is None:
+            raise ValueError("trailing 止盈须设置 trailing_drawdown_pct")
         return self
-
-    model_config = {"extra": "ignore"}
-
-
-class DiscoveryResponse(BaseModel):
-    candidates: list[DiscoveryCandidate]
-    runs: list[DiscoveryRun]
-    summary: dict[str, float] = Field(default_factory=dict)
-    benchmarks: dict[str, Any] = Field(default_factory=dict)
-    warnings: list[str] = Field(default_factory=list)
-    universe_note: str = ""
-    disclaimer: str = "演示用途，策略回测筛选不构成投资建议。"
 
 
 class PortfolioBacktestRequest(BaseModel):
@@ -260,9 +263,9 @@ class PortfolioBacktestRequest(BaseModel):
     strategy_id: str = Field("market_auntie", description="组合策略 id，见 portfolio --list-strategies")
     mode: Literal["backtest", "screen"] = "backtest"
     data_source: Literal["a_stock_data"] = "a_stock_data"
-    universe: Literal["all_a", "hs300", "zz399101"] = Field(
-        "all_a",
-        description="symbols 为空时的股票池；策略可提供默认值（如中小综指）",
+    universe: Literal["all_a", "hs300", "zz500", "zz399101"] = Field(
+        "zz500",
+        description="symbols 为空时的股票池；默认中证500，策略可提供其他默认值（如中小综指）",
     )
     symbols: list[str] = Field(default_factory=list)
     max_universe: int = Field(
@@ -289,19 +292,23 @@ class PortfolioBacktestRequest(BaseModel):
         None,
         gt=0,
         le=5,
-        description="通用止盈启动阈值 x：相对成本浮盈达到该比例后启动，继续持有",
+        description="通用止盈阈值 x：相对成本浮盈达到该比例；exit>0 时仅启动、exit=0 时直接卖出",
     )
     take_profit_exit_pct: float | None = Field(
         None,
         ge=0,
         le=5,
-        description="通用止盈回落阈值 y：启动后浮盈回落到该比例则卖出（须 < arm）",
+        description="通用止盈回落阈值 y：启动后浮盈回落到该比例则卖出（须 < arm）；填 0 表示达到 arm 即直接止盈、不等回落",
     )
     stop_loss_pct: float | None = Field(
         None,
         gt=0,
         le=0.8,
         description="通用止损：相对成本浮亏达到该比例则卖出（如 0.1=跌10%）",
+    )
+    position_management: PositionManagementConfig | None = Field(
+        None,
+        description="可选的系统化渐进建仓模块；设置后替代上方旧版止损止盈字段",
     )
     use_cache: bool = True
     force_refresh: bool = False
@@ -324,8 +331,12 @@ class PortfolioBacktestRequest(BaseModel):
         exit_lvl = self.take_profit_exit_pct
         if (arm is None) ^ (exit_lvl is None):
             raise ValueError("take_profit_arm_pct 与 take_profit_exit_pct 须同时设置或同时为空")
-        if arm is not None and exit_lvl is not None and exit_lvl >= arm:
-            raise ValueError("take_profit_exit_pct 必须小于 take_profit_arm_pct")
+        if arm is not None and exit_lvl is not None and exit_lvl > 0 and exit_lvl >= arm:
+            raise ValueError("take_profit_exit_pct 必须小于 take_profit_arm_pct（填 0 表示达到 arm 直接止盈）")
+        if self.position_management is not None and (
+            arm is not None or exit_lvl is not None or self.stop_loss_pct is not None
+        ):
+            raise ValueError("position_management 不能与旧版止损止盈字段同时设置")
         return self
 
     model_config = {"extra": "ignore"}
