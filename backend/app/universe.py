@@ -6,7 +6,11 @@ from collections.abc import Sequence
 
 from app.data_sources.market_data import (
     fetch_a_share_universe,
+    fetch_gz2000_universe,
     fetch_hs300_universe,
+    fetch_star50_universe,
+    fetch_star_board_universe,
+    fetch_zz1000_universe,
     fetch_zz399101_universe,
     fetch_zz500_universe,
     normalize_a_share_symbol,
@@ -40,4 +44,12 @@ def resolve_universe_rows(
         return fetch_zz500_universe(max_universe, seed=seed)
     if selected in {"zz399101", "399101"}:
         return fetch_zz399101_universe(max_universe, seed=seed)
+    if selected in {"zz1000", "000852"}:
+        return fetch_zz1000_universe(max_universe, seed=seed)
+    if selected in {"star50", "kc50", "000688"}:
+        return fetch_star50_universe(max_universe, seed=seed)
+    if selected in {"gz2000", "399303"}:
+        return fetch_gz2000_universe(max_universe, seed=seed)
+    if selected in {"star_board", "kcb"}:
+        return fetch_star_board_universe(max_universe, seed=seed)
     return fetch_a_share_universe(max_universe, seed=seed)

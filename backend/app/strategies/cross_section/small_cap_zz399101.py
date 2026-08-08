@@ -2,15 +2,20 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Sequence
 
 from pydantic import BaseModel, Field
 
-from app.portfolio.base import PortfolioSelectContext, PortfolioStrategySpec
-from app.portfolio.common import asof_tradeable_row, is_st_stock
+from app.strategies.base import (
+    CrossSectionContext,
+    CrossSectionStrategySpec,
+    every_n_trading_days,
+)
+from app.strategies.cross_section.common import asof_tradeable_row, is_st_stock
 
 
 class SmallCapZZ399101Params(BaseModel):
+    decision_interval: int = Field(20, ge=1, description="决策间隔（交易日）")
     top_n: int = Field(5, ge=1, le=50, description="持仓只数，默认 5")
     exclude_st: bool = True
     exclude_limit: bool = True
@@ -22,7 +27,7 @@ class SmallCapZZ399101Params(BaseModel):
 
 def select_small_cap_zz399101(
     asof: str,
-    ctx: PortfolioSelectContext,
+    ctx: CrossSectionContext,
     params: SmallCapZZ399101Params,
 ) -> tuple[list[str], list[dict[str, Any]]]:
     candidates: list[dict[str, Any]] = []
@@ -74,12 +79,22 @@ def select_small_cap_zz399101(
     return [c["symbol"] for c in picked], picked
 
 
-STRATEGY = PortfolioStrategySpec(
+def decision_dates(
+    calendar: Sequence[str],
+    ctx: CrossSectionContext,
+    params: SmallCapZZ399101Params,
+) -> list[str]:
+    del ctx
+    return every_n_trading_days(calendar, params.decision_interval)
+
+
+STRATEGY = CrossSectionStrategySpec(
     id="small_cap_zz399101",
     name="中小综指微盘",
     description="中小综指(399101)成分股中流通市值最小的 N 只，周期等权调仓",
     params_model=SmallCapZZ399101Params,
     select=select_small_cap_zz399101,
+    decision_dates=decision_dates,
     default_universe="zz399101",
     needs_dividend=False,
     default_top_n=5,

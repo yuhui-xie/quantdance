@@ -7,8 +7,40 @@ from pathlib import Path
 from typing import Any
 
 from app.backtest.report_model import build_backtest_universe_report_model
+from app.backtest.shared_report_html import render_backtest_shared_html
 
 _TEMPLATE = Path(__file__).resolve().parent / "templates" / "backtest_universe.html"
+
+
+def render_backtest_html(
+    out: dict[str, Any],
+    dest: Path,
+    *,
+    load_prices: bool = True,
+) -> Path:
+    """按结果结构渲染独立资金 universe 或共享资金横截面报告。"""
+    if "aggregate" in out and "runs" in out:
+        return render_backtest_universe_html(out, dest, load_prices=load_prices)
+    if "rebalances" in out and "equity" in out:
+        return render_backtest_shared_html(out, dest, load_prices=load_prices)
+    raise ValueError("无法识别回测报告结构")
+
+
+def render_backtest_html_from_json(
+    json_path: Path,
+    dest: Path | None = None,
+    *,
+    load_prices: bool = True,
+) -> Path:
+    source = json_path.expanduser().resolve()
+    raw = json.loads(source.read_text(encoding="utf-8"))
+    if not isinstance(raw, dict):
+        raise ValueError("回测 JSON 须为对象")
+    return render_backtest_html(
+        raw,
+        dest or source.with_suffix(".html"),
+        load_prices=load_prices,
+    )
 
 
 def render_backtest_universe_html(

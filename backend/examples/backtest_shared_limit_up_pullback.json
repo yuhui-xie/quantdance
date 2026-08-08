@@ -1,14 +1,13 @@
 {
   "strategy_id": "limit_up_pullback",
-  "mode": "backtest",
+  "mode": "universe",
   "data_source": "a_stock_data",
-  "universe": "all_a",
+  "universe": "zz1000",
   "symbols": [],
   "max_universe": 6000,
   "seed": 42,
-  "start_date": "2023-01-01",
+  "start_date": "2020-01-01",
   "end_date": "2026-07-31",
-  "rebalance_freq": 20,
   "initial_cash": 100000,
   "commission": 0.0003,
   "min_commission": 5.0,
@@ -28,6 +27,7 @@
   "force_refresh": false,
   "max_workers": 32,
   "strategy_params": {
+    "decision_interval": 20,
     "top_n": 5,
     "lookback_days": 60,
     "min_limit_ups": 1,
@@ -59,8 +59,8 @@
     "limit_pct_threshold": 9.5
   },
   "output_options": {
-    "output": "out/portfolio_limit_up_pullback.json",
-    "plot": "out/portfolio_limit_up_pullback.svg",
+    "output": "out/backtest_shared_limit_up_pullback.json",
+    "plot": "out/backtest_shared_limit_up_pullback.svg",
     "json": false
   }
 }

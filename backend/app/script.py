@@ -17,15 +17,12 @@ warnings.simplefilter("ignore", ResourceWarning)
 from app.backtest_runner import run_backtest_request
 from app.data_sources.tencent_finance_sdk import TencentFinanceSDK
 from app.data_sources.market_data import MarketDataError
-from app.portfolio import list_portfolio_strategies, run_portfolio_request
-from app.portfolio.registry import PORTFOLIO_STRATEGIES
 from app.schemas import (
     BacktestRequest,
-    PortfolioBacktestRequest,
     ScreenRequest,
 )
 from app.stock_screening import run_screen, screen_presets_catalog
-from app.strategies.registry import STRATEGIES
+from app.strategies.registry import ALL_STRATEGIES
 
 
 def _load_json_file(path: Path) -> Any:
@@ -267,35 +264,8 @@ def _resolve_json_output_options(args: argparse.Namespace) -> tuple[Path | None,
     return output, as_json
 
 
-def _resolve_portfolio_output_options(
-    args: argparse.Namespace,
-) -> tuple[Path | None, bool, Path | None, Path | None]:
-    """组合回测输出：JSON / plot / 交互 HTML report。
-
-    report 优先级：显式 --report / output_options.report；
-    否则若配置了 plot，自动派生同 stem 的 .html。
-    """
-    output_options = _load_output_options(args)
-
-    json_option = output_options.get("json", False)
-    if not isinstance(json_option, bool):
-        raise ValueError("output_options.json 需为布尔值")
-
-    output = args.output or _path_from_output_option(output_options.get("output"), "output")
-    as_json = args.json or json_option
-    plot = _normalize_plot_path(args.plot or _path_from_output_option(output_options.get("plot"), "plot"))
-
-    report_arg = getattr(args, "report", None)
-    report = _normalize_report_path(
-        report_arg or _path_from_output_option(output_options.get("report"), "report")
-    )
-    if report is None and plot is not None:
-        report = plot.with_suffix(".html")
-    return output, as_json, plot, report
-
-
 def _resolve_backtest_body(args: argparse.Namespace) -> BacktestRequest:
-    base: dict[str, Any] = BacktestRequest().model_dump()
+    base: dict[str, Any] = {}
     if args.request is not None:
         req_data = _load_json_file(args.request)
         if not isinstance(req_data, dict):
@@ -316,6 +286,12 @@ def _resolve_backtest_body(args: argparse.Namespace) -> BacktestRequest:
         cli_map["initial_cash"] = args.initial_cash
     if args.commission is not None:
         cli_map["commission"] = args.commission
+    if getattr(args, "min_commission", None) is not None:
+        cli_map["min_commission"] = args.min_commission
+    if getattr(args, "slippage", None) is not None:
+        cli_map["slippage"] = args.slippage
+    if getattr(args, "lot_size", None) is not None:
+        cli_map["lot_size"] = args.lot_size
     if args.symbol is not None:
         cli_map["symbol"] = args.symbol
     if getattr(args, "universe", None) is not None:
@@ -332,6 +308,10 @@ def _resolve_backtest_body(args: argparse.Namespace) -> BacktestRequest:
         cli_map["seed"] = args.seed
     if getattr(args, "max_workers", None) is not None:
         cli_map["max_workers"] = args.max_workers
+    if getattr(args, "force_refresh", False):
+        cli_map["force_refresh"] = True
+    if getattr(args, "no_cache", False):
+        cli_map["use_cache"] = False
     if getattr(args, "include_equity", None) is not None:
         cli_map["include_equity"] = args.include_equity
     if getattr(args, "include_trades", None) is not None:
@@ -380,8 +360,28 @@ def _resolve_backtest_body(args: argparse.Namespace) -> BacktestRequest:
         strategy_params["entry_confirm_bars"] = args.entry_confirm_bars
     if args.stop_loss_pct is not None:
         cli_map["stop_loss_pct"] = args.stop_loss_pct
+    if getattr(args, "take_profit_arm_pct", None) is not None:
+        cli_map["take_profit_arm_pct"] = args.take_profit_arm_pct
+    if getattr(args, "take_profit_exit_pct", None) is not None:
+        cli_map["take_profit_exit_pct"] = args.take_profit_exit_pct
     if args.take_profit_pct is not None:
         strategy_params["take_profit_pct"] = args.take_profit_pct
+    for key in (
+        "top_n",
+        "min_price",
+        "max_price",
+        "min_dividend_yield",
+        "min_peg",
+        "max_peg",
+        "limit_pct_threshold",
+    ):
+        value = getattr(args, key, None)
+        if value is not None:
+            strategy_params[key] = value
+    if getattr(args, "no_dividend_filter", False):
+        strategy_params["require_dividend"] = False
+    if getattr(args, "no_peg_filter", False):
+        strategy_params["require_peg"] = False
     if strategy_params:
         cli_map["strategy_params"] = strategy_params
     base.update(cli_map)
@@ -419,23 +419,30 @@ def _resolve_screen_body(args: argparse.Namespace) -> ScreenRequest:
 
 def _cmd_backtest(args: argparse.Namespace) -> int:
     if args.list_strategies:
-        for sid in sorted(STRATEGIES.keys()):
-            spec = STRATEGIES[sid]
-            print(f"{spec.id}\t{spec.name}")
+        for sid in sorted(ALL_STRATEGIES):
+            spec = ALL_STRATEGIES[sid]
+            print(f"{spec.id}\t{spec.name}\t{spec.description}")
         return 0
     output, as_json, plot, report = _resolve_backtest_output_options(args)
     body = _resolve_backtest_body(args)
-    if body.mode == "universe" and report is None and plot is not None:
+    shared = body.strategy_id in {
+        sid for sid, spec in ALL_STRATEGIES.items() if hasattr(spec, "select")
+    }
+    if (body.mode == "universe" or shared) and report is None and plot is not None:
         report = plot.with_suffix(".html")
-    if body.mode != "universe" and report is not None:
-        raise ValueError("backtest --report 目前仅支持 mode=universe 批量回测")
-    if body.mode == "universe" and report is not None and not body.include_price:
+    if not shared and body.mode != "universe" and report is not None:
+        raise ValueError("backtest --report 仅支持 universe 或横截面共享资金回测")
+    if not shared and body.mode == "universe" and report is not None and not body.include_price:
         # 逐票指标随 price overlay 返回；报告需要这些序列来绘制指标图。
         body = body.model_copy(update={"include_price": True})
     out = run_backtest_request(body)
     _write_json(out, output=output, as_json=as_json)
     if plot is not None:
-        if body.mode == "universe":
+        if shared:
+            from app.cli_plot import render_backtest_shared_figure
+
+            saved = render_backtest_shared_figure(out, plot)
+        elif body.mode == "universe":
             from app.cli_plot import render_backtest_universe_figure
 
             saved = render_backtest_universe_figure(out, plot)
@@ -446,13 +453,20 @@ def _cmd_backtest(args: argparse.Namespace) -> int:
         print("图表已保存: " + " | ".join(str(p) for p in saved))
         _open_file_with_default_app(plot)
     if report is not None:
-        from app.cli_backtest_report import render_backtest_universe_html
+        from app.cli_backtest_report import render_backtest_html
 
-        report_path = render_backtest_universe_html(out, report)
+        report_path = render_backtest_html(out, report)
         print(f"交互报告已保存: {report_path}")
         _open_file_with_default_app(report_path)
     if not as_json:
-        if body.mode == "universe":
+        if shared:
+            metrics = out.get("metrics") or {}
+            print(
+                f"共享资金回测完成: {body.strategy_id} | mode={body.mode} | "
+                f"收益 {_fmt_pct(metrics.get('total_return'))} | "
+                f"持仓 {len(out.get('holdings') or [])}"
+            )
+        elif body.mode == "universe":
             _write_backtest_universe_summary(out, body, output=output)
         else:
             _write_backtest_summary(out, body, output=output)
@@ -486,183 +500,8 @@ def _cmd_stock_search(args: argparse.Namespace) -> int:
     return 0
 
 
-def _resolve_portfolio_body(args: argparse.Namespace) -> PortfolioBacktestRequest:
-    strategy_id = getattr(args, "strategy_id", None) or "market_auntie"
-    spec = PORTFOLIO_STRATEGIES.get(strategy_id)
-    default_universe = spec.default_universe if spec is not None else "zz500"
-    base: dict[str, Any] = {
-        "strategy_id": strategy_id,
-        "mode": "backtest",
-        "universe": default_universe,
-        "symbols": [],
-        "max_universe": 80,
-        "rebalance_freq": 20,
-        "initial_cash": 100_000,
-        "commission": 0.0003,
-        "min_commission": 5.0,
-        "slippage": 0.01,
-        "lot_size": 100,
-        "use_cache": True,
-        "force_refresh": False,
-        "max_workers": 8,
-        "strategy_params": {},
-    }
-    if args.request is not None:
-        req_data = _load_json_file(args.request)
-        if not isinstance(req_data, dict):
-            raise ValueError("--request 需为 JSON 对象")
-        base.update({k: v for k, v in req_data.items() if k != "output_options"})
-
-    strategy_params: dict[str, Any] = dict(base.get("strategy_params") or {})
-    cli_map: dict[str, Any] = {}
-    if getattr(args, "strategy_id", None) is not None:
-        cli_map["strategy_id"] = args.strategy_id
-    if getattr(args, "mode", None) is not None:
-        cli_map["mode"] = args.mode
-    if getattr(args, "universe", None) is not None:
-        cli_map["universe"] = args.universe
-    if getattr(args, "symbols", None):
-        cli_map["symbols"] = args.symbols
-    if getattr(args, "max_universe", None) is not None:
-        cli_map["max_universe"] = args.max_universe
-    if getattr(args, "seed", None) is not None:
-        cli_map["seed"] = args.seed
-    if getattr(args, "start_date", None) is not None:
-        cli_map["start_date"] = args.start_date
-    if getattr(args, "end_date", None) is not None:
-        cli_map["end_date"] = args.end_date
-    if getattr(args, "rebalance_freq", None) is not None:
-        cli_map["rebalance_freq"] = args.rebalance_freq
-    if getattr(args, "initial_cash", None) is not None:
-        cli_map["initial_cash"] = args.initial_cash
-    if getattr(args, "commission", None) is not None:
-        cli_map["commission"] = args.commission
-    if getattr(args, "min_commission", None) is not None:
-        cli_map["min_commission"] = args.min_commission
-    if getattr(args, "slippage", None) is not None:
-        cli_map["slippage"] = args.slippage
-    if getattr(args, "take_profit_arm_pct", None) is not None:
-        cli_map["take_profit_arm_pct"] = args.take_profit_arm_pct
-    if getattr(args, "take_profit_exit_pct", None) is not None:
-        cli_map["take_profit_exit_pct"] = args.take_profit_exit_pct
-    if getattr(args, "portfolio_stop_loss_pct", None) is not None:
-        cli_map["stop_loss_pct"] = args.portfolio_stop_loss_pct
-    if getattr(args, "force_refresh", False):
-        cli_map["force_refresh"] = True
-    if getattr(args, "no_cache", False):
-        cli_map["use_cache"] = False
-    if getattr(args, "max_workers", None) is not None:
-        cli_map["max_workers"] = args.max_workers
-
-    for key in (
-        "top_n",
-        "min_price",
-        "max_price",
-        "min_dividend_yield",
-        "min_peg",
-        "max_peg",
-        "limit_pct_threshold",
-    ):
-        value = getattr(args, key, None)
-        if value is not None:
-            strategy_params[key] = value
-    if getattr(args, "no_dividend_filter", False):
-        strategy_params["require_dividend"] = False
-    if getattr(args, "no_peg_filter", False):
-        strategy_params["require_peg"] = False
-
-    base.update(cli_map)
-
-    sid = str(base.get("strategy_id") or strategy_id)
-    spec2 = PORTFOLIO_STRATEGIES.get(sid)
-    if spec2 is not None and not base.get("symbols"):
-        req_has_universe = False
-        if args.request is not None:
-            raw = _load_json_file(args.request)
-            req_has_universe = isinstance(raw, dict) and "universe" in raw
-        if getattr(args, "universe", None) is None and not req_has_universe:
-            base["universe"] = spec2.default_universe
-
-    base["strategy_params"] = strategy_params
-    return PortfolioBacktestRequest.model_validate(base)
 
 
-def _cmd_portfolio(args: argparse.Namespace) -> int:
-    if getattr(args, "list_strategies", False):
-        for spec in list_portfolio_strategies():
-            print(f"{spec.id}\t{spec.name}\t{spec.description}")
-        return 0
-    output, as_json, plot, report = _resolve_portfolio_output_options(args)
-    body = _resolve_portfolio_body(args)
-    profile = bool(getattr(args, "profile", True))
-
-    from app.portfolio import runner as portfolio_runner
-    from app.portfolio.timing import StageTimer
-
-    out_timer = StageTimer(title="portfolio output")
-    out = run_portfolio_request(body, profile=False).model_dump(mode="json")
-    out_timer.mark("compute")
-
-    _write_json(out, output=output, as_json=as_json)
-    out_timer.mark("write_json")
-
-    if plot is not None and out.get("equity"):
-        from app.cli_plot import render_portfolio_figure
-
-        saved = render_portfolio_figure(out, plot)
-        out_timer.mark("plot")
-        print("图表已保存: " + " | ".join(str(p) for p in saved))
-        _open_file_with_default_app(plot)
-    if report is not None and out.get("equity"):
-        from app.cli_portfolio_report import render_portfolio_html
-
-        report_path = render_portfolio_html(out, report)
-        out_timer.mark("report")
-        print(f"交互报告已保存: {report_path}")
-        _open_file_with_default_app(report_path)
-
-    if profile:
-        compute_timer = portfolio_runner.LAST_PROFILE
-        if compute_timer is not None:
-            compute_timer.print()
-        out_timer.print()
-
-    if as_json or output is not None:
-        if not as_json:
-            print(
-                f"组合回测完成: {out.get('strategy_id')} | mode={out.get('mode')} | "
-                f"持仓 {len(out.get('holdings') or [])} | 调仓 {len(out.get('rebalances') or [])}"
-            )
-        return 0
-
-    print(f"组合完成: {out.get('strategy_id')} | mode={out.get('mode')} | asof={out.get('asof')}")
-    if out.get("universe_note"):
-        print(out["universe_note"])
-    if out.get("warnings"):
-        print("提示: " + "；".join(out["warnings"]))
-    metrics = out.get("metrics") or {}
-    if metrics:
-        print(
-            "指标: "
-            f"总收益 {_fmt_pct(metrics.get('total_return'))} | "
-            f"年化 {_fmt_pct(metrics.get('annualized_return'))} | "
-            f"最大回撤 {_fmt_pct(metrics.get('max_drawdown'))} | "
-            f"Sharpe {_fmt_float(metrics.get('sharpe'))} | "
-            f"交易 {int(float(metrics.get('num_trades', 0)))}"
-        )
-    holdings = out.get("holdings") or []
-    if holdings:
-        print("最新目标持仓:")
-        for idx, item in enumerate(holdings, start=1):
-            print(
-                f"{idx}. {item.get('symbol')} {item.get('name') or ''} | "
-                f"价 {_fmt_float(item.get('close'))} | "
-                f"市值 {_fmt_float(item.get('market_cap'), 0)} | "
-                f"流通市值 {_fmt_float(item.get('float_market_cap') or item.get('rank_market_cap'), 0)} | "
-                f"PEG {_fmt_float(item.get('peg'))} | "
-                f"股息率 {_fmt_pct(item.get('dividend_yield'))}"
-            )
-    return 0
 
 
 def _build_backtest_cmd(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
@@ -679,7 +518,7 @@ def _build_backtest_cmd(sub: argparse._SubParsersAction[argparse.ArgumentParser]
         help="批量回测交互报告路径；批量 plot 默认自动派生同名 .html",
     )
     p.add_argument("--list-strategies", action="store_true")
-    p.add_argument("--mode", choices=("single", "universe"), default=None)
+    p.add_argument("--mode", choices=("single", "universe", "screen"), default=None)
     p.add_argument("--strategy", "-s", dest="strategy_id")
     p.add_argument(
         "--data-source",
@@ -689,12 +528,20 @@ def _build_backtest_cmd(sub: argparse._SubParsersAction[argparse.ArgumentParser]
     p.add_argument("--bars", type=int)
     p.add_argument("--initial-cash", type=float)
     p.add_argument("--commission", type=float)
+    p.add_argument("--min-commission", type=float, dest="min_commission")
+    p.add_argument("--slippage", type=float)
+    p.add_argument("--lot-size", type=int, dest="lot_size")
     p.add_argument("--symbol")
-    p.add_argument("--universe", choices=("all_a", "hs300", "zz500", "zz399101"))
+    p.add_argument(
+        "--universe",
+        choices=("all_a", "hs300", "zz500", "zz399101", "zz1000", "gz2000", "star50", "star_board"),
+    )
     p.add_argument("--symbols", nargs="+", help="批量回测时直接指定股票池")
     p.add_argument("--max-universe", type=int, dest="max_universe")
     p.add_argument("--seed", type=int)
     p.add_argument("--max-workers", type=int, dest="max_workers")
+    p.add_argument("--force-refresh", action="store_true", dest="force_refresh")
+    p.add_argument("--no-cache", action="store_true", dest="no_cache")
     p.add_argument(
         "--include-equity",
         action=argparse.BooleanOptionalAction,
@@ -755,6 +602,17 @@ def _build_backtest_cmd(sub: argparse._SubParsersAction[argparse.ArgumentParser]
         help="通用止损：相对本次买入价的跌幅（如 0.1=跌10%%）",
     )
     p.add_argument("--take-profit-pct", type=float, dest="take_profit_pct")
+    p.add_argument("--take-profit-arm-pct", type=float, dest="take_profit_arm_pct")
+    p.add_argument("--take-profit-exit-pct", type=float, dest="take_profit_exit_pct")
+    p.add_argument("--top-n", type=int, dest="top_n")
+    p.add_argument("--min-price", type=float, dest="min_price")
+    p.add_argument("--max-price", type=float, dest="max_price")
+    p.add_argument("--min-dividend-yield", type=float, dest="min_dividend_yield")
+    p.add_argument("--min-peg", type=float, dest="min_peg")
+    p.add_argument("--max-peg", type=float, dest="max_peg")
+    p.add_argument("--limit-pct-threshold", type=float, dest="limit_pct_threshold")
+    p.add_argument("--no-dividend-filter", action="store_true", dest="no_dividend_filter")
+    p.add_argument("--no-peg-filter", action="store_true", dest="no_peg_filter")
 
 
 def _build_screen_cmd(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
@@ -799,79 +657,6 @@ def _build_stock_search_cmd(sub: argparse._SubParsersAction[argparse.ArgumentPar
     p.add_argument("--output", type=Path, metavar="FILE.json")
 
 
-def _build_portfolio_cmd(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
-    p = sub.add_parser("portfolio", help="低频组合：截面选股与周期调仓回测")
-    p.set_defaults(handler=_cmd_portfolio)
-    p.add_argument("--request", type=Path, metavar="FILE.json")
-    p.add_argument("--json", action="store_true")
-    p.add_argument("--output", type=Path, metavar="FILE.json")
-    p.add_argument("--plot", type=Path, metavar="PATH", help="保存权益曲线路径（默认 .svg）")
-    p.add_argument(
-        "--report",
-        type=Path,
-        metavar="PATH",
-        help="保存交互 HTML 报告路径（默认 .html；未指定时若有 --plot 则派生同名 .html）",
-    )
-    p.add_argument("--list-strategies", action="store_true", dest="list_strategies")
-    p.add_argument("--mode", choices=("backtest", "screen"), default=None)
-    p.add_argument(
-        "--strategy",
-        "-s",
-        dest="strategy_id",
-        choices=tuple(sorted(PORTFOLIO_STRATEGIES)) or ("market_auntie",),
-    )
-    p.add_argument("--universe", choices=("all_a", "hs300", "zz500", "zz399101"))
-    p.add_argument("--symbols", nargs="+", help="直接指定股票池")
-    p.add_argument("--max-universe", type=int, dest="max_universe")
-    p.add_argument("--seed", type=int)
-    p.add_argument("--start-date", dest="start_date")
-    p.add_argument("--end-date", dest="end_date")
-    p.add_argument(
-        "--rebalance-freq",
-        type=int,
-        dest="rebalance_freq",
-        help="调仓间隔（交易日），如 20≈月频、5≈周频",
-    )
-    p.add_argument("--initial-cash", type=float)
-    p.add_argument("--commission", type=float)
-    p.add_argument("--min-commission", type=float, dest="min_commission")
-    p.add_argument("--slippage", type=float)
-    p.add_argument(
-        "--take-profit-arm-pct",
-        type=float,
-        dest="take_profit_arm_pct",
-        help="通用止盈启动阈值 x（相对成本浮盈，如 0.2=20%%）",
-    )
-    p.add_argument(
-        "--take-profit-exit-pct",
-        type=float,
-        dest="take_profit_exit_pct",
-        help="通用止盈回落卖出阈值 y（须 < arm，如 0.1=10%%）",
-    )
-    p.add_argument(
-        "--stop-loss-pct",
-        type=float,
-        dest="portfolio_stop_loss_pct",
-        help="通用止损：相对成本浮亏阈值（如 0.1=跌10%%）",
-    )
-    p.add_argument("--max-workers", type=int, dest="max_workers")
-    p.add_argument("--force-refresh", action="store_true", dest="force_refresh")
-    p.add_argument("--no-cache", action="store_true", dest="no_cache")
-    p.add_argument("--top-n", type=int, dest="top_n")
-    p.add_argument("--min-price", type=float, dest="min_price")
-    p.add_argument("--max-price", type=float, dest="max_price")
-    p.add_argument("--min-dividend-yield", type=float, dest="min_dividend_yield")
-    p.add_argument("--min-peg", type=float, dest="min_peg")
-    p.add_argument("--max-peg", type=float, dest="max_peg")
-    p.add_argument("--limit-pct-threshold", type=float, dest="limit_pct_threshold")
-    p.add_argument("--no-dividend-filter", action="store_true", dest="no_dividend_filter")
-    p.add_argument("--no-peg-filter", action="store_true", dest="no_peg_filter")
-    p.add_argument(
-        "--profile",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="打印分阶段耗时（默认开启；--no-profile 关闭）",
-    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -881,7 +666,6 @@ def build_parser() -> argparse.ArgumentParser:
     sub = p.add_subparsers(dest="command", required=True)
     _build_backtest_cmd(sub)
     _build_screen_cmd(sub)
-    _build_portfolio_cmd(sub)
     _build_stock_search_cmd(sub)
     return p
 

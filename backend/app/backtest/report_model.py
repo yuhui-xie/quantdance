@@ -5,7 +5,7 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
-from app.portfolio.report_model import _fifo_round_trips, _load_symbol_bars
+from app.backtest.shared_report_model import _fifo_round_trips, _load_symbol_bars
 
 
 _BASE_PRICE_FIELDS = {"date", "datetime", "open", "high", "low", "close", "volume"}
@@ -28,9 +28,9 @@ _FIELD_LABELS = {
     "donchian_high": "唐奇安上轨",
     "donchian_low": "唐奇安下轨",
     "llt": "LLT",
-    "macd": "MACD",
-    "macd_signal": "Signal",
-    "macd_hist": "柱",
+    "macd": "DIF",
+    "macd_signal": "DEA",
+    "macd_hist": "能量柱",
     "rsi": "RSI",
     "stoch_k": "%K",
     "stoch_d": "%D",
@@ -59,13 +59,16 @@ _INDICATOR_GROUPS = [
     ("布林带", ("bb_upper", "bb_middle", "bb_lower")),
     ("唐奇安通道", ("donchian_high", "donchian_low")),
     ("LLT 趋势", ("llt",)),
-    ("MACD", ("macd", "macd_signal", "macd_hist")),
+    ("MACD 指标", ("macd", "macd_signal", "macd_hist")),
     ("RSI", ("rsi",)),
     ("随机指标", ("stoch_k", "stoch_d")),
     ("量价指标", ("vol_ratio", "high_th", "low_th")),
     ("高阶矩", ("higher_moment", "higher_moment_ema")),
     ("EMA 参数", ("ema_alpha",)),
 ]
+
+# 需以柱状图渲染的指标字段（如 MACD 能量柱）
+_BAR_INDICATOR_FIELDS = frozenset({"macd_hist"})
 
 
 def _nf(value: Any) -> float | None:
@@ -137,6 +140,13 @@ def _split_leg_indicator(key: str) -> tuple[str, str, str] | None:
     return parts[1], parts[2], indicator_key
 
 
+def _is_bar_field(key: str) -> bool:
+    """该指标字段是否应以柱状图渲染（如 MACD 能量柱）。"""
+    leg = _split_leg_indicator(key)
+    indicator_key = leg[2] if leg else key
+    return indicator_key in _BAR_INDICATOR_FIELDS
+
+
 def _field_config(key: str, color_index: int) -> dict[str, str]:
     leg_indicator = _split_leg_indicator(key)
     label = _FIELD_LABELS.get(leg_indicator[2]) if leg_indicator else _FIELD_LABELS.get(key)
@@ -197,12 +207,14 @@ def _indicator_data(
         if not group_keys:
             continue
         consumed.update(group_keys)
-        charts.append(
-            {
-                "title": title,
-                "fields": [_field_config(key, field_index[key]) for key in group_keys],
-            }
-        )
+        chart: dict[str, Any] = {
+            "title": title,
+            "fields": [_field_config(key, field_index[key]) for key in group_keys],
+        }
+        bars = [key for key in group_keys if _is_bar_field(key)]
+        if bars:
+            chart["bars"] = bars
+        charts.append(chart)
 
     leg_fields: dict[tuple[str, str], list[tuple[str, str]]] = {}
     for key in keys:
@@ -223,27 +235,30 @@ def _indicator_data(
                 continue
             grouped.update(group_keys)
             consumed.update(group_keys)
-            charts.append(
-                {
-                    "title": f"子策略 {index} · {strategy_title} · {group_title}",
-                    "fields": [
-                        _field_config(key, field_index[key]) for key in group_keys
-                    ],
-                }
-            )
+            leg_group_chart: dict[str, Any] = {
+                "title": f"子策略 {index} · {strategy_title} · {group_title}",
+                "fields": [
+                    _field_config(key, field_index[key]) for key in group_keys
+                ],
+            }
+            leg_bars = [key for key in group_keys if _is_bar_field(key)]
+            if leg_bars:
+                leg_group_chart["bars"] = leg_bars
+            charts.append(leg_group_chart)
         for key, indicator_key in fields:
             if key in grouped:
                 continue
             consumed.add(key)
-            charts.append(
-                {
-                    "title": (
-                        f"子策略 {index} · {strategy_title} · "
-                        f"{_FIELD_LABELS.get(indicator_key, indicator_key.replace('_', ' '))}"
-                    ),
-                    "fields": [_field_config(key, field_index[key])],
-                }
-            )
+            leg_fallback_chart: dict[str, Any] = {
+                "title": (
+                    f"子策略 {index} · {strategy_title} · "
+                    f"{_FIELD_LABELS.get(indicator_key, indicator_key.replace('_', ' '))}"
+                ),
+                "fields": [_field_config(key, field_index[key])],
+            }
+            if _is_bar_field(key):
+                leg_fallback_chart["bars"] = [key]
+            charts.append(leg_fallback_chart)
 
     composite_keys = [
         key
@@ -262,12 +277,13 @@ def _indicator_data(
 
     for key in keys:
         if key not in consumed:
-            charts.append(
-                {
-                    "title": _FIELD_LABELS.get(key, key.replace("_", " ")),
-                    "fields": [_field_config(key, field_index[key])],
-                }
-            )
+            fallback_chart: dict[str, Any] = {
+                "title": _FIELD_LABELS.get(key, key.replace("_", " ")),
+                "fields": [_field_config(key, field_index[key])],
+            }
+            if _is_bar_field(key):
+                fallback_chart["bars"] = [key]
+            charts.append(fallback_chart)
     return series, price_fields, charts
 
 

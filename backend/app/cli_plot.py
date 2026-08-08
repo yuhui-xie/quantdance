@@ -519,8 +519,8 @@ def _fmt_percent(value: Any) -> str:
     return f"{v * 100:.2f}%"
 
 
-def render_portfolio_figure(out: dict[str, Any], dest: Path) -> list[Path]:
-    """组合回测权益与回撤图。"""
+def render_backtest_shared_figure(out: dict[str, Any], dest: Path) -> list[Path]:
+    """共享资金横截面回测权益与回撤图。"""
     import matplotlib
 
     matplotlib.use("Agg")

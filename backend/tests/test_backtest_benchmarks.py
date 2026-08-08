@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from app.portfolio.benchmarks import attach_hs300_benchmark, build_hs300_benchmark
+from app.backtest.benchmarks import attach_hs300_benchmark, build_hs300_benchmark
 
 
 def test_build_hs300_benchmark_aligns_and_normalizes(monkeypatch):
@@ -15,7 +15,7 @@ def test_build_hs300_benchmark_aligns_and_normalizes(monkeypatch):
         }
     )
     monkeypatch.setattr(
-        "app.portfolio.benchmarks.fetch_hs300_index_daily",
+        "app.backtest.benchmarks.fetch_hs300_index_daily",
         lambda start, end: idx,
     )
     bm = build_hs300_benchmark(
@@ -42,7 +42,7 @@ def test_attach_hs300_benchmark_skips_when_present():
 
 def test_attach_hs300_benchmark_records_warning_on_failure(monkeypatch):
     monkeypatch.setattr(
-        "app.portfolio.benchmarks.build_hs300_benchmark",
+        "app.backtest.benchmarks.build_hs300_benchmark",
         lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")),
     )
     out = {

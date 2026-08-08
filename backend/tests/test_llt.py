@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 from app.indicators import llt
-from app.portfolio.limit_up_pullback import _mild_ma_up
+from app.strategies.cross_section.limit_up_pullback import _mild_ma_up
 
 
 def test_llt_tracks_constant_and_linear_series():
@@ -36,7 +36,7 @@ def test_mild_ma_up_uses_llt_slope(monkeypatch):
     closes = np.full(30, 10.0)
 
     monkeypatch.setattr(
-        "app.portfolio.limit_up_pullback.llt",
+        "app.strategies.cross_section.limit_up_pullback.llt",
         lambda values, period: np.arange(len(values), dtype=float),
     )
     assert _mild_ma_up(
@@ -49,7 +49,7 @@ def test_mild_ma_up_uses_llt_slope(monkeypatch):
     )
 
     monkeypatch.setattr(
-        "app.portfolio.limit_up_pullback.llt",
+        "app.strategies.cross_section.limit_up_pullback.llt",
         lambda values, period: np.arange(len(values), 0, -1, dtype=float),
     )
     assert not _mild_ma_up(

@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import pandas as pd
 
-from app.portfolio.base import PortfolioSelectContext
-from app.portfolio.order_inflection import OrderInflectionParams, select_order_inflection
-from app.portfolio.runner import run_portfolio_request
-from app.schemas import PortfolioBacktestRequest
+from app.backtest_runner import run_backtest_request
+from app.schemas import BacktestRequest
+from app.strategies.base import CrossSectionContext
+from app.strategies.cross_section.order_inflection import (
+    OrderInflectionParams,
+    select_order_inflection,
+)
 
 
 def _value_df(rows: list[tuple[str, float, float, float]]) -> pd.DataFrame:
@@ -130,7 +133,7 @@ def test_select_filters_five_steps_and_ranks_by_score():
 
     symbols, details = select_order_inflection(
         asof,
-        PortfolioSelectContext(panel=panel, names=names),
+        CrossSectionContext(panel=panel, names=names),
         OrderInflectionParams(top_n=2, min_contract_liab_yoy=0.0, min_gross_margin=0.15),
     )
     assert symbols == ["AAA001", "BBB002"]
@@ -167,14 +170,14 @@ def test_run_order_inflection_portfolio_with_mocks(monkeypatch):
     }
 
     monkeypatch.setattr(
-        "app.portfolio.runner.resolve_universe",
+        "app.backtest.cross_section_runner._resolve_universe",
         lambda _req, default_universe=None: (
             [{"symbol": s, "name": "测试"} for s in panel],
             "mock universe",
         ),
     )
     monkeypatch.setattr(
-        "app.portfolio.runner.load_fundamentals_panel",
+        "app.backtest.cross_section_runner.load_fundamentals_panel",
         lambda symbols, **_kw: {
             s: {"value": panel[s]["value"], "dividend": pd.DataFrame()}
             for s in symbols
@@ -182,16 +185,16 @@ def test_run_order_inflection_portfolio_with_mocks(monkeypatch):
         },
     )
     monkeypatch.setattr(
-        "app.portfolio.runner.load_financials_panel",
+        "app.backtest.cross_section_runner.load_financials_panel",
         lambda symbols, **_kw: {
             s: panel[s]["financials"] for s in symbols if s in panel
         },
     )
 
-    resp = run_portfolio_request(
-        PortfolioBacktestRequest(
+    resp = run_backtest_request(
+        BacktestRequest(
             strategy_id="order_inflection",
-            mode="backtest",
+            mode="universe",
             symbols=list(panel),
             start_date="2024-01-02",
             end_date=date_strs[-1],
@@ -202,7 +205,7 @@ def test_run_order_inflection_portfolio_with_mocks(monkeypatch):
             strategy_params={"top_n": 2, "max_price": 50.0, "max_notice_age_days": 400},
         )
     )
-    assert resp.mode == "backtest"
-    assert resp.metrics["final_equity"] > 0
-    assert len(resp.rebalances) >= 1
-    assert len(resp.equity) == len(date_strs)
+    assert resp["mode"] == "backtest"
+    assert resp["metrics"]["final_equity"] > 0
+    assert len(resp["rebalances"]) >= 1
+    assert len(resp["equity"]) == len(date_strs)

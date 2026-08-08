@@ -1,4 +1,4 @@
-"""组合回测报告视图模型：从 PortfolioBacktestResponse JSON 派生交互报告数据。"""
+"""共享资金横截面回测报告视图模型。"""
 
 from __future__ import annotations
 
@@ -404,7 +404,7 @@ def _build_by_symbol(
     return by
 
 
-def build_portfolio_report_model(
+def build_backtest_shared_report_model(
     out: dict[str, Any],
     *,
     load_prices: bool = True,
@@ -412,7 +412,7 @@ def build_portfolio_report_model(
     """从组合回测 JSON 派生交互报告数据模型。"""
     # 旧 JSON 无基准时尝试补齐沪深300（失败则跳过）
     try:
-        from app.portfolio.benchmarks import attach_hs300_benchmark
+        from app.backtest.benchmarks import attach_hs300_benchmark
 
         out = attach_hs300_benchmark(dict(out))
     except Exception:

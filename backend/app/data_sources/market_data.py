@@ -167,6 +167,50 @@ def fetch_a_share_universe(
     return out, note
 
 
+def fetch_star_board_universe(
+    max_universe: int = 500,
+    *,
+    seed: int | None = None,
+) -> tuple[list[dict[str, str]], str]:
+    """
+    通过 a_stock_data 全 A 列表按 688/689 代码前缀过滤出科创板股票。
+
+    返回 (股票列表, universe_note)，每项为 {"symbol": 六位代码, "name": 名称}。
+    """
+    if max_universe < 1:
+        raise ValueError("max_universe 至少为 1")
+
+    try:
+        rows = AStockDataSDK().get_universe()
+    except AStockDataError as e:
+        raise MarketDataError(f"a_stock_data A 股列表不可用: {e}") from e
+
+    stars = [row for row in rows if row["symbol"].startswith(("688", "689"))]
+    total = len(stars)
+    if total == 0:
+        raise MarketDataError("a_stock_data 科创板列表为空")
+
+    n_take = min(max_universe, total)
+    if total <= n_take:
+        note = f"a_stock_data 科创板股票池共 {total} 只，已全部纳入本次选股。"
+        return list(stars), note
+
+    if seed is not None:
+        rng = random.Random(seed)
+        shuffled = list(stars)
+        rng.shuffle(shuffled)
+        out = shuffled[:n_take]
+        note = (
+            f"a_stock_data 科创板股票池共 {total} 只，已使用随机种子 {seed} 抽样 {n_take} 只（可复现）。"
+        )
+        return out, note
+
+    stars_sorted = sorted(stars, key=lambda x: x["symbol"])
+    out = stars_sorted[:n_take]
+    note = f"a_stock_data 科创板股票池共 {total} 只，已按代码升序截取前 {n_take} 只。"
+    return out, note
+
+
 def _first_existing_column(df: pd.DataFrame, names: tuple[str, ...]) -> str | None:
     for name in names:
         if name in df.columns:
@@ -375,6 +419,48 @@ def fetch_zz399101_universe(
     return fetch_index_universe(
         "399101",
         index_name="中小综指(399101)",
+        max_universe=max_universe,
+        seed=seed,
+    )
+
+
+def fetch_zz1000_universe(
+    max_universe: int = 1000,
+    *,
+    seed: int | None = None,
+) -> tuple[list[dict[str, str]], str]:
+    """通过 akshare 拉取中证1000当前成分股。"""
+    return fetch_index_universe(
+        "000852",
+        index_name="中证1000",
+        max_universe=max_universe,
+        seed=seed,
+    )
+
+
+def fetch_star50_universe(
+    max_universe: int = 50,
+    *,
+    seed: int | None = None,
+) -> tuple[list[dict[str, str]], str]:
+    """通过 akshare 拉取科创50当前成分股。"""
+    return fetch_index_universe(
+        "000688",
+        index_name="科创50",
+        max_universe=max_universe,
+        seed=seed,
+    )
+
+
+def fetch_gz2000_universe(
+    max_universe: int = 2000,
+    *,
+    seed: int | None = None,
+) -> tuple[list[dict[str, str]], str]:
+    """通过 akshare 拉取国证2000当前成分股。"""
+    return fetch_index_universe(
+        "399303",
+        index_name="国证2000",
         max_universe=max_universe,
         seed=seed,
     )

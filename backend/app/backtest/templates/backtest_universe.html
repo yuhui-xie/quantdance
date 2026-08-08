@@ -13,8 +13,8 @@ h1{font-size:22px;margin:0 0 5px}.muted,.meta{color:var(--muted)}.wrap{max-width
 .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(145px,1fr));gap:10px;margin-bottom:14px}
 .card,.panel{background:var(--panel);border:1px solid var(--line);border-radius:9px}.card{padding:12px 14px}.card label{display:block;color:var(--muted);font-size:12px}.card b{font-size:19px;font-variant-numeric:tabular-nums}
 .panel{padding:14px;margin-bottom:14px}.panel h2{font-size:16px;margin:0 0 11px}.charts{display:grid;grid-template-columns:2fr 1fr;gap:14px}
-svg{display:block;width:100%;height:300px;background:#11151d;border:1px solid var(--line);border-radius:7px;touch-action:none}.grid{stroke:#252c38;stroke-width:1}.axis{fill:var(--muted);font-size:11px}
-.chart-tools{display:flex;justify-content:flex-end;align-items:center;gap:6px;margin:-4px 0 7px}.chart-tools span{color:var(--muted);font-size:12px;margin-right:auto}.chart-tools button{background:#10141c;border:1px solid var(--line);color:var(--text);border-radius:5px;padding:3px 9px;cursor:pointer}.chart-tools button:hover{border-color:var(--blue)}
+svg{display:block;width:100%;height:300px;background:#11151d;border:1px solid var(--line);border-radius:7px;touch-action:none}.grid{stroke:#252c38;stroke-width:1}.zero{stroke:#465267;stroke-width:1;stroke-dasharray:3 3}.axis{fill:var(--muted);font-size:11px}
+.chart-tools{display:flex;justify-content:flex-end;align-items:center;gap:6px;margin:-4px 0 7px}.chart-tools .legend{display:inline-flex;flex-wrap:wrap;gap:4px 12px;margin-right:auto}.chart-tools .legend .lg{display:inline-flex;align-items:center;gap:4px;color:var(--muted);font-size:12px}.chart-tools .legend i{display:inline-block;border-radius:2px}.chart-tools .legend i.line{width:14px;height:3px}.chart-tools .legend i.block{width:10px;height:10px}.chart-tools .hint{color:var(--muted);font-size:12px}.chart-tools button{background:#10141c;border:1px solid var(--line);color:var(--text);border-radius:5px;padding:3px 9px;cursor:pointer}.chart-tools button:hover{border-color:var(--blue)}
 .chart-tooltip{display:none;position:fixed;z-index:30;pointer-events:none;min-width:150px;padding:8px 10px;background:#090c12ed;border:1px solid #465267;border-radius:6px;box-shadow:0 5px 18px #0008;font-size:12px;font-variant-numeric:tabular-nums}.chart-tooltip b{display:block;margin-bottom:3px}.chart-tooltip div{display:flex;justify-content:space-between;gap:18px}
 .toolbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px}input,select{background:#10141c;border:1px solid var(--line);color:var(--text);padding:7px 10px;border-radius:6px}
 input{min-width:220px}.scroll{max-height:560px;overflow:auto;border:1px solid var(--line);border-radius:7px}
@@ -105,11 +105,22 @@ function renderLineChart(svg){
  const lo=Math.max(0,Math.floor(state.start)),hi=Math.min(series.length-1,Math.ceil(state.end));
  const visible=series.slice(lo,hi+1),all=fields.flatMap(f=>visible.map(r=>Number(r[f.key])).filter(Number.isFinite));
  if(!all.length){svg.innerHTML='<text x="20" y="35" fill="#8f9bad">无可用序列</text>';return}
- let min=Math.min(...all),max=Math.max(...all);if(min===max){min-=.01;max+=.01}const pad=(max-min)*.08;min-=pad;max+=pad;
+ let min=Math.min(...all),max=Math.max(...all);if(min===max){min-=.01;max+=.01}
+ if(state.bars&&state.bars.length){min=Math.min(min,0);max=Math.max(max,0)}
+ const pad=(max-min)*.08;min-=pad;max+=pad;
  const x=i=>z.p.l+(state.end===state.start?z.iw/2:(i-state.start)*z.iw/(state.end-state.start)),y=v=>z.p.t+(max-v)*z.ih/(max-min);
  state.x=x;state.y=y;
  for(let i=0;i<5;i++){const yy=z.p.t+i*z.ih/4,val=max-i*(max-min)/4;svg.innerHTML+=`<line class="grid" x1="${z.p.l}" y1="${yy}" x2="${z.w-z.p.r}" y2="${yy}"/><text class="axis" x="4" y="${yy+4}">${num(val,2)}</text>`}
- fields.forEach(f=>{const pts=[];for(let i=lo;i<=hi;i++){const v=Number(series[i][f.key]);if(Number.isFinite(v))pts.push(`${x(i)},${y(v)}`)}svg.innerHTML+=`<polyline fill="none" stroke="${f.color}" stroke-width="2" points="${pts.join(" ")}"/>`});
+ const barKeys=state.bars||[];
+ if(barKeys.length){
+   const barFields=barKeys.map(k=>fields.find(f=>f.key===k)).filter(Boolean),bw=Math.max(1.5,(z.iw/Math.max(1,state.end-state.start))*0.62),y0=y(0);
+   svg.innerHTML+=`<line class="zero" x1="${z.p.l}" y1="${y0}" x2="${z.w-z.p.r}" y2="${y0}"/>`;
+   barFields.forEach(f=>{for(let i=lo;i<=hi;i++){const v=Number(series[i][f.key]);if(!Number.isFinite(v))continue;const top=Math.min(y0,y(v)),h=Math.abs(y0-y(v));svg.innerHTML+=`<rect x="${x(i)-bw/2}" y="${top}" width="${bw}" height="${Math.max(0.5,h)}" fill="${f.color}" opacity="0.6"/>`}});
+ }
+ fields.forEach(f=>{
+   if(barKeys.includes(f.key))return;
+   const pts=[];for(let i=lo;i<=hi;i++){const v=Number(series[i][f.key]);if(Number.isFinite(v))pts.push(`${x(i)},${y(v)}`)}svg.innerHTML+=`<polyline fill="none" stroke="${f.color}" stroke-width="2" points="${pts.join(" ")}"/>`
+ });
  [lo,Math.round((lo+hi)/2),hi].forEach((i,j)=>svg.innerHTML+=`<text class="axis" text-anchor="${j===0?"start":j===2?"end":"middle"}" x="${x(i)}" y="${z.h-8}">${esc(series[i].date||"")}</text>`);
  markers.forEach(m=>{let i=series.findIndex(r=>r.date>=m.date);if(i<lo||i>hi)return;const value=Number(series[i][fields[0].key]);if(Number.isFinite(value))svg.innerHTML+=`<circle cx="${x(i)}" cy="${y(value)}" r="4" fill="${m.side==="buy"?"#55d187":"#ff7b72"}"><title>${esc(m.date)} ${m.side==="buy"?"买入":"卖出"}</title></circle>`});
 }
@@ -130,7 +141,9 @@ function showPoint(svg,e){
 }
 function installChartInteraction(svg){
  if(svg.dataset.interactive)return;svg.dataset.interactive="1";
- const tools=document.createElement("div");tools.className="chart-tools";tools.innerHTML='<span>滚轮缩放 · 拖拽平移 · 悬停查看</span><button data-z=".7">＋</button><button data-z="1.4">－</button><button data-reset>重置</button>';svg.before(tools);
+ const s0=chartStates.get(svg),tools=document.createElement("div");tools.className="chart-tools";
+ const legend=(s0.fields||[]).map(f=>`<span class="lg"><i class="${s0.bars&&s0.bars.includes(f.key)?"block":"line"}" style="background:${f.color}"></i>${esc(f.label||f.key)}</span>`).join("");
+ tools.innerHTML=`<span class="legend">${legend}</span><span class="hint">滚轮缩放 · 拖拽平移 · 悬停查看</span><button data-z=".7">＋</button><button data-z="1.4">－</button><button data-reset>重置</button>`;svg.before(tools);
  tools.querySelectorAll("[data-z]").forEach(b=>b.onclick=()=>zoomChart(svg,Number(b.dataset.z)));tools.querySelector("[data-reset]").onclick=()=>resetChart(svg);
  svg.addEventListener("wheel",e=>{e.preventDefault();const r=svg.getBoundingClientRect();zoomChart(svg,e.deltaY>0?1.25:.8,(e.clientX-r.left)/r.width)},{passive:false});
  svg.addEventListener("pointerdown",e=>{const s=chartStates.get(svg);s.drag={x:e.clientX,start:s.start,end:s.end};svg.setPointerCapture(e.pointerId)});
@@ -138,8 +151,8 @@ function installChartInteraction(svg){
  const stop=()=>{const s=chartStates.get(svg);if(s)s.drag=null};svg.addEventListener("pointerup",stop);svg.addEventListener("pointercancel",stop);
  svg.addEventListener("mouseleave",()=>{tooltip.style.display="none";svg.querySelector(".hover-layer")?.remove()});svg.addEventListener("dblclick",()=>resetChart(svg));
 }
-function lineChart(svg,series,fields,markers=[]){
- chartStates.set(svg,{series,fields,markers,start:0,end:Math.max(0,series.length-1),drag:null});activeCharts.add(svg);installChartInteraction(svg);renderLineChart(svg);
+function lineChart(svg,series,fields,markers=[],opts={}){
+ chartStates.set(svg,{series,fields,markers,start:0,end:Math.max(0,series.length-1),drag:null,bars:opts.bars||[]});activeCharts.add(svg);installChartInteraction(svg);renderLineChart(svg);
 }
 function histogram(svg,values){
  const z=svgBase(svg), vals=values.map(Number).filter(Number.isFinite);if(!vals.length){svg.innerHTML='<text x="20" y="35" fill="#8f9bad">无可用收益数据</text>';return}
@@ -180,7 +193,7 @@ function openDetail(symbol){
  const indicatorRoot=$("detailIndicators");indicatorRoot.querySelectorAll("svg").forEach(svg=>activeCharts.delete(svg));indicatorRoot.innerHTML="";
  const charts=d.indicator_charts||[];
  if(!charts.length){indicatorRoot.innerHTML='<div class="empty">无可用策略指标；重新批量回测时请启用价格/指标明细。</div>'}
- else charts.forEach((chart,index)=>{const box=document.createElement("div");box.innerHTML=`<h4>${esc(chart.title||`指标 ${index+1}`)}</h4><svg></svg>`;indicatorRoot.appendChild(box);lineChart(box.querySelector("svg"),indicatorSeries,chart.fields||[])});
+ else charts.forEach((chart,index)=>{const box=document.createElement("div");box.innerHTML=`<h4>${esc(chart.title||`指标 ${index+1}`)}</h4><svg></svg>`;indicatorRoot.appendChild(box);lineChart(box.querySelector("svg"),indicatorSeries,chart.fields||[],[],{bars:chart.bars||[]})});
  $("tradeRows").innerHTML=d.trades.length?d.trades.map(t=>`<tr><td>${esc(t.date)}</td><td class="${t.side==="buy"?"pos":"neg"}">${t.side==="buy"?"买入":"卖出"}</td><td>${num(t.price)}</td><td>${num(t.shares,0)}</td><td>${num(t.notional)}</td></tr>`).join(""):'<tr><td colspan="5" class="empty">无成交</td></tr>';
  $("tripRows").innerHTML=d.round_trips.length?d.round_trips.map(t=>`<tr><td>${esc(t.buy_date)}</td><td>${esc(t.sell_date)}</td><td>${num(t.shares,0)}</td><td class="${cls(t.pnl_pct)}">${pct(t.pnl_pct)}</td><td class="${cls(t.pnl)}">${num(t.pnl)}</td></tr>`).join(""):'<tr><td colspan="5" class="empty">无已闭合回合</td></tr>';
  $("modal").classList.add("open");

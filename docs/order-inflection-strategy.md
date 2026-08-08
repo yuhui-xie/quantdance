@@ -1,15 +1,17 @@
 # 订单开工拐点策略说明
 
-本文档描述组合策略 `order_inflection`：用财报五步法捕捉「订单回暖 → 开工备货 → 盈利与现金流跟上」的拐点，按周期等权调仓。
+本文档描述横截面共享资金策略 `order_inflection`：用财报五步法捕捉「订单回暖 → 开工备货 → 盈利与现金流跟上」的拐点，按决策日等权换仓。
 
 实现代码：
 
-- 选股插件：`backend/app/portfolio/order_inflection.py`
+- 策略插件：`backend/app/strategies/cross_section/order_inflection.py`
 - 财报数据：`backend/app/data_sources/financial_reports.py`（东财资产负债表 / 利润表 / 现金流量表）
 - 估值行情：`backend/app/data_sources/em_fundamentals.py`
-- 统一执行：`backend/app/portfolio/runner.py`
+- 横截面执行：`backend/app/backtest/cross_section_runner.py`
+- 共享资金引擎：`backend/app/backtest/shared_engine.py`
 
-> 该策略属于低频组合类目（`portfolio`），不是单票 `StrategySpec`；请用 `portfolio`，不要用 `backtest --strategy`。
+> 该策略是 `CrossSectionStrategySpec`，通过统一的 `backtest` 子命令运行；
+> `mode=universe` 使用共享资金，`mode=screen` 只做截面选股。
 
 ## 1. 核心思想
 
@@ -27,6 +29,7 @@
 
 ```json
 {
+  "decision_interval": 20,
   "top_n": 10,
   "min_contract_liab_yoy": 0.0,
   "min_gross_margin": 0.15,
@@ -56,25 +59,25 @@ score = w_contract * 合同负债同比
       + w_inventory* soft(存货同比)
 ```
 
-同分时市值更小者优先。调仓间隔由 `rebalance_freq` 控制（默认 20 交易日≈月频）。
+同分时市值更小者优先。当前策略用 `strategy_params.decision_interval`
+生成决策日（默认 20 个交易日≈月频）；这是策略规则，不是共享资金引擎强制的调仓周期。
 
 ## 3. 示例请求参数
 
-对照 `backend/examples/portfolio_order_inflection.json`。公共字段总表见 [策略总览](./strategy-guide.md)。
+对照 `backend/examples/backtest_shared_order_inflection.json`。公共字段总表见 [策略总览](./strategy-guide.md)。
 
 ### 3.1 请求级字段
 
 | 字段 | 示例值 | 含义 |
 | --- | --- | --- |
-| `strategy_id` | `order_inflection` | 本组合策略 id |
-| `mode` | `backtest` | `backtest`=周期调仓回测；`screen`=仅截面选股 |
+| `strategy_id` | `order_inflection` | 本横截面策略 id |
+| `mode` | `universe` | `universe`=共享资金回测；`screen`=仅截面选股 |
 | `data_source` | `a_stock_data` | 行情数据源 |
 | `universe` | `all_a` | `symbols` 为空时用全 A 股票池 |
 | `symbols` | `[]` | 显式代码列表；非空时覆盖 `universe` |
 | `max_universe` | `40` | 股票池上限（三大报表拉取较慢，演示建议 30~60） |
 | `seed` | `42` | 抽样种子，保证可复现 |
 | `start_date` / `end_date` | `2023-01-01` / `2024-12-31` | 回测区间 |
-| `rebalance_freq` | `20` | 调仓间隔（交易日）；财报低频更新，不宜过高频 |
 | `initial_cash` | `100000` | 初始资金（元） |
 | `commission` | `0.0003` | 佣金费率 |
 | `min_commission` | `5.0` | 单笔最低佣金（元） |
@@ -83,8 +86,8 @@ score = w_contract * 合同负债同比
 | `use_cache` | `true` | 使用本地财报/估值缓存（强烈建议开启） |
 | `force_refresh` | `false` | 不强制重新拉取 |
 | `max_workers` | `4` | 并行拉取线程数（报表接口宜保守） |
-| `output_options.output` | `out/portfolio_order_inflection.json` | 结果 JSON 路径 |
-| `output_options.plot` | `out/portfolio_order_inflection.svg` | 权益曲线图路径 |
+| `output_options.output` | `out/backtest_shared_order_inflection.json` | 结果 JSON 路径 |
+| `output_options.plot` | `out/backtest_shared_order_inflection.svg` | 权益曲线图路径 |
 | `output_options.json` | `false` | 是否向 stdout 打印完整 JSON |
 
 > 示例文件中的 `__comments__` 仅作人类可读备注，运行时会被忽略。
@@ -93,6 +96,7 @@ score = w_contract * 合同负债同比
 
 | 参数 | 示例值 | 默认 | 说明 |
 | --- | --- | --- | --- |
+| `decision_interval` | `20` | 20 | 当前策略生成决策日的交易日间隔；财报低频更新，不宜过高频决策 |
 | `top_n` | `10` | 10 | 持仓只数（按拐点分排序） |
 | `min_contract_liab` | `0` | 0 | 合同负债绝对值下限（元） |
 | `min_contract_liab_yoy` | `0.0` | 0 | 合同负债同比下限（%）；0=至少不萎缩 |
@@ -127,11 +131,11 @@ score = w_contract * 合同负债同比
 
 ```bash
 cd backend
-python -m app.script portfolio --list-strategies
+python -m app.script backtest --list-strategies
 # 截面选股
-python -m app.script portfolio --strategy order_inflection --mode screen --max-universe 40 --seed 42 --json
-# 周期调仓回测
-python -m app.script portfolio --request examples/portfolio_order_inflection.json
+python -m app.script backtest --strategy order_inflection --mode screen --max-universe 40 --seed 42 --json
+# 共享资金回测
+python -m app.script backtest --request examples/backtest_shared_order_inflection.json
 ```
 
 ## 6. 改进方向

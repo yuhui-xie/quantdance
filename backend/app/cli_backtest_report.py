@@ -1,17 +1,33 @@
-"""从批量回测 JSON 生成自包含交互 HTML 报告。"""
+"""从独立资金或共享资金回测 JSON 生成交互 HTML 报告。"""
 
 from __future__ import annotations
 
 from pathlib import Path
 
 from app.backtest.report_html import (
+    render_backtest_html,
+    render_backtest_html_from_json,
     render_backtest_universe_html,
     render_backtest_universe_html_from_json,
 )
 from app.backtest.report_model import build_backtest_universe_report_model
+from app.backtest.shared_report_model import (
+    _bars_cover_trade_dates,
+    _load_symbol_bars,
+    build_backtest_shared_report_model,
+)
+from app.backtest.shared_report_html import (
+    render_backtest_shared_html,
+    render_backtest_shared_html_from_json,
+)
 
 __all__ = [
     "build_backtest_universe_report_model",
+    "build_backtest_shared_report_model",
+    "render_backtest_html",
+    "render_backtest_html_from_json",
+    "render_backtest_shared_html",
+    "render_backtest_shared_html_from_json",
     "render_backtest_universe_html",
     "render_backtest_universe_html_from_json",
     "main",
@@ -21,8 +37,8 @@ __all__ = [
 def main(argv: list[str] | None = None) -> int:
     import argparse
 
-    parser = argparse.ArgumentParser(description="从批量回测 JSON 生成交互 HTML 报告")
-    parser.add_argument("json_path", type=Path, help="mode=universe 的回测结果 JSON")
+    parser = argparse.ArgumentParser(description="从回测 JSON 生成交互 HTML 报告")
+    parser.add_argument("json_path", type=Path, help="独立或共享资金回测结果 JSON")
     parser.add_argument("-o", "--output", type=Path, default=None, help="HTML 输出路径")
     parser.add_argument(
         "--top-k",
@@ -42,13 +58,21 @@ def main(argv: list[str] | None = None) -> int:
         help="不从行情缓存补充逐票价格",
     )
     args = parser.parse_args(argv)
-    path = render_backtest_universe_html_from_json(
-        args.json_path,
-        args.output,
-        top_k=None if args.top_k is None else max(0, args.top_k),
-        price_top_k=max(0, args.price_top_k),
-        load_prices=not args.no_load_prices,
-    )
+    raw = __import__("json").loads(args.json_path.read_text(encoding="utf-8"))
+    if isinstance(raw, dict) and "aggregate" in raw and "runs" in raw:
+        path = render_backtest_universe_html_from_json(
+            args.json_path,
+            args.output,
+            top_k=None if args.top_k is None else max(0, args.top_k),
+            price_top_k=max(0, args.price_top_k),
+            load_prices=not args.no_load_prices,
+        )
+    else:
+        path = render_backtest_html_from_json(
+            args.json_path,
+            args.output,
+            load_prices=not args.no_load_prices,
+        )
     print(f"报告已保存: {path}")
     return 0
 

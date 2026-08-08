@@ -2,6 +2,22 @@
 
 from __future__ import annotations
 
-from app.strategies.registry import STRATEGIES, get_strategy
+from app.strategies.registry import (
+    ALL_STRATEGIES,
+    CROSS_SECTION_STRATEGIES,
+    STRATEGIES,
+    get_cross_section_strategy,
+    get_registered_strategy,
+    get_strategy,
+    list_cross_section_strategies,
+)
 
-__all__ = ["STRATEGIES", "get_strategy"]
+__all__ = [
+    "ALL_STRATEGIES",
+    "CROSS_SECTION_STRATEGIES",
+    "STRATEGIES",
+    "get_cross_section_strategy",
+    "get_registered_strategy",
+    "get_strategy",
+    "list_cross_section_strategies",
+]

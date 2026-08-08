@@ -10,6 +10,10 @@ import pandas as pd
 from pydantic import BaseModel
 
 from app.backtest_aggregate import equal_weight_equity_curve
+from app.backtest.cross_section_runner import (
+    run_cross_section_backtest,
+    run_cross_section_screen,
+)
 from app.data_sources.market_data import fetch_a_share_daily
 from app.schemas import (
     BacktestRequest,
@@ -17,8 +21,12 @@ from app.schemas import (
     BacktestUniverseResponse,
     BacktestUniverseSummary,
 )
-from app.strategies.base import BaseBacktestParams, StrategySpec
-from app.strategies.registry import get_strategy
+from app.strategies.base import (
+    BaseBacktestParams,
+    CrossSectionStrategySpec,
+    StrategySpec,
+)
+from app.strategies.registry import get_registered_strategy, get_strategy
 from app.universe import resolve_universe_rows
 
 
@@ -215,12 +223,26 @@ def run_backtest_request(body: BacktestRequest) -> dict[str, Any]:
     执行回测，返回与 POST /api/backtest 相同的字典结构。
     失败时抛出 ValueError（参数/业务）或 MarketDataError（行情源）。
     """
+    registered = get_registered_strategy(body.strategy_id)
+    if registered is None:
+        raise ValueError(f"未知策略: {body.strategy_id}")
+    if isinstance(registered, CrossSectionStrategySpec):
+        if body.mode not in {"universe", "screen"}:
+            raise ValueError("横截面策略仅支持 mode=universe 或 mode=screen")
+        response = (
+            run_cross_section_screen(body, registered)
+            if body.mode == "screen"
+            else run_cross_section_backtest(body, registered)
+        )
+        return response.model_dump(mode="json")
+
+    if body.mode == "screen":
+        raise ValueError("时序策略不支持 mode=screen")
+
     if body.mode == "universe":
         return run_backtest_universe_request(body).model_dump(mode="json")
 
-    spec = get_strategy(body.strategy_id)
-    if spec is None:
-        raise ValueError(f"未知策略: {body.strategy_id}")
+    spec = registered
 
     params = params_for_strategy(body, spec)
     base = BaseBacktestParams(

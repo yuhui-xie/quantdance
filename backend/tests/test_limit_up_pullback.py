@@ -4,14 +4,14 @@ from __future__ import annotations
 
 import pandas as pd
 
-from app.portfolio.base import PortfolioSelectContext
-from app.portfolio.limit_up_pullback import (
+from app.strategies.registry import get_cross_section_strategy
+from app.backtest_runner import run_backtest_request
+from app.schemas import BacktestRequest
+from app.strategies.base import CrossSectionContext
+from app.strategies.cross_section.limit_up_pullback import (
     LimitUpPullbackParams,
     select_limit_up_pullback,
 )
-from app.portfolio.registry import get_portfolio_strategy
-from app.portfolio.runner import run_portfolio_request
-from app.schemas import PortfolioBacktestRequest
 
 
 def _series_value(
@@ -77,7 +77,7 @@ def _make_qualifying_history(
 
 
 def test_strategy_registered():
-    spec = get_portfolio_strategy("limit_up_pullback")
+    spec = get_cross_section_strategy("limit_up_pullback")
     assert spec is not None
     assert spec.name == "涨停回落埋伏"
 
@@ -113,7 +113,7 @@ def test_select_picks_limit_up_pullback_and_filters():
     # 调仓日不要涨停：最后一根已是小涨
     syms, details = select_limit_up_pullback(
         asof,
-        PortfolioSelectContext(panel=panel, names=names),
+        CrossSectionContext(panel=panel, names=names),
         LimitUpPullbackParams(top_n=5, max_market_cap=1e10),
     )
     assert syms == ["000001"]
@@ -136,13 +136,13 @@ def test_main_board_only_excludes_chinext_star_bse():
     names = {k: "普通" for k in panel}
     syms, _ = select_limit_up_pullback(
         asof,
-        PortfolioSelectContext(panel=panel, names=names),
+        CrossSectionContext(panel=panel, names=names),
         LimitUpPullbackParams(top_n=5, main_board_only=True),
     )
     assert syms == ["600000"]
     syms_all, _ = select_limit_up_pullback(
         asof,
-        PortfolioSelectContext(panel=panel, names=names),
+        CrossSectionContext(panel=panel, names=names),
         LimitUpPullbackParams(top_n=5, main_board_only=False),
     )
     assert set(syms_all) == {"600000", "300001", "688001", "830001"}
@@ -162,7 +162,7 @@ def test_min_period_return_filters_window_loss():
     names = {k: "普通" for k in panel}
     syms, _ = select_limit_up_pullback(
         asof,
-        PortfolioSelectContext(panel=panel, names=names),
+        CrossSectionContext(panel=panel, names=names),
         LimitUpPullbackParams(top_n=5, min_period_return=0.0),
     )
     assert syms == ["000001"]
@@ -176,7 +176,7 @@ def test_concept_symbols_whitelist():
     names = {"000001": "甲", "000002": "乙"}
     syms, _ = select_limit_up_pullback(
         asof,
-        PortfolioSelectContext(panel=panel, names=names),
+        CrossSectionContext(panel=panel, names=names),
         LimitUpPullbackParams(top_n=5, concept_symbols=["000002"]),
     )
     assert syms == ["000002"]
@@ -188,33 +188,32 @@ def test_run_limit_up_pullback_backtest_mocked(monkeypatch):
     asof_start = str(next(iter(panel.values()))["value"]["date"].iloc[80])
 
     monkeypatch.setattr(
-        "app.portfolio.runner.resolve_universe",
+        "app.backtest.cross_section_runner._resolve_universe",
         lambda _req, default_universe=None: (
             [{"symbol": s, "name": "测试"} for s in panel],
             "mock",
         ),
     )
     monkeypatch.setattr(
-        "app.portfolio.runner.load_fundamentals_panel",
+        "app.backtest.cross_section_runner.load_fundamentals_panel",
         lambda symbols, **_kw: {s: panel[s] for s in symbols if s in panel},
     )
 
-    resp = run_portfolio_request(
-        PortfolioBacktestRequest(
+    resp = run_backtest_request(
+        BacktestRequest(
             strategy_id="limit_up_pullback",
-            mode="backtest",
+            mode="universe",
             symbols=list(panel),
             start_date=asof_start,
             end_date=asof_end,
-            rebalance_freq=20,
             slippage=0.0,
             min_commission=0.0,
             strategy_params={"top_n": 3, "max_market_cap": 1e11},
         )
     )
-    assert resp.strategy_id == "limit_up_pullback"
-    assert len(resp.rebalances) >= 1
-    assert resp.metrics["final_equity"] > 0
+    assert resp["strategy_id"] == "limit_up_pullback"
+    assert len(resp["rebalances"]) >= 1
+    assert resp["metrics"]["final_equity"] > 0
 
 
 def test_screen_future_date_falls_back_to_latest_data(monkeypatch):
@@ -223,19 +222,19 @@ def test_screen_future_date_falls_back_to_latest_data(monkeypatch):
     panel = {"000001": {"value": value}}
 
     monkeypatch.setattr(
-        "app.portfolio.runner.resolve_universe",
+        "app.backtest.cross_section_runner._resolve_universe",
         lambda _req, default_universe=None: (
             [{"symbol": "000001", "name": "测试"}],
             "mock",
         ),
     )
     monkeypatch.setattr(
-        "app.portfolio.runner.load_fundamentals_panel",
+        "app.backtest.cross_section_runner.load_fundamentals_panel",
         lambda symbols, **_kw: panel,
     )
 
-    resp = run_portfolio_request(
-        PortfolioBacktestRequest(
+    resp = run_backtest_request(
+        BacktestRequest(
             strategy_id="limit_up_pullback",
             mode="screen",
             symbols=["000001"],
@@ -244,6 +243,6 @@ def test_screen_future_date_falls_back_to_latest_data(monkeypatch):
         )
     )
 
-    assert resp.asof == latest
-    assert [holding["symbol"] for holding in resp.holdings] == ["000001"]
-    assert any("已回退至" in warning for warning in resp.warnings)
+    assert resp["asof"] == latest
+    assert [holding["symbol"] for holding in resp["holdings"]] == ["000001"]
+    assert any("已回退至" in warning for warning in resp["warnings"])

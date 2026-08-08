@@ -1,4 +1,4 @@
-"""组合回测交互 HTML 报告渲染。"""
+"""共享资金横截面回测交互 HTML 报告渲染。"""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from app.portfolio.report_model import build_portfolio_report_model
+from app.backtest.shared_report_model import build_backtest_shared_report_model
 
 _TEMPLATES_DIR = Path(__file__).resolve().parent / "templates"
 
@@ -26,7 +26,7 @@ def _write_embedded_html(
     if dest.suffix.lower() != ".html":
         dest = dest.with_suffix(".html")
     dest.parent.mkdir(parents=True, exist_ok=True)
-    title = str(model.get("strategy_id") or "portfolio")
+    title = str(model.get("strategy_id") or "shared")
     payload = json.dumps(model, ensure_ascii=False)
     # 避免 </script> 截断
     payload = payload.replace("<", "\\u003c")
@@ -35,7 +35,7 @@ def _write_embedded_html(
     return dest
 
 
-def render_portfolio_html(
+def render_backtest_shared_html(
     out: dict[str, Any],
     dest: Path,
     *,
@@ -44,16 +44,16 @@ def render_portfolio_html(
     """生成自包含交互 HTML 报告，返回写入路径。"""
     mode = str(out.get("mode") or "backtest")
     if mode == "backtest":
-        model = build_portfolio_report_model(out, load_prices=load_prices)
+        model = build_backtest_shared_report_model(out, load_prices=load_prices)
         return _write_embedded_html(
-            _load_template("portfolio_backtest.html"),
+            _load_template("backtest_shared.html"),
             model,
             dest,
         )
     raise ValueError(f"暂不支持 mode={mode!r} 的 HTML 报告")
 
 
-def render_portfolio_html_from_json(json_path: Path, dest: Path | None = None) -> Path:
+def render_backtest_shared_html_from_json(json_path: Path, dest: Path | None = None) -> Path:
     """从已有回测 JSON 离线生成 HTML。"""
     raw = json.loads(json_path.expanduser().resolve().read_text(encoding="utf-8"))
     if not isinstance(raw, dict):
@@ -61,4 +61,4 @@ def render_portfolio_html_from_json(json_path: Path, dest: Path | None = None) -
     out_path = dest
     if out_path is None:
         out_path = json_path.with_suffix(".html")
-    return render_portfolio_html(raw, out_path)
+    return render_backtest_shared_html(raw, out_path)

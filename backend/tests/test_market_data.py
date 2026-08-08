@@ -11,7 +11,11 @@ import pytest
 from app.data_sources.market_data import (
     fetch_a_share_daily,
     fetch_a_share_universe,
+    fetch_gz2000_universe,
     fetch_hs300_universe,
+    fetch_star50_universe,
+    fetch_star_board_universe,
+    fetch_zz1000_universe,
     fetch_zz500_universe,
 )
 
@@ -156,3 +160,120 @@ def test_fetch_zz500_universe_uses_csi_000905(monkeypatch):
     assert requested == ["000905"]
     assert rows == [{"symbol": "600000", "name": "浦发银行"}]
     assert "中证500当前成分股共 1 只" in note
+
+
+def test_fetch_zz1000_universe_uses_csi_000852(monkeypatch):
+    requested: list[str] = []
+
+    def constituents(symbol: str) -> pd.DataFrame:
+        requested.append(symbol)
+        return pd.DataFrame(
+            {"成分券代码": ["600000"], "成分券名称": ["浦发银行"]}
+        )
+
+    monkeypatch.setitem(
+        sys.modules,
+        "akshare",
+        SimpleNamespace(index_stock_cons_csindex=constituents),
+    )
+
+    rows, note = fetch_zz1000_universe()
+
+    assert requested == ["000852"]
+    assert rows == [{"symbol": "600000", "name": "浦发银行"}]
+    assert "中证1000当前成分股共 1 只" in note
+
+
+def test_fetch_star50_universe_uses_csi_000688(monkeypatch):
+    requested: list[str] = []
+
+    def constituents(symbol: str) -> pd.DataFrame:
+        requested.append(symbol)
+        return pd.DataFrame(
+            {"成分券代码": ["688981"], "成分券名称": ["中芯国际"]}
+        )
+
+    monkeypatch.setitem(
+        sys.modules,
+        "akshare",
+        SimpleNamespace(index_stock_cons_csindex=constituents),
+    )
+
+    rows, note = fetch_star50_universe()
+
+    assert requested == ["000688"]
+    assert rows == [{"symbol": "688981", "name": "中芯国际"}]
+    assert "科创50当前成分股共 1 只" in note
+
+
+def test_fetch_gz2000_universe_falls_back_to_sina(monkeypatch):
+    called: list[str] = []
+
+    def csindex(symbol: str) -> pd.DataFrame:
+        called.append(f"csindex:{symbol}")
+        raise RuntimeError("国证指数不在中证指数库")
+
+    def cons(symbol: str) -> pd.DataFrame:
+        called.append(f"cons:{symbol}")
+        raise RuntimeError("新浪成分接口不存在")
+
+    def sina(symbol: str) -> pd.DataFrame:
+        called.append(f"sina:{symbol}")
+        return pd.DataFrame({"证券代码": ["300001"], "证券简称": ["特锐德"]})
+
+    monkeypatch.setitem(
+        sys.modules,
+        "akshare",
+        SimpleNamespace(
+            index_stock_cons_csindex=csindex,
+            index_stock_cons=cons,
+            index_stock_cons_sina=sina,
+        ),
+    )
+
+    rows, note = fetch_gz2000_universe()
+
+    assert called == ["csindex:399303", "cons:399303", "sina:sz399303"]
+    assert rows == [{"symbol": "300001", "name": "特锐德"}]
+    assert "国证2000当前成分股共 1 只" in note
+
+
+def test_fetch_star_board_universe_filters_by_prefix(monkeypatch):
+    class _FakeAStockDataSDK:
+        def get_universe(self):
+            return [
+                {"symbol": "600000", "name": "浦发银行"},
+                {"symbol": "688981", "name": "中芯国际"},
+                {"symbol": "689009", "name": "九号公司"},
+                {"symbol": "300750", "name": "宁德时代"},
+            ]
+
+    monkeypatch.setattr(
+        "app.data_sources.market_data.AStockDataSDK",
+        lambda: _FakeAStockDataSDK(),
+    )
+
+    rows, note = fetch_star_board_universe(10)
+
+    assert rows == [
+        {"symbol": "688981", "name": "中芯国际"},
+        {"symbol": "689009", "name": "九号公司"},
+    ]
+    assert "科创板股票池共 2 只" in note
+
+
+def test_fetch_star_board_universe_sampling_with_seed(monkeypatch):
+    class _FakeAStockDataSDK:
+        def get_universe(self):
+            return [{"symbol": f"688{i:03d}", "name": f"股{i}"} for i in range(10)]
+
+    monkeypatch.setattr(
+        "app.data_sources.market_data.AStockDataSDK",
+        lambda: _FakeAStockDataSDK(),
+    )
+
+    rows, note = fetch_star_board_universe(3, seed=42)
+
+    assert len(rows) == 3
+    assert all(row["symbol"].startswith("688") for row in rows)
+    assert "随机种子 42 抽样 3 只" in note

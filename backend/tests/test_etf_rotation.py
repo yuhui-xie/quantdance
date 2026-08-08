@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import pandas as pd
 
-from app.portfolio.base import PortfolioSelectContext
-from app.portfolio.etf_rotation import EtfRotationParams, select_etf_rotation
-from app.portfolio.registry import get_portfolio_strategy
-from app.portfolio.runner import run_portfolio_request
-from app.schemas import PortfolioBacktestRequest
+from app.strategies.registry import get_cross_section_strategy
+from app.backtest_runner import run_backtest_request
+from app.schemas import BacktestRequest
+from app.strategies.base import CrossSectionContext
+from app.strategies.cross_section.etf_rotation import EtfRotationParams, select_etf_rotation
 
 
 def _value_df(dates: list[str], closes: list[float]) -> pd.DataFrame:
@@ -32,7 +32,7 @@ def test_select_picks_strongest_positive_momentum():
 
     symbols, details = select_etf_rotation(
         dates[-1],
-        PortfolioSelectContext(panel=panel, names={}),
+        CrossSectionContext(panel=panel, names={}),
         EtfRotationParams(top_n=1, lookback_days=5, trend_days=3),
     )
 
@@ -49,7 +49,7 @@ def test_select_holds_cash_when_no_etf_passes_filter():
 
     symbols, details = select_etf_rotation(
         dates[-1],
-        PortfolioSelectContext(panel=panel, names={}),
+        CrossSectionContext(panel=panel, names={}),
         EtfRotationParams(lookback_days=5, trend_days=3),
     )
 
@@ -72,27 +72,26 @@ def test_run_etf_rotation_backtest_with_market_data(monkeypatch):
             index=dates,
         )
 
-    monkeypatch.setattr("app.portfolio.runner.fetch_a_share_daily", fake_daily)
+    monkeypatch.setattr("app.backtest.cross_section_runner.fetch_a_share_daily", fake_daily)
     monkeypatch.setattr(
-        "app.portfolio.runner.resolve_universe",
+        "app.backtest.cross_section_runner._resolve_universe",
         lambda _req, default_universe=None: (
             [{"symbol": symbol, "name": symbol} for symbol in symbols],
             "mock ETF pool",
         ),
     )
     monkeypatch.setattr(
-        "app.portfolio.runner.attach_hs300_benchmark",
+        "app.backtest.cross_section_runner.attach_hs300_benchmark",
         lambda raw, **_kwargs: raw,
     )
 
-    response = run_portfolio_request(
-        PortfolioBacktestRequest(
+    response = run_backtest_request(
+        BacktestRequest(
             strategy_id="etf_rotation",
-            mode="backtest",
+            mode="universe",
             symbols=symbols,
             start_date=dates[20].strftime("%Y-%m-%d"),
             end_date=dates[-1].strftime("%Y-%m-%d"),
-            rebalance_freq=20,
             slippage=0.0,
             min_commission=0.0,
             strategy_params={
@@ -103,7 +102,7 @@ def test_run_etf_rotation_backtest_with_market_data(monkeypatch):
         )
     )
 
-    assert get_portfolio_strategy("etf_rotation") is not None
-    assert response.strategy_id == "etf_rotation"
-    assert response.rebalances
-    assert response.metrics["final_equity"] > 0
+    assert get_cross_section_strategy("etf_rotation") is not None
+    assert response["strategy_id"] == "etf_rotation"
+    assert response["rebalances"]
+    assert response["metrics"]["final_equity"] > 0

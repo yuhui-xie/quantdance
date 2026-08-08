@@ -2,17 +2,22 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Sequence
 
 import pandas as pd
 from pydantic import BaseModel, Field, model_validator
 
 from app.data_sources.em_fundamentals import trailing_dividend_yield
-from app.portfolio.base import PortfolioSelectContext, PortfolioStrategySpec
-from app.portfolio.common import asof_tradeable_row, is_st_stock
+from app.strategies.base import (
+    CrossSectionContext,
+    CrossSectionStrategySpec,
+    every_n_trading_days,
+)
+from app.strategies.cross_section.common import asof_tradeable_row, is_st_stock
 
 
 class MarketAuntieParams(BaseModel):
+    decision_interval: int = Field(20, ge=1, description="决策间隔（交易日）")
     top_n: int = Field(10, ge=1, le=50)
     min_price: float = Field(2.0, ge=0)
     max_price: float = Field(9.0, gt=0)
@@ -37,7 +42,7 @@ class MarketAuntieParams(BaseModel):
 
 def select_market_auntie(
     asof: str,
-    ctx: PortfolioSelectContext,
+    ctx: CrossSectionContext,
     params: MarketAuntieParams,
 ) -> tuple[list[str], list[dict[str, Any]]]:
     candidates: list[dict[str, Any]] = []
@@ -100,12 +105,22 @@ def select_market_auntie(
     return [c["symbol"] for c in picked], picked
 
 
-STRATEGY = PortfolioStrategySpec(
+def decision_dates(
+    calendar: Sequence[str],
+    ctx: CrossSectionContext,
+    params: MarketAuntieParams,
+) -> list[str]:
+    del ctx
+    return every_n_trading_days(calendar, params.decision_interval)
+
+
+STRATEGY = CrossSectionStrategySpec(
     id="market_auntie",
     name="菜场大妈",
     description="质好（股息率+PEG）价低市值小，周期等权调仓",
     params_model=MarketAuntieParams,
     select=select_market_auntie,
+    decision_dates=decision_dates,
     default_universe="zz500",
     needs_dividend=True,
     default_top_n=10,

@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import pandas as pd
 
-from app.portfolio.base import PortfolioSelectContext
-from app.portfolio.runner import run_portfolio_request
-from app.portfolio.small_cap_zz399101 import SmallCapZZ399101Params, select_small_cap_zz399101
-from app.schemas import PortfolioBacktestRequest
+from app.backtest_runner import run_backtest_request
+from app.schemas import BacktestRequest
+from app.strategies.base import CrossSectionContext
+from app.strategies.cross_section.small_cap_zz399101 import (
+    SmallCapZZ399101Params,
+    select_small_cap_zz399101,
+)
 
 
 def _value_df(rows: list[tuple[str, float, float, float]]) -> pd.DataFrame:
@@ -40,7 +43,7 @@ def test_select_picks_smallest_float_cap():
     names = {k: "普通" for k in panel}
     syms, details = select_small_cap_zz399101(
         "2024-01-02",
-        PortfolioSelectContext(panel=panel, names=names),
+        CrossSectionContext(panel=panel, names=names),
         SmallCapZZ399101Params(top_n=2),
     )
     assert syms == ["A", "C"]
@@ -57,30 +60,29 @@ def test_run_small_cap_backtest_mocked(monkeypatch):
 
     panel = {f"00000{i}": make(1e9 * i) for i in range(1, 6)}
     monkeypatch.setattr(
-        "app.portfolio.runner.resolve_universe",
+        "app.backtest.cross_section_runner._resolve_universe",
         lambda _req, default_universe=None: (
             [{"symbol": s, "name": "测试"} for s in panel],
             "mock",
         ),
     )
     monkeypatch.setattr(
-        "app.portfolio.runner.load_fundamentals_panel",
+        "app.backtest.cross_section_runner.load_fundamentals_panel",
         lambda symbols, **_kw: {s: panel[s] for s in symbols if s in panel},
     )
 
-    resp = run_portfolio_request(
-        PortfolioBacktestRequest(
+    resp = run_backtest_request(
+        BacktestRequest(
             strategy_id="small_cap_zz399101",
-            mode="backtest",
+            mode="universe",
             symbols=list(panel),
             start_date="2024-01-02",
             end_date=date_strs[-1],
-            rebalance_freq=20,
             slippage=0.0,
             min_commission=0.0,
             strategy_params={"top_n": 3},
         )
     )
-    assert resp.strategy_id == "small_cap_zz399101"
-    assert len(resp.rebalances) >= 1
-    assert resp.metrics["final_equity"] > 0
+    assert resp["strategy_id"] == "small_cap_zz399101"
+    assert len(resp["rebalances"]) >= 1
+    assert resp["metrics"]["final_equity"] > 0

@@ -1,15 +1,16 @@
 # 菜场大妈选股策略说明
 
-本文档描述项目中的 `market_auntie` **多标的组合**策略：质好、价低、市值小，按月等权调仓。
+本文档描述项目中的 `market_auntie` **横截面共享资金**策略：质好、价低、市值小，默认约每月生成一次决策并等权换仓。
 
 实现代码：
 
-- 选股插件：`backend/app/portfolio/market_auntie.py`
-- 统一执行：`backend/app/portfolio/runner.py`
-- 组合再平衡引擎：`backend/app/portfolio_engine.py`
+- 策略插件：`backend/app/strategies/cross_section/market_auntie.py`
+- 横截面执行：`backend/app/backtest/cross_section_runner.py`
+- 共享资金引擎：`backend/app/backtest/shared_engine.py`
 - 基本面数据：`backend/app/data_sources/em_fundamentals.py`（东财 `stock_value_em` + 巨潮分红）
 
-> 该策略属于低频组合类目（`portfolio`），不是单票 `StrategySpec`；请用 `portfolio`，不要用 `backtest --strategy`。
+> 该策略是 `CrossSectionStrategySpec`，通过统一的 `backtest` 子命令运行；
+> `mode=universe` 使用共享资金，`mode=screen` 只做截面选股。
 
 ## 1. 核心思想
 
@@ -21,6 +22,7 @@
 
 ```json
 {
+  "decision_interval": 20,
   "top_n": 10,
   "min_price": 2.0,
   "max_price": 9.0,
@@ -41,7 +43,8 @@
 3. **可交易过滤**：剔除名称含 ST/退；剔除疑似停牌（`T` 日无估值行情）；剔除涨跌幅绝对值 ≥ `limit_pct_threshold`（默认 9.5%）的疑似涨跌停。
 4. **市值小**：在上述过滤后，按总市值升序取前 `top_n` 只，等权作为目标持仓。
 
-调仓间隔由请求参数 `rebalance_freq` 控制，单位为**交易日**（默认 `20`≈月频；`5`≈周频）。
+当前策略用 `strategy_params.decision_interval` 生成决策日，单位为**交易日**
+（默认 `20`≈月频；`5`≈周频）。这是策略自身的默认规则，不是共享资金引擎强制定时调仓。
 
 ## 3. 交易与费用模型
 
@@ -53,21 +56,20 @@
 
 ## 4. 示例请求参数
 
-对照 `backend/examples/portfolio_market_auntie.json`。公共字段总表见 [策略总览](./strategy-guide.md)。
+对照 `backend/examples/backtest_shared_market_auntie.json`。公共字段总表见 [策略总览](./strategy-guide.md)。
 
 ### 4.1 请求级字段
 
 | 字段 | 示例值 | 含义 |
 | --- | --- | --- |
-| `strategy_id` | `market_auntie` | 本组合策略 id |
-| `mode` | `backtest` | `backtest`=周期调仓回测；`screen`=仅截面选股 |
+| `strategy_id` | `market_auntie` | 本横截面策略 id |
+| `mode` | `universe` | `universe`=共享资金回测；`screen`=仅截面选股 |
 | `data_source` | `a_stock_data` | 行情数据源 |
 | `universe` | `all_a` | `symbols` 为空时用全 A 股票池 |
 | `symbols` | `[]` | 显式代码列表；非空时覆盖 `universe` |
 | `max_universe` | `60` | 股票池上限（演示用；全市场复现需加大） |
 | `seed` | `42` | 抽样种子，保证可复现 |
 | `start_date` / `end_date` | `2023-01-01` / `2024-12-31` | 回测区间 |
-| `rebalance_freq` | `20` | 调仓间隔（交易日），`20`≈月频 |
 | `initial_cash` | `100000` | 初始资金（元） |
 | `commission` | `0.0003` | 佣金费率 |
 | `min_commission` | `5.0` | 单笔最低佣金（元） |
@@ -76,14 +78,15 @@
 | `use_cache` | `true` | 使用本地估值/分红缓存 |
 | `force_refresh` | `false` | 不强制重新拉取 |
 | `max_workers` | `8` | 并行拉取线程数 |
-| `output_options.output` | `out/portfolio_market_auntie.json` | 结果 JSON 路径 |
-| `output_options.plot` | `out/portfolio_market_auntie.svg` | 权益曲线图路径 |
+| `output_options.output` | `out/backtest_shared_market_auntie.json` | 结果 JSON 路径 |
+| `output_options.plot` | `out/backtest_shared_market_auntie.svg` | 权益曲线图路径 |
 | `output_options.json` | `false` | 是否向 stdout 打印完整 JSON |
 
 ### 4.2 `strategy_params`
 
 | 参数 | 示例值 | 默认 | 说明 |
 | --- | --- | --- | --- |
+| `decision_interval` | `20` | 20 | 当前策略生成决策日的交易日间隔，并非引擎强制定时 |
 | `top_n` | `10` | 10 | 最终持仓只数（过滤后按市值升序取前 N） |
 | `min_price` | `2.0` | 2 | 最低价（元）；对应面值退市缓冲 |
 | `max_price` | `9.0` | 9 | 最高价（元）；「价低」上界 |
@@ -111,13 +114,13 @@
 cd backend
 
 # 截面选股（最新/指定日）
-python -m app.script portfolio --mode screen --max-universe 80 --seed 42 --json
+python -m app.script backtest --strategy market_auntie --mode screen --max-universe 80 --seed 42 --json
 
-# 组合回测（建议先小股票池验证）
-python -m app.script portfolio --request examples/portfolio_market_auntie.json
+# 共享资金回测（建议先小股票池验证）
+python -m app.script backtest --request examples/backtest_shared_market_auntie.json
 
 # CLI 等价写法
-python -m app.script portfolio --mode backtest --universe all_a --max-universe 60 --seed 42 \
+python -m app.script backtest --strategy market_auntie --mode universe --universe all_a --max-universe 60 --seed 42 \
   --start-date 2023-01-01 --end-date 2024-12-31 \
   --slippage 0.01 --top-n 10 --max-price 9 --plot out/market_auntie.svg
 ```

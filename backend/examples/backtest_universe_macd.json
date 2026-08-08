@@ -1,0 +1,26 @@
+{
+  "mode": "universe",
+  "universe": "hs300",
+  "max_universe": 500,
+  "data_source": "a_stock_data",
+  "strategy_id": "macd",
+  "start_date": "2020-01-01",
+  "end_date": "2026-08-06",
+  "initial_cash": 100000,
+  "commission": 0.0003,
+  "max_workers": 8,
+  "include_equity": true,
+  "include_trades": true,
+  "include_price": true,
+  "strategy_params": {
+    "fast_period": 12,
+    "slow_period": 26,
+    "signal_period": 9
+  },
+  "output_options": {
+    "json": false,
+    "output": "out/backtest_universe_higher_moment.json",
+    "plot": "out/backtest_universe_higher_moment.svg",
+    "report": "out/backtest_universe_higher_moment.html"
+  }
+}

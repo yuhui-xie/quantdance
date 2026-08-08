@@ -2,17 +2,22 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Sequence
 
 import pandas as pd
 from pydantic import BaseModel, Field, model_validator
 
 from app.data_sources.financial_reports import asof_financial_row
-from app.portfolio.base import PortfolioSelectContext, PortfolioStrategySpec
-from app.portfolio.common import asof_tradeable_row, is_st_stock
+from app.strategies.base import (
+    CrossSectionContext,
+    CrossSectionStrategySpec,
+    every_n_trading_days,
+)
+from app.strategies.cross_section.common import asof_tradeable_row, is_st_stock
 
 
 class OrderInflectionParams(BaseModel):
+    decision_interval: int = Field(20, ge=1, description="决策间隔（交易日）")
     top_n: int = Field(10, ge=1, le=50)
     # 第一步：合同负债 —— 明天有活干
     min_contract_liab: float = Field(0.0, ge=0, description="合同负债绝对值下限（元）")
@@ -94,7 +99,7 @@ def _inflection_score(
 
 def select_order_inflection(
     asof: str,
-    ctx: PortfolioSelectContext,
+    ctx: CrossSectionContext,
     params: OrderInflectionParams,
 ) -> tuple[list[str], list[dict[str, Any]]]:
     candidates: list[dict[str, Any]] = []
@@ -214,12 +219,22 @@ def select_order_inflection(
     return [c["symbol"] for c in picked], picked
 
 
-STRATEGY = PortfolioStrategySpec(
+def decision_dates(
+    calendar: Sequence[str],
+    ctx: CrossSectionContext,
+    params: OrderInflectionParams,
+) -> list[str]:
+    del ctx
+    return every_n_trading_days(calendar, params.decision_interval)
+
+
+STRATEGY = CrossSectionStrategySpec(
     id="order_inflection",
     name="订单开工拐点",
     description="合同负债→毛利率→经营现金流→存货备货→综合拐点分，周期等权调仓",
     params_model=OrderInflectionParams,
     select=select_order_inflection,
+    decision_dates=decision_dates,
     default_universe="zz500",
     needs_dividend=False,
     needs_financials=True,

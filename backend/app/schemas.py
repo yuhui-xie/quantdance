@@ -8,11 +8,14 @@ from pydantic import BaseModel, Field, model_validator
 
 
 class BacktestRequest(BaseModel):
-    mode: Literal["single", "universe"] = "single"
+    mode: Literal["single", "universe", "screen"] = "single"
     data_source: Literal["a_stock_data"] = "a_stock_data"
     strategy_id: str = "ma_crossover"
     initial_cash: float = Field(100_000, ge=1000)
     commission: float = Field(0.0003, ge=0, le=0.05)
+    min_commission: float = Field(5.0, ge=0)
+    slippage: float = Field(0.01, ge=0, le=0.05)
+    lot_size: int = Field(100, ge=1)
     stop_loss_pct: float | None = Field(
         None,
         gt=0,
@@ -21,7 +24,9 @@ class BacktestRequest(BaseModel):
     )
     bars: int = Field(500, ge=50, le=5000)
     symbol: str | None = Field(None, description="A 股 6 位代码或带 SH/SZ 后缀")
-    universe: Literal["all_a", "hs300", "zz500", "zz399101"] = Field(
+    universe: Literal[
+        "all_a", "hs300", "zz500", "zz399101", "zz1000", "gz2000", "star50", "star_board"
+    ] = Field(
         "all_a",
         description="universe 模式且 symbols 为空时使用的股票池",
     )
@@ -29,6 +34,11 @@ class BacktestRequest(BaseModel):
     max_universe: int = Field(80, ge=1, le=10000)
     seed: int | None = Field(None, description="股票池超上限时的可复现抽样种子")
     max_workers: int = Field(8, ge=1, le=32)
+    use_cache: bool = True
+    force_refresh: bool = False
+    take_profit_arm_pct: float | None = Field(None, gt=0, le=5)
+    take_profit_exit_pct: float | None = Field(None, ge=0, le=5)
+    position_management: "PositionManagementConfig | None" = None
     include_equity: bool = True
     include_trades: bool = True
     include_price: bool = False
@@ -83,13 +93,26 @@ class BacktestRequest(BaseModel):
     def check_backtest_request(self) -> BacktestRequest:
         start = (self.start_date or "").strip()
         end = (self.end_date or "").strip()
-        if (start and not end) or (end and not start):
+        if self.mode == "screen":
+            if start and not end:
+                raise ValueError("screen 模式填写 start_date 时须同时填写 end_date")
+        elif (start and not end) or (end and not start):
             raise ValueError("start_date 与 end_date 须同时填写或同时留空")
         if self.mode == "universe":
             if not start or not end:
                 raise ValueError("universe 模式须同时提供 start_date 与 end_date")
             if self.symbol and self.symbol.strip():
                 raise ValueError("universe 模式请使用 symbols，不应填写 symbol")
+        arm = self.take_profit_arm_pct
+        exit_level = self.take_profit_exit_pct
+        if (arm is None) ^ (exit_level is None):
+            raise ValueError("take_profit_arm_pct 与 take_profit_exit_pct 须同时设置或同时为空")
+        if arm is not None and exit_level is not None and exit_level > 0 and exit_level >= arm:
+            raise ValueError("take_profit_exit_pct 必须小于 take_profit_arm_pct")
+        if self.position_management is not None and (
+            self.stop_loss_pct is not None or arm is not None or exit_level is not None
+        ):
+            raise ValueError("position_management 不能与旧版止损止盈字段同时设置")
         return self
 
 
@@ -257,92 +280,9 @@ class PositionManagementConfig(BaseModel):
         return self
 
 
-class PortfolioBacktestRequest(BaseModel):
-    """低频组合：截面选股 / 周期调仓回测请求。"""
+class BacktestSharedResponse(BaseModel):
+    """横截面策略的共享资金选股/回测响应。"""
 
-    strategy_id: str = Field("market_auntie", description="组合策略 id，见 portfolio --list-strategies")
-    mode: Literal["backtest", "screen"] = "backtest"
-    data_source: Literal["a_stock_data"] = "a_stock_data"
-    universe: Literal["all_a", "hs300", "zz500", "zz399101"] = Field(
-        "zz500",
-        description="symbols 为空时的股票池；默认中证500，策略可提供其他默认值（如中小综指）",
-    )
-    symbols: list[str] = Field(default_factory=list)
-    max_universe: int = Field(
-        80,
-        ge=1,
-        le=10000,
-        description="股票池上限；全 A 约 5000+，设够大即可纳入全部（首次拉估值较慢）",
-    )
-    seed: int | None = Field(None, description="股票池抽样种子")
-    start_date: str | None = Field(None, description="回测起始 YYYY-MM-DD")
-    end_date: str | None = Field(None, description="回测结束 / 选股截面日 YYYY-MM-DD")
-    rebalance_freq: int = Field(
-        20,
-        ge=1,
-        le=252,
-        description="调仓间隔（交易日）。20≈月频，5≈周频；从回测首个交易日起每隔 N 日调仓",
-    )
-    initial_cash: float = Field(100_000, ge=1000)
-    commission: float = Field(0.0003, ge=0, le=0.05)
-    min_commission: float = Field(5.0, ge=0, description="单笔最低佣金（元）")
-    slippage: float = Field(0.01, ge=0, le=0.05, description="单边滑点比例，默认 1%")
-    lot_size: int = Field(100, ge=1, description="买入整手数（股）")
-    take_profit_arm_pct: float | None = Field(
-        None,
-        gt=0,
-        le=5,
-        description="通用止盈阈值 x：相对成本浮盈达到该比例；exit>0 时仅启动、exit=0 时直接卖出",
-    )
-    take_profit_exit_pct: float | None = Field(
-        None,
-        ge=0,
-        le=5,
-        description="通用止盈回落阈值 y：启动后浮盈回落到该比例则卖出（须 < arm）；填 0 表示达到 arm 即直接止盈、不等回落",
-    )
-    stop_loss_pct: float | None = Field(
-        None,
-        gt=0,
-        le=0.8,
-        description="通用止损：相对成本浮亏达到该比例则卖出（如 0.1=跌10%）",
-    )
-    position_management: PositionManagementConfig | None = Field(
-        None,
-        description="可选的系统化渐进建仓模块；设置后替代上方旧版止损止盈字段",
-    )
-    use_cache: bool = True
-    force_refresh: bool = False
-    max_workers: int = Field(8, ge=1, le=32)
-    strategy_params: dict[str, Any] = Field(
-        default_factory=dict,
-        description="当前组合策略专属参数，如 top_n / max_peg",
-    )
-
-    @model_validator(mode="after")
-    def check_portfolio_request(self) -> PortfolioBacktestRequest:
-        s = (self.start_date or "").strip()
-        e = (self.end_date or "").strip()
-        if self.mode == "backtest":
-            if not s or not e:
-                raise ValueError("backtest 模式须同时提供 start_date 与 end_date")
-        elif s and not e:
-            raise ValueError("填写 start_date 时须同时填写 end_date")
-        arm = self.take_profit_arm_pct
-        exit_lvl = self.take_profit_exit_pct
-        if (arm is None) ^ (exit_lvl is None):
-            raise ValueError("take_profit_arm_pct 与 take_profit_exit_pct 须同时设置或同时为空")
-        if arm is not None and exit_lvl is not None and exit_lvl > 0 and exit_lvl >= arm:
-            raise ValueError("take_profit_exit_pct 必须小于 take_profit_arm_pct（填 0 表示达到 arm 直接止盈）")
-        if self.position_management is not None and (
-            arm is not None or exit_lvl is not None or self.stop_loss_pct is not None
-        ):
-            raise ValueError("position_management 不能与旧版止损止盈字段同时设置")
-        return self
-
-    model_config = {"extra": "ignore"}
-
-
-class PortfolioBacktestResponse(BaseModel):
     strategy_id: str = ""
     mode: str = "backtest"
     universe_note: str = ""
@@ -358,4 +298,7 @@ class PortfolioBacktestResponse(BaseModel):
     )
     warnings: list[str] = Field(default_factory=list)
     disclaimer: str = "演示用途，不构成投资建议。"
+
+
+BacktestRequest.model_rebuild()
 

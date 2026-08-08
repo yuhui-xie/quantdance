@@ -1,6 +1,6 @@
 {
   "strategy_id": "etf_rotation",
-  "mode": "backtest",
+  "mode": "universe",
   "data_source": "a_stock_data",
   "universe": "all_a",
   "symbols": [
@@ -13,7 +13,6 @@
   ],
   "start_date": "2020-01-01",
   "end_date": "2026-07-31",
-  "rebalance_freq": 20,
   "initial_cash": 100000,
   "commission": 0.0003,
   "min_commission": 5.0,
@@ -23,6 +22,7 @@
   "force_refresh": false,
   "max_workers": 6,
   "strategy_params": {
+    "decision_interval": 20,
     "top_n": 1,
     "lookback_days": 60,
     "trend_days": 120,
@@ -32,9 +32,9 @@
     "limit_pct_threshold": 9.5
   },
   "output_options": {
-    "output": "out/portfolio_etf_rotation.json",
-    "plot": "out/portfolio_etf_rotation.svg",
-    "report": "out/portfolio_etf_rotation.html",
+    "output": "out/backtest_shared_etf_rotation.json",
+    "plot": "out/backtest_shared_etf_rotation.svg",
+    "report": "out/backtest_shared_etf_rotation.html",
     "json": true
   }
 }

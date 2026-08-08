@@ -23,9 +23,14 @@ python -m app.script --help
 
 支持子命令：
 
-- `backtest`：运行单票回测
+- `backtest`：统一回测入口；既支持时序单票/独立资金股票池，也支持横截面共享资金策略
 - `screen`：运行选股
-- `portfolio`：低频组合（截面选股 + 按交易日间隔调仓；如菜场大妈、中小综指微盘、涨停回落埋伏、订单开工拐点）
+
+`backtest --mode universe` 有两种资金语义：时序 `StrategySpec` 对股票池逐票独立运行；
+横截面 `CrossSectionStrategySpec`（如菜场大妈、中小综指微盘、ETF 轮动、涨停回落埋伏、
+订单开工拐点）使用共享账户完成截面选股和换仓。横截面策略自行生成决策日；
+当前内置策略默认用 `strategy_params.decision_interval=20` 生成约月频决策日，
+这不是共享资金引擎强制的调仓周期。
 
 ## 常用示例
 
@@ -44,14 +49,14 @@ python -m app.script screen --list-presets
 python -m app.script screen --preset momentum --top-k 10 --max-universe 80 --seed 42 --json
 python -m app.script screen --request examples/screen_custom_factor.json --json
 
-# 低频组合：列出策略 / 截面选股 / 周期调仓回测
-python -m app.script portfolio --list-strategies
-python -m app.script portfolio --strategy market_auntie --mode screen --max-universe 80 --seed 42 --json
-python -m app.script portfolio --request examples/portfolio_market_auntie.json
-python -m app.script portfolio --request examples/portfolio_small_cap_zz399101.json
-python -m app.script portfolio --request examples/portfolio_etf_rotation.json
-python -m app.script portfolio --request examples/portfolio_limit_up_pullback.json
-python -m app.script portfolio --request examples/portfolio_order_inflection.json
+# 横截面共享资金：列出策略 / 截面选股 / 回测
+python -m app.script backtest --list-strategies
+python -m app.script backtest --strategy market_auntie --mode screen --max-universe 80 --seed 42 --json
+python -m app.script backtest --request examples/backtest_shared_market_auntie.json
+python -m app.script backtest --request examples/backtest_shared_small_cap_zz399101.json
+python -m app.script backtest --request examples/backtest_shared_etf_rotation.json
+python -m app.script backtest --request examples/backtest_shared_limit_up_pullback.json
+python -m app.script backtest --request examples/backtest_shared_order_inflection.json
 ```
 
 ## 数据与存储
@@ -92,7 +97,7 @@ print(vals["sh600519"]["pe_ttm"], vals["sz000858"]["market_cap"])
 
 - 总览与索引：[docs/strategy-guide.md](docs/strategy-guide.md)
 - 各策略专文：`docs/*-strategy.md`（如 [量比脉冲](docs/volume-ma-pulse-strategy.md)、[双均线](docs/ma-crossover-strategy.md)）
-- 低频组合：[菜场大妈](docs/market-auntie-strategy.md)、[中小综指微盘](docs/small-cap-zz399101-strategy.md)、[涨停回落埋伏](docs/limit-up-pullback-strategy.md)
+- 横截面共享资金：[菜场大妈](docs/market-auntie-strategy.md)、[中小综指微盘](docs/small-cap-zz399101-strategy.md)、[涨停回落埋伏](docs/limit-up-pullback-strategy.md)、[订单开工拐点](docs/order-inflection-strategy.md)
 
 新增策略时请同步新增对应专文，并更新总览索引表。
 

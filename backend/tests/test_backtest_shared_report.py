@@ -5,11 +5,11 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import patch
 
-from app.cli_portfolio_report import (
+from app.cli_backtest_report import (
     _bars_cover_trade_dates,
     _load_symbol_bars,
-    build_portfolio_report_model,
-    render_portfolio_html,
+    build_backtest_shared_report_model,
+    render_backtest_shared_html,
 )
 
 
@@ -117,8 +117,8 @@ def _mini_out() -> dict:
     }
 
 
-def test_build_portfolio_report_model_periods_and_pnl():
-    model = build_portfolio_report_model(_mini_out(), load_prices=False)
+def test_build_backtest_shared_report_model_periods_and_pnl():
+    model = build_backtest_shared_report_model(_mini_out(), load_prices=False)
     assert model["strategy_id"] == "small_cap_zz399101"
     assert len(model["periods"]) == 2
     assert model["rebalance_dates"] == ["2020-01-02", "2020-01-31"]
@@ -164,9 +164,9 @@ def test_build_portfolio_report_model_periods_and_pnl():
     assert {s["symbol"] for s in model["symbol_index"]} == {"000001", "000002", "000003"}
 
 
-def test_render_portfolio_html(tmp_path: Path):
+def test_render_backtest_shared_html(tmp_path: Path):
     dest = tmp_path / "report.html"
-    path = render_portfolio_html(_mini_out(), dest, load_prices=False)
+    path = render_backtest_shared_html(_mini_out(), dest, load_prices=False)
     assert path == dest.resolve()
     text = path.read_text(encoding="utf-8")
     assert "组合回测报告" in text
@@ -218,9 +218,9 @@ def test_load_symbol_bars_backfills_when_cache_starts_late():
         ["2023-04-06", 10.5],
     ]
     with (
-        patch("app.portfolio.report_model._read_stale_day_klines", return_value=late_cache),
-        patch("app.portfolio.report_model._fetch_day_klines", return_value=[]),
-        patch("app.portfolio.report_model._cache_only_closes", return_value=closes),
+        patch("app.backtest.shared_report_model._read_stale_day_klines", return_value=late_cache),
+        patch("app.backtest.shared_report_model._fetch_day_klines", return_value=[]),
+        patch("app.backtest.shared_report_model._cache_only_closes", return_value=closes),
     ):
         bars, has_ohlc = _load_symbol_bars(
             "300606",

@@ -1,8 +1,9 @@
 # 涨停回落埋伏策略说明
 
-本文档描述组合策略 `limit_up_pullback`：近 N 个交易日出现涨停且随后回落、股价未大幅上涨；再过滤高价、大市值、亏损，要求相对低位与均线、低延迟趋势线（LLT）略多/平台整理，按周期等权调仓。
+本文档描述横截面共享资金策略 `limit_up_pullback`：近 N 个交易日出现涨停且随后回落、股价未大幅上涨；再过滤高价、大市值、亏损，要求相对低位与均线、低延迟趋势线（LLT）略多/平台整理，按决策日等权换仓。
 
-实现代码：`backend/app/portfolio/limit_up_pullback.py`统一执行：`backend/app/portfolio/runner.py`（CLI 子命令 `portfolio`）
+实现代码：`backend/app/strategies/cross_section/limit_up_pullback.py`
+横截面执行：`backend/app/backtest/cross_section_runner.py`，共享资金引擎：`backend/app/backtest/shared_engine.py`
 
 > 思路来源：知乎「简然」涨停未大涨选股法 + 40 日涨停回落、月线低位、均线整理等人工规则的可量化近似。概念题材叠加请用 `concept_symbols` 白名单人工筛入。
 
@@ -14,6 +15,7 @@
 
 ```json
 {
+  "decision_interval": 20,
   "top_n": 10,
   "lookback_days": 40,
   "min_limit_ups": 1,
@@ -45,25 +47,25 @@
 9. **概念叠加（可选）**：`concept_symbols` 非空时，仅保留白名单内标的。
 10. **排序持仓**：按总市值升序，其次涨停次数多、分位更低、窗口涨幅更小；取前 `top_n` 只等权。
 
-调仓间隔由请求参数 `rebalance_freq` 控制（默认 `20`≈月频）。
+当前策略用 `strategy_params.decision_interval` 生成决策日（默认 `20` 个交易日≈月频）。
+这是策略规则，不是共享资金引擎强制的调仓周期。
 
 ## 3. 示例请求参数
 
-对照 `backend/examples/portfolio_limit_up_pullback.json`。公共字段总表见 [策略总览](./strategy-guide.md)。
+对照 `backend/examples/backtest_shared_limit_up_pullback.json`。公共字段总表见 [策略总览](./strategy-guide.md)。
 
 ### 3.1 请求级字段
 
 | 字段                          | 示例值                                   | 含义                                               |
 | ----------------------------- | ---------------------------------------- | -------------------------------------------------- |
-| `strategy_id`               | `limit_up_pullback`                    | 本组合策略 id                                      |
-| `mode`                      | `backtest`                             | `backtest`=周期调仓回测；`screen`=仅截面选股   |
+| `strategy_id`               | `limit_up_pullback`                    | 本横截面策略 id                                    |
+| `mode`                      | `universe`                             | `universe`=共享资金回测；`screen`=仅截面选股   |
 | `data_source`               | `a_stock_data`                         | 行情数据源                                         |
 | `universe`                  | `all_a`                                | `symbols` 为空时用全 A 股票池                    |
 | `symbols`                   | `[]`                                   | 显式代码列表；非空时覆盖`universe`               |
 | `max_universe`              | `80`                                   | 股票池上限（1~10000；全 A 约设 `6000` 即可）     |
 | `seed`                      | `42`                                   | 抽样种子，保证可复现                               |
 | `start_date` / `end_date` | `2023-01-01` / `2024-12-31`          | 回测区间                                           |
-| `rebalance_freq`            | `20`                                   | 调仓间隔（交易日），`20`≈月频                   |
 | `initial_cash`              | `100000`                               | 初始资金（元）                                     |
 | `commission`                | `0.0003`                               | 佣金费率                                           |
 | `min_commission`            | `5.0`                                  | 单笔最低佣金（元）                                 |
@@ -73,8 +75,8 @@
 | `use_cache`                 | `true`                                 | 使用本地估值缓存                                   |
 | `force_refresh`             | `false`                                | 不强制重新拉取                                     |
 | `max_workers`               | `8`                                    | 并行拉取线程数                                     |
-| `output_options.output`     | `out/portfolio_limit_up_pullback.json` | 结果 JSON 路径                                     |
-| `output_options.plot`       | `out/portfolio_limit_up_pullback.svg`  | 权益曲线图路径                                     |
+| `output_options.output`     | `out/backtest_shared_limit_up_pullback.json` | 结果 JSON 路径                               |
+| `output_options.plot`       | `out/backtest_shared_limit_up_pullback.svg`  | 权益曲线图路径                               |
 | `output_options.json`       | `false`                                | 是否向 stdout 打印完整 JSON                        |
 
 示例中最大持仓 5 只，因此每只股票的资金上限为初始资金的 20%；首次投入该上限的
@@ -86,6 +88,7 @@
 
 | 参数                                   | 示例值                  | 默认    | 说明                                          |
 | -------------------------------------- | ----------------------- | ------- | --------------------------------------------- |
+| `decision_interval`                   | `20`                  | 20      | 当前策略生成决策日的交易日间隔，并非引擎强制定时 |
 | `top_n`                              | `10`                  | 10      | 最终持仓只数                                  |
 | `lookback_days`                      | `40`                  | 40      | 涨停观察窗口（交易日）                        |
 | `min_limit_ups`                      | `1`                   | 1       | 窗口内最少涨停次数（可改为 2）                |
@@ -128,13 +131,13 @@
 cd backend
 
 # 截面选股
-python -m app.script portfolio --strategy limit_up_pullback --mode screen \
+python -m app.script backtest --strategy limit_up_pullback --mode screen \
   --max-universe 80 --seed 42 --json
 
-# 组合回测
-python -m app.script portfolio --request examples/portfolio_limit_up_pullback.json
+# 共享资金回测
+python -m app.script backtest --request examples/backtest_shared_limit_up_pullback.json
 
-# 概念白名单：在 examples/portfolio_limit_up_pullback.json 的
+# 概念白名单：在 examples/backtest_shared_limit_up_pullback.json 的
 # strategy_params.concept_symbols 中填入代码后，用 --request 运行
 ```
 

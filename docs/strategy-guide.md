@@ -2,15 +2,17 @@
 
 本文档说明回测引擎的统一约定，并索引各内置策略的独立说明文档。参数、公式与调参细节见对应策略文档。
 
-## 一、回测引擎的统一约定
+## 一、BACKTEST 的两类执行语义
 
-所有策略都复用同一套回测执行框架：
+统一入口为 `python -m app.script backtest`，注册表中包含两类策略：
 
-- **交易模型**：全仓买入 / 全仓卖出（不做分批建仓与分批止盈）。
-- **执行价格**：信号触发当根 K 线按 `close` 成交（简化处理）。
-- **费用模型**：买卖都按比率收取手续费 `commission`（默认值通常为 `0.0003`）。
-- **风控与滑点**：当前不含滑点、冲击成本、停牌限制、涨跌停不可成交等现实约束。
-- **输入数据要求**：必须包含 `open` / `high` / `low` / `close` / `volume` 列。
+- **时序策略 `StrategySpec`**：`mode=single` 时运行单票；`mode=universe` 时把同一策略逐票独立运行并统计汇总。每只股票使用完整且互不共享的 `initial_cash`。
+- **横截面策略 `CrossSectionStrategySpec`**：`mode=universe` 时让所有标的共享一个账户，策略在自己生成的决策日做截面选股，执行器据此换仓；`mode=screen` 只返回指定截面的选股结果。
+
+时序回测采用全仓买入/全仓卖出的简化模型，信号触发当根 K 线按 `close`
+成交，手续费由 `commission` 控制。横截面共享资金回测还支持滑点、整手、
+最低佣金和仓位管理。两类回测都要求可用的 OHLCV 行情；现实中的冲击成本、
+停牌与涨跌停成交限制仅按各模块已实现的规则处理。
 
 ### 公共参数（所有策略共用）
 
@@ -58,26 +60,25 @@ python -m app.script backtest --mode universe --universe hs300 \
   --max-universe 30 --plot out/backtest_universe_llt_trend.svg
 ```
 
-两类批量能力的资金语义不同：
+两类 `mode=universe` 能力的资金语义不同：
 
-- `backtest mode=universe`：逐票独立资金运行相同策略，再统计性等权汇总。
-- `portfolio`：所有股票共享一个账户，按调仓日进行截面选股与实际换仓。
+- 时序 `StrategySpec`：逐票独立资金运行相同策略，再统计性等权汇总。
+- 横截面 `CrossSectionStrategySpec`：所有股票共享一个账户，在策略生成的决策日进行截面选股与实际换仓。
 
-### 组合回测 example 公共字段（`portfolio --request`）
+### 横截面共享资金 example 公共字段（`backtest --request`）
 
-以 `backend/examples/portfolio_*.json` 为例，除 `strategy_params` 外各字段含义：
+以 `backend/examples/backtest_shared_*.json` 为例，除 `strategy_params` 外各字段含义：
 
 | 字段 | 含义 |
 | --- | --- |
-| `strategy_id` | 组合策略 id（见 `portfolio --list-strategies`） |
-| `mode` | `backtest` 周期调仓回测；`screen` 仅做截面选股 |
+| `strategy_id` | 横截面策略 id（见 `backtest --list-strategies`） |
+| `mode` | `universe` 共享资金回测；`screen` 仅做截面选股 |
 | `data_source` | 行情源，目前仅支持 `a_stock_data` |
-| `universe` | `symbols` 为空时的股票池：`all_a` / `hs300` / `zz399101` |
+| `universe` | `symbols` 为空时的股票池：`all_a`（全A）/ `hs300` / `zz500` / `zz399101`（中小综指）/ `zz1000`（中证1000）/ `gz2000`（国证2000）/ `star50`（科创50）/ `star_board`（科创板全板块） |
 | `symbols` | 显式股票列表；非空时覆盖 `universe` |
 | `max_universe` | 股票池上限（组合请求 1~10000）；超出时截取或按 `seed` 抽样；全 A 约设 `6000` |
 | `seed` | 抽样随机种子，便于复现 |
 | `start_date` / `end_date` | 回测区间；`screen` 时 `end_date` 为截面日 |
-| `rebalance_freq` | 调仓间隔（**交易日**）：`20`≈月频，`5`≈周频，`1`=每日 |
 | `initial_cash` | 初始资金（元） |
 | `commission` | 佣金费率 |
 | `min_commission` | 单笔最低佣金（元） |
@@ -89,14 +90,17 @@ python -m app.script backtest --mode universe --universe hs300 \
 | `use_cache` | 是否使用本地基本面/财报缓存 |
 | `force_refresh` | 是否强制重新拉取并覆盖缓存 |
 | `max_workers` | 并行拉取估值/财报的线程数 |
-| `strategy_params` | 该组合策略专属参数，见对应策略文档 |
+| `strategy_params` | 该横截面策略专属参数，见对应策略文档；当前内置策略用 `decision_interval`（默认 20 个交易日）生成决策日 |
 | `output_options.*` | `output` / `plot` / `json`；另支持 `report`（交互 HTML，含调仓买卖与区间收益；未写时若有 `plot` 则自动派生同名 `.html`） |
 
-各策略文档的「示例请求参数」一节会对照其 example 文件逐字段说明（含 `strategy_params`）。
+各策略文档的「示例请求参数」一节会对照其 example 文件逐字段说明（含
+`strategy_params`）。`decision_interval` 是当前策略实现采用的默认决策规则，
+由策略的 `decision_dates` 逻辑解释；共享资金引擎只执行策略返回的决策日，
+并不强制定时调仓。
 
 #### 系统化仓位管理（可选）
 
-组合请求可设置 `position_management`。启用后不再在每个调仓日全卖全买：
+共享资金请求可设置 `position_management`。启用后不再在每个决策日全卖全买：
 仍在目标池中的仓位会保留，移出目标池时卖出，新标的先建立初始仓位。
 该字段不能与旧版顶层 `stop_loss_pct`、`take_profit_arm_pct`、
 `take_profit_exit_pct` 同时使用。
@@ -128,9 +132,11 @@ python -m app.script backtest --mode universe --universe hs300 \
 | `stochastic_cross` | 随机指标交叉 | 振荡反转 | [stochastic-cross-strategy.md](./stochastic-cross-strategy.md) |
 | `volume_ma_pulse` | 量比放量/缩量脉冲 | 量价触发 | [volume-ma-pulse-strategy.md](./volume-ma-pulse-strategy.md) |
 
-### 低频组合策略（`portfolio` 子命令）
+### 横截面共享资金策略（`backtest` 子命令）
 
-与单票 `backtest` 平行的一类能力：**截面选股 + 按交易日间隔调仓**（如每 20 日≈月频），适合小市值、基本面过滤等低频交易。
+这类策略负责生成决策日并执行截面选股，共享资金引擎负责成交、持仓和权益核算。
+当前内置策略用 `decision_interval`（默认 20 个交易日）生成约月频决策日；
+未来策略也可实现事件驱动或其他决策日规则。
 
 | strategy_id | 名称 | 类型 | 文档 |
 | --- | --- | --- | --- |
@@ -138,20 +144,22 @@ python -m app.script backtest --mode universe --universe hs300 \
 | `small_cap_zz399101` | 中小综指微盘 | 399101 最小流通市值 TopN | [small-cap-zz399101-strategy.md](./small-cap-zz399101-strategy.md) |
 | `limit_up_pullback` | 涨停回落埋伏 | 涨停事件 + 低位整理 | [limit-up-pullback-strategy.md](./limit-up-pullback-strategy.md) |
 | `order_inflection` | 订单开工拐点 | 合同负债→毛利→现金流→存货五步法 | [order-inflection-strategy.md](./order-inflection-strategy.md) |
+| `etf_rotation` | ETF 动量轮动 | 趋势向上且中期动量最强的 ETF | — |
+| `prosperity_resonance` | 景气共振 | PEG + 趋势确认 + 回调入场三重共振 | [prosperity-resonance-strategy.md](./prosperity-resonance-strategy.md) |
 
-查看已注册单票策略：
+查看全部已注册策略：
 
 ```bash
 cd backend
 python -m app.script backtest --list-strategies
 ```
 
-查看已注册组合策略：
+运行横截面共享资金策略：
 
 ```bash
 cd backend
-python -m app.script portfolio --list-strategies
-python -m app.script portfolio --request examples/portfolio_small_cap_zz399101.json
+python -m app.script backtest --strategy small_cap_zz399101 --mode screen --json
+python -m app.script backtest --request examples/backtest_shared_small_cap_zz399101.json
 ```
 
 ## 三、如何选择与组合策略
@@ -170,10 +178,11 @@ python -m app.script portfolio --request examples/portfolio_small_cap_zz399101.j
 3. 专文须含「示例请求参数」：对照 `backend/examples/` 中的请求 JSON，逐字段说明请求级字段与 `strategy_params`。
 4. 在本页「策略文档索引」表中增加一行链接。
 
-新增**组合**策略时：
+新增**横截面共享资金**策略时：
 
-1. 在 `backend/app/portfolio/` 新建模块并导出 `STRATEGY`（`PortfolioStrategySpec`），系统会自动扫描注册。
-2. 在 `docs/` 下新增专文（含完整 example 参数释义），并更新本页组合策略索引。
-3. 不要硬塞进单票 `StrategySpec`；成交与调仓复用 `portfolio_engine` / `portfolio/runner.py`。
+1. 在 `backend/app/strategies/cross_section/` 新建模块并导出 `STRATEGY`（`CrossSectionStrategySpec`），系统会自动扫描注册。
+2. 策略实现自己的截面选择与 `decision_dates`；若采用固定交易日间隔，可把 `decision_interval` 放在该策略的 `strategy_params` 中，但不要把它当成引擎级调仓参数。
+3. 在 `docs/` 下新增专文（含完整 example 参数释义），并更新本页横截面策略索引。
+4. 共享资金成交与持仓复用 `backend/app/backtest/shared_engine.py`，横截面准备与执行复用 `backend/app/backtest/cross_section_runner.py`。
 
 推荐沿用现有参数模型（Pydantic）与 `run_*` 风格，确保 API/CLI 可直接复用。

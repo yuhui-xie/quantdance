@@ -2,16 +2,21 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Sequence
 
 import pandas as pd
 from pydantic import BaseModel, Field
 
-from app.portfolio.base import PortfolioSelectContext, PortfolioStrategySpec
-from app.portfolio.common import asof_tradeable_row
+from app.strategies.base import (
+    CrossSectionContext,
+    CrossSectionStrategySpec,
+    every_n_trading_days,
+)
+from app.strategies.cross_section.common import asof_tradeable_row
 
 
 class EtfRotationParams(BaseModel):
+    decision_interval: int = Field(20, ge=1, description="决策间隔（交易日）")
     top_n: int = Field(1, ge=1, le=10, description="持有动量最强的 ETF 数量")
     lookback_days: int = Field(60, ge=2, le=504, description="动量回看交易日数")
     trend_days: int = Field(
@@ -45,7 +50,7 @@ def _price_history(value_df: pd.DataFrame, asof: str) -> pd.DataFrame:
 
 def select_etf_rotation(
     asof: str,
-    ctx: PortfolioSelectContext,
+    ctx: CrossSectionContext,
     params: EtfRotationParams,
 ) -> tuple[list[str], list[dict[str, Any]]]:
     candidates: list[dict[str, Any]] = []
@@ -101,12 +106,22 @@ def select_etf_rotation(
     return [item["symbol"] for item in picked], picked
 
 
-STRATEGY = PortfolioStrategySpec(
+def decision_dates(
+    calendar: Sequence[str],
+    ctx: CrossSectionContext,
+    params: EtfRotationParams,
+) -> list[str]:
+    del ctx
+    return every_n_trading_days(calendar, params.decision_interval)
+
+
+STRATEGY = CrossSectionStrategySpec(
     id="etf_rotation",
     name="ETF 动量轮动",
     description="在显式 ETF 池中选择趋势向上且中期动量最强的标的，周期等权调仓",
     params_model=EtfRotationParams,
     select=select_etf_rotation,
+    decision_dates=decision_dates,
     default_universe="all_a",
     requires_symbols=True,
     needs_fundamentals=False,

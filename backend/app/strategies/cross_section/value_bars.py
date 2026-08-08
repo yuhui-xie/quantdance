@@ -17,6 +17,9 @@ class ValueBars:
     pct_change: np.ndarray
     market_cap: np.ndarray
     pe_ttm: np.ndarray
+    peg: np.ndarray
+    pb: np.ndarray
+    ps_ttm: np.ndarray
 
     def end_index(self, asof: str) -> int:
         """最后一个 date <= asof 的下标；无则 -1。"""
@@ -49,6 +52,9 @@ def value_bars_from_df(value_df: pd.DataFrame) -> ValueBars | None:
         pct_change=_col("pct_change"),
         market_cap=_col("market_cap"),
         pe_ttm=_col("pe_ttm"),
+        peg=_col("peg"),
+        pb=_col("pb"),
+        ps_ttm=_col("ps_ttm"),
     )
 
 
@@ -98,11 +104,17 @@ def asof_tradeable_from_bars(
         return None
     mcap = bars.market_cap[i]
     pe = bars.pe_ttm[i]
+    peg = bars.peg[i]
+    pb = bars.pb[i]
+    ps = bars.ps_ttm[i]
     row = {
         "date": fund_date,
         "close": close,
         "pct_change": pct_f,
         "market_cap": float(mcap) if np.isfinite(mcap) else None,
         "pe_ttm": float(pe) if np.isfinite(pe) else None,
+        "peg": float(peg) if np.isfinite(peg) else None,
+        "pb": float(pb) if np.isfinite(pb) else None,
+        "ps_ttm": float(ps) if np.isfinite(ps) else None,
     }
     return i, row

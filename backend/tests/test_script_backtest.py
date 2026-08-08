@@ -307,3 +307,34 @@ def test_stock_search_command_accepts_keyword_and_limit():
     assert args.keyword == "贵州茅台"
     assert args.limit == 3
     assert args.json is True
+
+
+def test_portfolio_subcommand_is_removed():
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(["portfolio"])
+
+
+def test_backtest_cross_section_cli_fields_are_unified():
+    args = build_parser().parse_args(
+        [
+            "backtest",
+            "--strategy",
+            "market_auntie",
+            "--mode",
+            "screen",
+            "--symbols",
+            "000001",
+            "--top-n",
+            "1",
+            "--min-commission",
+            "0",
+            "--slippage",
+            "0",
+        ]
+    )
+    body = _resolve_backtest_body(args)
+    assert body.mode == "screen"
+    assert body.symbols == ["000001"]
+    assert body.min_commission == 0
+    assert body.slippage == 0
+    assert body.strategy_params["top_n"] == 1

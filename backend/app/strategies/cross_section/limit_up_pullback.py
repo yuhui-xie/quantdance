@@ -2,15 +2,19 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Sequence
 
 import numpy as np
 from pydantic import BaseModel, Field, model_validator
 
 from app.indicators import llt
-from app.portfolio.base import PortfolioSelectContext, PortfolioStrategySpec
-from app.portfolio.common import is_hs_main_board_symbol, is_st_stock
-from app.portfolio.value_bars import (
+from app.strategies.base import (
+    CrossSectionContext,
+    CrossSectionStrategySpec,
+    every_n_trading_days,
+)
+from app.strategies.cross_section.common import is_hs_main_board_symbol, is_st_stock
+from app.strategies.cross_section.value_bars import (
     ValueBars,
     asof_tradeable_from_bars,
     build_panel_value_bars,
@@ -18,6 +22,7 @@ from app.portfolio.value_bars import (
 
 
 class LimitUpPullbackParams(BaseModel):
+    decision_interval: int = Field(20, ge=1, description="决策间隔（交易日）")
     top_n: int = Field(10, ge=1, le=50)
     lookback_days: int = Field(40, ge=10, le=120, description="涨停观察窗口（交易日）")
     min_limit_ups: int = Field(1, ge=1, le=20, description="窗口内最少涨停次数")
@@ -164,7 +169,7 @@ def _is_platform(closes: np.ndarray, days: int, max_range: float) -> bool:
     return amplitude <= max_range
 
 
-def _panel_bars(ctx: PortfolioSelectContext) -> dict[str, ValueBars]:
+def _panel_bars(ctx: CrossSectionContext) -> dict[str, ValueBars]:
     cached = ctx.cache.get("limit_up_pullback_bars")
     if isinstance(cached, dict):
         return cached
@@ -175,7 +180,7 @@ def _panel_bars(ctx: PortfolioSelectContext) -> dict[str, ValueBars]:
 
 def select_limit_up_pullback(
     asof: str,
-    ctx: PortfolioSelectContext,
+    ctx: CrossSectionContext,
     params: LimitUpPullbackParams,
 ) -> tuple[list[str], list[dict[str, Any]]]:
     concept = {s.strip() for s in params.concept_symbols if s and str(s).strip()}
@@ -296,12 +301,22 @@ def select_limit_up_pullback(
     return [c["symbol"] for c in picked], picked
 
 
-STRATEGY = PortfolioStrategySpec(
+def decision_dates(
+    calendar: Sequence[str],
+    ctx: CrossSectionContext,
+    params: LimitUpPullbackParams,
+) -> list[str]:
+    del ctx
+    return every_n_trading_days(calendar, params.decision_interval)
+
+
+STRATEGY = CrossSectionStrategySpec(
     id="limit_up_pullback",
     name="涨停回落埋伏",
     description="近40日有涨停且回落、窗口内未亏损亦未大幅上涨；低价小盘盈利、月线相对低位、均线与 LLT 趋势略多或平台整理",
     params_model=LimitUpPullbackParams,
     select=select_limit_up_pullback,
+    decision_dates=decision_dates,
     default_universe="zz500",
     needs_dividend=False,
     default_top_n=10,

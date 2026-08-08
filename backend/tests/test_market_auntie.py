@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import pandas as pd
 
-from app.portfolio.base import PortfolioSelectContext
-from app.portfolio.market_auntie import MarketAuntieParams, select_market_auntie
-from app.portfolio.runner import run_portfolio_request
-from app.schemas import PortfolioBacktestRequest
+from app.backtest_runner import run_backtest_request
+from app.schemas import BacktestRequest
+from app.strategies.base import CrossSectionContext
+from app.strategies.cross_section.market_auntie import (
+    MarketAuntieParams,
+    select_market_auntie,
+)
 
 
 def _value_df(rows: list[tuple[str, float, float, float, float]]) -> pd.DataFrame:
@@ -66,7 +69,7 @@ def test_select_market_auntie_prefers_small_cap_quality():
 
     symbols, details = select_market_auntie(
         "2024-01-02",
-        PortfolioSelectContext(panel=panel, names=names),
+        CrossSectionContext(panel=panel, names=names),
         MarketAuntieParams(top_n=2, max_price=9, max_peg=1.0),
     )
     assert symbols == ["AAA001", "BBB002"] or symbols[0] == "AAA001"
@@ -98,21 +101,21 @@ def test_run_market_auntie_portfolio_with_mocks(monkeypatch):
     }
 
     monkeypatch.setattr(
-        "app.portfolio.runner.resolve_universe",
+        "app.backtest.cross_section_runner._resolve_universe",
         lambda _req, default_universe=None: (
             [{"symbol": s, "name": "测试"} for s in panel],
             "mock universe",
         ),
     )
     monkeypatch.setattr(
-        "app.portfolio.runner.load_fundamentals_panel",
+        "app.backtest.cross_section_runner.load_fundamentals_panel",
         lambda symbols, **_kw: {s: panel[s] for s in symbols if s in panel},
     )
 
-    resp = run_portfolio_request(
-        PortfolioBacktestRequest(
+    resp = run_backtest_request(
+        BacktestRequest(
             strategy_id="market_auntie",
-            mode="backtest",
+            mode="universe",
             symbols=list(panel),
             start_date="2024-01-02",
             end_date=date_strs[-1],
@@ -123,10 +126,10 @@ def test_run_market_auntie_portfolio_with_mocks(monkeypatch):
             strategy_params={"top_n": 2, "max_price": 9.0, "max_peg": 1.0},
         )
     )
-    assert resp.mode == "backtest"
-    assert resp.metrics["final_equity"] > 0
-    assert len(resp.rebalances) >= 1
-    assert len(resp.equity) == len(date_strs)
+    assert resp["mode"] == "backtest"
+    assert resp["metrics"]["final_equity"] > 0
+    assert len(resp["rebalances"]) >= 1
+    assert len(resp["equity"]) == len(date_strs)
 
 
 def test_screen_mode(monkeypatch):
@@ -137,15 +140,15 @@ def test_screen_mode(monkeypatch):
         }
     }
     monkeypatch.setattr(
-        "app.portfolio.runner.resolve_universe",
+        "app.backtest.cross_section_runner._resolve_universe",
         lambda _req, default_universe=None: ([{"symbol": "000001", "name": "测试"}], "mock"),
     )
     monkeypatch.setattr(
-        "app.portfolio.runner.load_fundamentals_panel",
+        "app.backtest.cross_section_runner.load_fundamentals_panel",
         lambda symbols, **_kw: panel,
     )
-    resp = run_portfolio_request(
-        PortfolioBacktestRequest(
+    resp = run_backtest_request(
+        BacktestRequest(
             strategy_id="market_auntie",
             mode="screen",
             symbols=["000001"],
@@ -153,5 +156,5 @@ def test_screen_mode(monkeypatch):
             strategy_params={"top_n": 1},
         )
     )
-    assert resp.mode == "screen"
-    assert resp.holdings[0]["symbol"] == "000001"
+    assert resp["mode"] == "screen"
+    assert resp["holdings"][0]["symbol"] == "000001"
