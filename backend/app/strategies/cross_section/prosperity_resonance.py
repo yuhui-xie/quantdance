@@ -28,7 +28,7 @@ A 股适用逻辑：
 
 from __future__ import annotations
 
-from typing import Any, Sequence
+from typing import Any, Literal, Sequence
 
 import numpy as np
 from pydantic import BaseModel, Field, model_validator
@@ -37,9 +37,13 @@ from app.indicators import llt
 from app.strategies.base import (
     CrossSectionContext,
     CrossSectionStrategySpec,
-    every_n_trading_days,
+    decision_dates_by_frequency,
 )
-from app.strategies.cross_section.common import is_hs_main_board_symbol, is_st_stock
+from app.strategies.cross_section.common import (
+    apply_hysteresis,
+    is_hs_main_board_symbol,
+    is_st_stock,
+)
 from app.strategies.cross_section.value_bars import (
     ValueBars,
     asof_tradeable_from_bars,
@@ -51,7 +55,16 @@ class ProsperityResonanceParams(BaseModel):
     """景气共振策略参数。"""
 
     # ── 决策节奏 ──
-    decision_interval: int = Field(20, ge=1, description="决策间隔（交易日），≈月频")
+    decision_frequency: Literal["daily", "weekly", "monthly"] = Field(
+        "daily", description="决策频率：daily=每日（冷启动期后）| weekly=每周末 | monthly=每自然月末"
+    )
+    decision_every_n: int = Field(1, ge=1, description="决策步长：monthly+3=季末、weekly+2=双周；daily 忽略")
+    decision_warmup: int = Field(
+        20, ge=0, le=250, description="日频决策的冷启动期（交易日）：跳过区间前 N 日不做决策"
+    )
+    hysteresis_rank_threshold: int = Field(
+        3, ge=0, le=50, description="防抖滞后带：新候选须比持仓排名领先至少该名次才替换；0 关闭"
+    )
     top_n: int = Field(10, ge=1, le=50, description="持仓只数")
 
     # ── 价格与市值 ──
@@ -360,6 +373,14 @@ def select_prosperity_resonance(
             abs(x["ma_deviation"]),
         )
     )
+    if params.hysteresis_rank_threshold > 0:
+        return apply_hysteresis(
+            ctx,
+            candidates,
+            params.top_n,
+            params.hysteresis_rank_threshold,
+            cache_key="prosperity_resonance_hysteresis",
+        )
     picked = candidates[: params.top_n]
     return [c["symbol"] for c in picked], picked
 
@@ -369,9 +390,14 @@ def decision_dates(
     ctx: CrossSectionContext,
     params: ProsperityResonanceParams,
 ) -> list[str]:
-    """按 decision_interval 间隔生成决策日。"""
+    """决策日：默认日频每天检查是否有更优标的，跳过冷启动期；可调为 weekly/monthly。"""
     del ctx
-    return every_n_trading_days(calendar, params.decision_interval)
+    return decision_dates_by_frequency(
+        calendar,
+        frequency=params.decision_frequency,
+        every_n=params.decision_every_n,
+        warmup=params.decision_warmup,
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -383,7 +409,7 @@ STRATEGY = CrossSectionStrategySpec(
     name="景气共振",
     description=(
         "PEG 盈利性价比 + 趋势确认（MA/LLT/动量）+ 回调入场（均线偏离带），"
-        "三重共振综合评分，周期等权调仓"
+        "三重共振综合评分，日频检查 + 防抖滞后带增量调仓"
     ),
     params_model=ProsperityResonanceParams,
     select=select_prosperity_resonance,

@@ -1,0 +1,37 @@
+{
+  "strategy_id": "cyclical_rotation",
+  "mode": "universe",
+  "data_source": "a_stock_data",
+  "start_date": "2020-01-01",
+  "end_date": "2026-07-31",
+  "initial_cash": 100000,
+  "commission": 0.0003,
+  "min_commission": 5.0,
+  "slippage": 0.001,
+  "lot_size": 100,
+  "use_cache": true,
+  "force_refresh": false,
+  "max_workers": 6,
+  "rebalance_mode": "incremental",
+  "strategy_params": {
+    "decision_frequency": "monthly",
+    "decision_every_n": 1,
+    "top_n_per_cycle": 1,
+    "allocation": "all",
+    "signal_momentum_days": 20,
+    "signal_trend_days": 120,
+    "exit_ma_days": 60,
+    "exit_drawdown_pct": 20.0,
+    "energy_entry_drawdown_pct": 30.0,
+    "min_cycle_days": 20,
+    "exclude_limit": true,
+    "exclude_suspended": true,
+    "limit_pct_threshold": 9.5
+  },
+  "output_options": {
+    "output": "out/backtest_shared_cyclical_rotation.json",
+    "plot": "out/backtest_shared_cyclical_rotation.svg",
+    "report": "out/backtest_shared_cyclical_rotation.html",
+    "json": true
+  }
+}

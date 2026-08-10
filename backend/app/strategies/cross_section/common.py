@@ -9,6 +9,7 @@ import pandas as pd
 
 from app.data_sources.em_fundamentals import asof_fundamental_row
 from app.data_sources.market_data import normalize_a_share_symbol
+from app.strategies.base import CrossSectionContext
 
 
 def is_st_stock(name: str | None) -> bool:
@@ -68,3 +69,70 @@ def asof_tradeable_row(
     if close is None or float(close) <= 0:
         return None
     return row
+
+
+def apply_hysteresis(
+    ctx: CrossSectionContext,
+    ranked_candidates: list[dict[str, Any]],
+    top_n: int,
+    threshold_rank: int,
+    *,
+    cache_key: str = "hysteresis_holdings",
+) -> tuple[list[str], list[dict[str, Any]]]:
+    """对已按优劣排序的候选池应用防抖滞后带，返回稳定的 top-N 持仓。
+
+    滞后带语义（rank 0-based，越小越优）：
+    - 前次持仓中排名仍在 top-N 内者原样保留；
+    - 掉出 top-N 的持仓不立刻被换：只有当某个未持有候选比它领先至少
+      ``threshold_rank`` 个名次（``持仓排名 - 候选排名 >= threshold_rank``）
+      才让出位置，防止日频噪音引起来回换仓；
+    - 持仓数量不足 top_N 时用排名最高的未持有候选补足。
+
+    ``threshold_rank=0`` 表示关闭滞后带，退化为普通 top-N 选取。
+    状态经 ``ctx.cache`` 跨决策日保存，须按决策日时序调用。
+    """
+    by_symbol = {c["symbol"]: i for i, c in enumerate(ranked_candidates)}
+    prev = ctx.cache.get(cache_key, [])
+    survivors = [s for s in prev if s in by_symbol]
+    survivor_set = set(survivors)
+
+    challengers = [c for c in ranked_candidates if c["symbol"] not in survivor_set]
+
+    result: list[str] = []
+    result_set: set[str] = set()
+
+    # ── 第 1 步：保留仍在 top-N 内的持仓 ──
+    for s in survivors:
+        if by_symbol[s] < top_n and len(result) < top_n:
+            result.append(s)
+            result_set.add(s)
+
+    # ── 第 2 步：处理掉出 top-N 的持仓（最差的先，逐个匹配最佳剩余候选） ──
+    if threshold_rank > 0:
+        vulnerable = [s for s in survivors if by_symbol[s] >= top_n]
+        vulnerable.sort(key=lambda s: by_symbol[s], reverse=True)
+        for s in vulnerable:
+            if len(result) >= top_n:
+                break
+            if challengers:
+                best = challengers[0]["symbol"]
+                if by_symbol[s] - by_symbol[best] >= threshold_rank:
+                    # 候选明显更优，占用该位置；持仓让位
+                    result.append(best)
+                    result_set.add(best)
+                    challengers.pop(0)
+                    continue
+            result.append(s)
+            result_set.add(s)
+
+    # ── 第 3 步：用排名最高的未持有候选补足剩余空位 ──
+    for c in challengers:
+        if len(result) >= top_n:
+            break
+        if c["symbol"] not in result_set:
+            result.append(c["symbol"])
+            result_set.add(c["symbol"])
+
+    ctx.cache[cache_key] = result
+    details = [c for c in ranked_candidates if c["symbol"] in result_set]
+    return result, details

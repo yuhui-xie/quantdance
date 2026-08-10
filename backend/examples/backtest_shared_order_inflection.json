@@ -17,7 +17,7 @@
   "force_refresh": false,
   "max_workers": 4,
   "strategy_params": {
-    "decision_interval": 20,
+    "decision_frequency": "monthly",
     "top_n": 10,
     "min_contract_liab": 0,
     "min_contract_liab_yoy": 0.0,
@@ -51,6 +51,6 @@
   "__comments__": {
     "idea": "五步法：合同负债(有活干)→毛利率(赚不赚钱)→经营现金流(钱够不够)→存货同比(备货开工)→综合拐点分排序",
     "max_universe": "三大报表拉取较慢，演示建议 30~60；正式回测可加大并依赖本地缓存",
-    "decision_interval": "策略按交易日生成决策日，20≈月频；财报低频更新，不必过高频决策"
+    "decision_frequency": "monthly 月末锚定调仓（可改 weekly/daily）；财报低频更新，不必过高频决策"
   }
 }

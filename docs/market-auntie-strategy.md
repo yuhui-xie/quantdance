@@ -22,7 +22,7 @@
 
 ```json
 {
-  "decision_interval": 20,
+  "decision_frequency": "monthly",
   "top_n": 10,
   "min_price": 2.0,
   "max_price": 9.0,
@@ -43,8 +43,10 @@
 3. **可交易过滤**：剔除名称含 ST/退；剔除疑似停牌（`T` 日无估值行情）；剔除涨跌幅绝对值 ≥ `limit_pct_threshold`（默认 9.5%）的疑似涨跌停。
 4. **市值小**：在上述过滤后，按总市值升序取前 `top_n` 只，等权作为目标持仓。
 
-当前策略用 `strategy_params.decision_interval` 生成决策日，单位为**交易日**
-（默认 `20`≈月频；`5`≈周频）。这是策略自身的默认规则，不是共享资金引擎强制定时调仓。
+当前策略默认 `decision_frequency="monthly"`，决策日**锚定在自然月月末**；可改
+`weekly`（ISO 周周末）或 `daily`（每个交易日，配合 `decision_warmup` 冷启动）。
+决策频率统一锚定自然周期而非回测起始日，因此回测结果不随起始日相位漂移。
+这是策略自身的默认规则，不是共享资金引擎强制定时调仓。
 
 ## 3. 交易与费用模型
 
@@ -86,7 +88,9 @@
 
 | 参数 | 示例值 | 默认 | 说明 |
 | --- | --- | --- | --- |
-| `decision_interval` | `20` | 20 | 当前策略生成决策日的交易日间隔，并非引擎强制定时 |
+| `decision_frequency` | `monthly` | `monthly` | 决策频率：`daily`=每日（冷启动期后）/ `weekly`=每周末 / `monthly`=每自然月末；均锚定自然周期，与回测起始日无关 |
+| `decision_every_n` | `1` | 1 | 决策步长：`monthly`+3=季末、`weekly`+2=双周；`daily` 忽略 |
+| `decision_warmup` | `20` | 20 | 冷启动期（交易日），仅 `daily` 生效 |
 | `top_n` | `10` | 10 | 最终持仓只数（过滤后按市值升序取前 N） |
 | `min_price` | `2.0` | 2 | 最低价（元）；对应面值退市缓冲 |
 | `max_price` | `9.0` | 9 | 最高价（元）；「价低」上界 |

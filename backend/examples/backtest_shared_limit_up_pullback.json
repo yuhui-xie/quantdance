@@ -27,7 +27,7 @@
   "force_refresh": false,
   "max_workers": 32,
   "strategy_params": {
-    "decision_interval": 20,
+    "decision_frequency": "monthly",
     "top_n": 5,
     "lookback_days": 60,
     "min_limit_ups": 1,

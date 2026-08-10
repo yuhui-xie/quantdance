@@ -428,21 +428,21 @@ def _cmd_backtest(args: argparse.Namespace) -> int:
     shared = body.strategy_id in {
         sid for sid, spec in ALL_STRATEGIES.items() if hasattr(spec, "select")
     }
-    if (body.mode == "universe" or shared) and report is None and plot is not None:
+    if (body.mode in {"universe", "per_stock"} or shared) and report is None and plot is not None:
         report = plot.with_suffix(".html")
-    if not shared and body.mode != "universe" and report is not None:
-        raise ValueError("backtest --report 仅支持 universe 或横截面共享资金回测")
+    if not shared and body.mode not in {"universe", "per_stock"} and report is not None:
+        raise ValueError("backtest --report 仅支持 universe、per_stock 或横截面共享资金回测")
     if not shared and body.mode == "universe" and report is not None and not body.include_price:
         # 逐票指标随 price overlay 返回；报告需要这些序列来绘制指标图。
         body = body.model_copy(update={"include_price": True})
     out = run_backtest_request(body)
     _write_json(out, output=output, as_json=as_json)
     if plot is not None:
-        if shared:
+        if shared and body.mode != "per_stock":
             from app.cli_plot import render_backtest_shared_figure
 
             saved = render_backtest_shared_figure(out, plot)
-        elif body.mode == "universe":
+        elif body.mode in {"universe", "per_stock"}:
             from app.cli_plot import render_backtest_universe_figure
 
             saved = render_backtest_universe_figure(out, plot)
@@ -459,14 +459,14 @@ def _cmd_backtest(args: argparse.Namespace) -> int:
         print(f"交互报告已保存: {report_path}")
         _open_file_with_default_app(report_path)
     if not as_json:
-        if shared:
+        if shared and body.mode != "per_stock":
             metrics = out.get("metrics") or {}
             print(
                 f"共享资金回测完成: {body.strategy_id} | mode={body.mode} | "
                 f"收益 {_fmt_pct(metrics.get('total_return'))} | "
                 f"持仓 {len(out.get('holdings') or [])}"
             )
-        elif body.mode == "universe":
+        elif body.mode in {"universe", "per_stock"}:
             _write_backtest_universe_summary(out, body, output=output)
         else:
             _write_backtest_summary(out, body, output=output)
@@ -500,6 +500,85 @@ def _cmd_stock_search(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_chip_dist(args: argparse.Namespace) -> int:
+    """筹码分布子命令：拉取含换手率日线，计算筹码成本分布。"""
+    from app.data_sources.market_data import (
+        fetch_a_share_daily_turnover,
+        normalize_a_share_symbol,
+    )
+    from app.indicators.chip_distribution import chip_cost_distribution
+
+    symbol = normalize_a_share_symbol(args.symbol)
+    try:
+        df = fetch_a_share_daily_turnover(symbol, limit=args.days)
+    except MarketDataError as e:
+        print(f"数据获取失败: {e}", file=sys.stderr)
+        return 3
+
+    name: str | None = None
+    try:
+        # 用 A 股股票池查名称（mootdx 仅含 A 股，避免腾讯搜索把 000001 匹配成上证指数）。
+        from app.data_sources.a_stock_data import AStockDataSDK
+
+        for item in AStockDataSDK().get_universe():
+            if item["symbol"] == symbol:
+                name = item["name"]
+                break
+    except Exception:
+        pass
+
+    metrics = chip_cost_distribution(
+        df,
+        bins=args.bins,
+        include_distribution=args.detailed,
+    )
+
+    out: dict[str, Any] = {
+        "symbol": symbol,
+        "name": name,
+        "profit_ratio": metrics["profit_ratio"],
+        "average_cost": metrics["average_cost"],
+        "peak_price": metrics["peak_price"],
+        "interval_90_low": metrics["interval_90_low"],
+        "interval_90_high": metrics["interval_90_high"],
+        "concentration_90": metrics["concentration_90"],
+        "interval_70_low": metrics["interval_70_low"],
+        "interval_70_high": metrics["interval_70_high"],
+        "concentration_70": metrics["concentration_70"],
+        "current_price": float(df.iloc[-1]["close"]),
+        "days_used": int(len(df)),
+        "disclaimer": "演示用途，筹码分布分析不构成投资建议。",
+    }
+    if args.detailed and "price_grid" in metrics:
+        out["price_grid"] = metrics["price_grid"]
+        out["distribution"] = metrics["distribution"]
+    if "warning" in metrics:
+        out["warning"] = metrics["warning"]
+
+    _write_json(out, output=args.output, as_json=args.json)
+
+    if not args.json and args.output is None:
+        print(f"筹码分布分析: {symbol}" + (f" {name}" if name else ""))
+        print(f"  数据区间: {str(df.index[0])[:10]} ~ {str(df.index[-1])[:10]}  ({len(df)} 条)")
+        print(f"  最新收盘价: {_fmt_float(out['current_price'])}")
+        print(f"  获利盘比例: {_fmt_pct(out['profit_ratio'])}")
+        print(f"  平均成本:   {_fmt_float(out['average_cost'])}")
+        print(f"  筹码峰值:   {_fmt_float(out['peak_price'])}")
+        print(
+            f"  90% 成本区间: "
+            f"[{_fmt_float(out['interval_90_low'])}, {_fmt_float(out['interval_90_high'])}]"
+        )
+        print(f"  90% 集中度:   {_fmt_float(out['concentration_90'], 4)}")
+        print(
+            f"  70% 成本区间: "
+            f"[{_fmt_float(out['interval_70_low'])}, {_fmt_float(out['interval_70_high'])}]"
+        )
+        print(f"  70% 集中度:   {_fmt_float(out['concentration_70'], 4)}")
+        if out.get("warning"):
+            print(f"  提示: {out['warning']}")
+    return 0
+
+
 
 
 
@@ -518,7 +597,7 @@ def _build_backtest_cmd(sub: argparse._SubParsersAction[argparse.ArgumentParser]
         help="批量回测交互报告路径；批量 plot 默认自动派生同名 .html",
     )
     p.add_argument("--list-strategies", action="store_true")
-    p.add_argument("--mode", choices=("single", "universe", "screen"), default=None)
+    p.add_argument("--mode", choices=("single", "universe", "screen", "per_stock"), default=None)
     p.add_argument("--strategy", "-s", dest="strategy_id")
     p.add_argument(
         "--data-source",
@@ -657,16 +736,32 @@ def _build_stock_search_cmd(sub: argparse._SubParsersAction[argparse.ArgumentPar
     p.add_argument("--output", type=Path, metavar="FILE.json")
 
 
+def _build_chip_dist_cmd(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+    p = sub.add_parser("chip-dist", help="筹码分布分析（基于历史换手衰减算法）")
+    p.set_defaults(handler=_cmd_chip_dist)
+    p.add_argument("symbol", help="A 股代码，如 000001 或 600000.SH")
+    p.add_argument("--days", type=int, default=500, help="回溯交易日数量（默认 500）")
+    p.add_argument("--bins", type=int, default=200, help="价格区间网格数（默认 200）")
+    p.add_argument("--json", action="store_true", help="以 JSON 格式输出")
+    p.add_argument("--output", type=Path, metavar="FILE.json", help="结果写入 JSON 文件")
+    p.add_argument(
+        "--detailed",
+        action="store_true",
+        help="包含完整筹码分布数组（price_grid + distribution）",
+    )
+
+
 
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        description="纯脚本版量化工具：回测与选股均通过子命令执行。",
+        description="纯脚本版量化工具：回测、选股与筹码分布均通过子命令执行。",
     )
     sub = p.add_subparsers(dest="command", required=True)
     _build_backtest_cmd(sub)
     _build_screen_cmd(sub)
     _build_stock_search_cmd(sub)
+    _build_chip_dist_cmd(sub)
     return p
 
 

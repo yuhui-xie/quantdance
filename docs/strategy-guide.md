@@ -87,16 +87,26 @@ python -m app.script backtest --mode universe --universe hs300 \
 | `take_profit_arm_pct` | 通用止盈启动阈值 x：相对成本浮盈达到后继续持有（如 `0.2`）；与 exit 成对出现 |
 | `take_profit_exit_pct` | 通用止盈回落阈值 y：启动后浮盈回落到该比例则卖出（须 `< arm`，如 `0.1`）；仅非调仓日生效 |
 | `stop_loss_pct` | 通用止损：相对成本浮亏达到该比例则卖出（如 `0.1`=跌 10%）；仅非调仓日生效 |
+| `rebalance_mode` | 换仓模式：`full`（默认，目标变动时全仓清空重建）/ `incremental`（只交易差异，保留共同持仓，权重自然漂移） |
 | `use_cache` | 是否使用本地基本面/财报缓存 |
 | `force_refresh` | 是否强制重新拉取并覆盖缓存 |
 | `max_workers` | 并行拉取估值/财报的线程数 |
-| `strategy_params` | 该横截面策略专属参数，见对应策略文档；当前内置策略用 `decision_interval`（默认 20 个交易日）生成决策日 |
+| `strategy_params` | 该横截面策略专属参数，见对应策略文档；决策频率由 `decision_frequency`（`daily`/`weekly`/`monthly`）+ `decision_every_n`（步长）统一控制，`daily` 下 `decision_warmup` 控制冷启动，`prosperity_resonance` 另用 `hysteresis_rank_threshold` 防抖 |
 | `output_options.*` | `output` / `plot` / `json`；另支持 `report`（交互 HTML，含调仓买卖与区间收益；未写时若有 `plot` 则自动派生同名 `.html`） |
 
 各策略文档的「示例请求参数」一节会对照其 example 文件逐字段说明（含
-`strategy_params`）。`decision_interval` 是当前策略实现采用的默认决策规则，
-由策略的 `decision_dates` 逻辑解释；共享资金引擎只执行策略返回的决策日，
-并不强制定时调仓。
+`strategy_params`）。决策频率由 `decision_frequency` 统一控制，取 `daily` /
+`weekly` / `monthly` 之一，默认见各策略（周期策略默认 `monthly`，
+`prosperity_resonance` 默认 `daily`）：
+
+- `monthly` 在**自然月月末**锚定决策日（`decision_every_n=3` 即季末）；
+- `weekly` 在 **ISO 周周末**锚定决策日（`decision_every_n=2` 即双周）；
+- `daily` 每个交易日都是决策日，`decision_warmup`（默认 20）跳过前 N 根
+  冷启动期，保证 MA/LLT 等指标有足够历史。
+
+weekly/monthly 均锚定日历周期而非回测起始日，回测结果不随起始日相位漂移。
+共享资金引擎只执行策略返回的决策日，并不强制定时调仓。换仓执行方式由
+`rebalance_mode` 决定（默认 `full` 全清重建，可设 `incremental` 只交易差异）。
 
 #### 系统化仓位管理（可选）
 
@@ -135,8 +145,10 @@ python -m app.script backtest --mode universe --universe hs300 \
 ### 横截面共享资金策略（`backtest` 子命令）
 
 这类策略负责生成决策日并执行截面选股，共享资金引擎负责成交、持仓和权益核算。
-当前内置策略用 `decision_interval`（默认 20 个交易日）生成约月频决策日；
-未来策略也可实现事件驱动或其他决策日规则。
+决策频率由 `strategy_params.decision_frequency` 统一控制（`daily`/`weekly`/
+`monthly`，配合 `decision_every_n` 步长），均锚定自然周期（日/ISO 周/自然月末）
+使回测结果不随起始日相位漂移；周期策略默认 `monthly`，`prosperity_resonance`
+默认 `daily` + 防抖滞后带。未来策略也可实现事件驱动或其他决策日规则。
 
 | strategy_id | 名称 | 类型 | 文档 |
 | --- | --- | --- | --- |
@@ -145,7 +157,10 @@ python -m app.script backtest --mode universe --universe hs300 \
 | `limit_up_pullback` | 涨停回落埋伏 | 涨停事件 + 低位整理 | [limit-up-pullback-strategy.md](./limit-up-pullback-strategy.md) |
 | `order_inflection` | 订单开工拐点 | 合同负债→毛利→现金流→存货五步法 | [order-inflection-strategy.md](./order-inflection-strategy.md) |
 | `etf_rotation` | ETF 动量轮动 | 趋势向上且中期动量最强的 ETF | — |
+| `etf_rotation_3factor` | 三因子ETF轮动 | 乖离+斜率+效率三因子加权评分，1.5×阈值防抖 | [etf-rotation-3factor-strategy.md](./etf-rotation-3factor-strategy.md) |
+| `cyclical_rotation` | 顺周期行业轮动 | 商品信号驱动的有色/能源/农业轮动 | [cyclical-rotation-strategy.md](./cyclical-rotation-strategy.md) |
 | `prosperity_resonance` | 景气共振 | PEG + 趋势确认 + 回调入场三重共振 | [prosperity-resonance-strategy.md](./prosperity-resonance-strategy.md) |
+| `new_stock_ice_reversal` | 次新情绪冰点反转 | 次新跌停潮冰点 → 次日反转次新篮 | [new-stock-ice-reversal-strategy.md](./new-stock-ice-reversal-strategy.md) |
 
 查看全部已注册策略：
 
@@ -181,7 +196,7 @@ python -m app.script backtest --request examples/backtest_shared_small_cap_zz399
 新增**横截面共享资金**策略时：
 
 1. 在 `backend/app/strategies/cross_section/` 新建模块并导出 `STRATEGY`（`CrossSectionStrategySpec`），系统会自动扫描注册。
-2. 策略实现自己的截面选择与 `decision_dates`；若采用固定交易日间隔，可把 `decision_interval` 放在该策略的 `strategy_params` 中，但不要把它当成引擎级调仓参数。
+2. 策略实现自己的截面选择与 `decision_dates`；决策频率参数 `decision_frequency`（`daily`/`weekly`/`monthly`）+ `decision_every_n`（步长）+ `decision_warmup`（冷启动，仅 `daily` 生效）放在该策略的 `strategy_params` 中，`decision_dates` 委托 `decision_dates_by_frequency(calendar, frequency=..., every_n=..., warmup=...)` 生成锚定自然周期（日/ISO 周/自然月末）的决策日，避免对回测起始日相位敏感；不要把它当成引擎级调仓参数。
 3. 在 `docs/` 下新增专文（含完整 example 参数释义），并更新本页横截面策略索引。
 4. 共享资金成交与持仓复用 `backend/app/backtest/shared_engine.py`，横截面准备与执行复用 `backend/app/backtest/cross_section_runner.py`。
 

@@ -1,0 +1,38 @@
+{
+  "strategy_id": "etf_rotation_3factor",
+  "mode": "universe",
+  "data_source": "a_stock_data",
+  "start_date": "2020-01-01",
+  "end_date": "2026-07-31",
+  "initial_cash": 100000,
+  "commission": 0.0003,
+  "min_commission": 5.0,
+  "slippage": 0.001,
+  "lot_size": 100,
+  "use_cache": true,
+  "force_refresh": false,
+  "max_workers": 6,
+  "rebalance_mode": "incremental",
+  "strategy_params": {
+    "decision_frequency": "monthly",
+    "decision_every_n": 1,
+    "bias_ma_days": 20,
+    "bias_momentum_days": 25,
+    "slope_days": 60,
+    "efficiency_days": 60,
+    "weight_bias": 0.333,
+    "weight_slope": 0.333,
+    "weight_efficiency": 0.333,
+    "rebalance_threshold": 1.5,
+    "min_score_to_hold": 0.0,
+    "exclude_limit": true,
+    "exclude_suspended": true,
+    "limit_pct_threshold": 9.5
+  },
+  "output_options": {
+    "output": "out/backtest_shared_etf_rotation_3factor.json",
+    "plot": "out/backtest_shared_etf_rotation_3factor.svg",
+    "report": "out/backtest_shared_etf_rotation_3factor.html",
+    "json": true
+  }
+}

@@ -109,17 +109,22 @@ def _normalize_value_em(raw: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
-def _fetch_value_em_remote(symbol: str) -> pd.DataFrame:
+def _resolve_ak_func(name: str) -> Callable[..., Any]:
+    """按名称解析 akshare 函数，统一处理导入与接口缺失错误。"""
     try:
         import akshare as ak  # type: ignore[import-not-found]
-    except Exception as e:  # pragma: no cover
+    except ImportError as e:  # pragma: no cover
         raise MarketDataError(f"akshare 不可用: {e}") from e
-
-    func = getattr(ak, "stock_value_em", None)
+    func = getattr(ak, name, None)
     if not callable(func):
-        raise MarketDataError("当前 akshare 无 stock_value_em 接口")
+        raise MarketDataError(f"当前 akshare 无 {name} 接口")
+    return func
+
+
+def _fetch_value_em_remote(symbol: str) -> pd.DataFrame:
+    fetch = _resolve_ak_func("stock_value_em")
     try:
-        raw = func(symbol=symbol)
+        raw = fetch(symbol=symbol)
     except Exception as e:
         raise MarketDataError(f"stock_value_em 获取失败 ({symbol}): {e}") from e
     if not isinstance(raw, pd.DataFrame) or raw.empty:
@@ -193,16 +198,9 @@ def _normalize_dividends(raw: pd.DataFrame) -> pd.DataFrame:
 
 
 def _fetch_dividends_remote(symbol: str) -> pd.DataFrame:
+    fetch = _resolve_ak_func("stock_dividend_cninfo")
     try:
-        import akshare as ak  # type: ignore[import-not-found]
-    except Exception as e:  # pragma: no cover
-        raise MarketDataError(f"akshare 不可用: {e}") from e
-
-    func = getattr(ak, "stock_dividend_cninfo", None)
-    if not callable(func):
-        raise MarketDataError("当前 akshare 无 stock_dividend_cninfo 接口")
-    try:
-        raw = func(symbol=symbol)
+        raw = fetch(symbol=symbol)
     except Exception as e:
         raise MarketDataError(f"stock_dividend_cninfo 获取失败 ({symbol}): {e}") from e
     if not isinstance(raw, pd.DataFrame):
@@ -258,21 +256,23 @@ def trailing_dividend_yield(
     return float(total / float(price))
 
 
-_DATE_STR_CACHE: dict[int, np.ndarray] = {}
+# id 键缓存，值里强引用 DataFrame 本身：对象存活期间地址不会被复用，
+# 避免纯 id → ndarray 缓存把旧对象的日期数组误配给新对象（id 地址复用 bug）。
+_DATE_STR_CACHE: dict[int, tuple[pd.DataFrame, np.ndarray]] = {}
 
 
 def _date_str_array(value_df: pd.DataFrame) -> np.ndarray:
     """按 DataFrame 身份缓存 YYYY-MM-DD 字符串列，避免反复 to_datetime。"""
     key = id(value_df)
     cached = _DATE_STR_CACHE.get(key)
-    if cached is not None:
-        return cached
+    if cached is not None and cached[0] is value_df:
+        return cached[1]
     dates = value_df["date"].astype(str).str[:10].to_numpy()
-    _DATE_STR_CACHE[key] = dates
+    _DATE_STR_CACHE[key] = (value_df, dates)
     # 粗暴限长，防止长期进程无限增长
     if len(_DATE_STR_CACHE) > 20000:
         _DATE_STR_CACHE.clear()
-        _DATE_STR_CACHE[key] = dates
+        _DATE_STR_CACHE[key] = (value_df, dates)
     return dates
 
 

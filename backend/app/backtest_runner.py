@@ -12,6 +12,7 @@ from pydantic import BaseModel
 from app.backtest_aggregate import equal_weight_equity_curve
 from app.backtest.cross_section_runner import (
     run_cross_section_backtest,
+    run_cross_section_per_stock_backtest,
     run_cross_section_screen,
 )
 from app.data_sources.market_data import fetch_a_share_daily
@@ -227,17 +228,20 @@ def run_backtest_request(body: BacktestRequest) -> dict[str, Any]:
     if registered is None:
         raise ValueError(f"未知策略: {body.strategy_id}")
     if isinstance(registered, CrossSectionStrategySpec):
-        if body.mode not in {"universe", "screen"}:
-            raise ValueError("横截面策略仅支持 mode=universe 或 mode=screen")
-        response = (
-            run_cross_section_screen(body, registered)
-            if body.mode == "screen"
-            else run_cross_section_backtest(body, registered)
-        )
+        if body.mode not in {"universe", "screen", "per_stock"}:
+            raise ValueError("横截面策略仅支持 mode=universe、mode=screen 或 mode=per_stock")
+        if body.mode == "per_stock":
+            response = run_cross_section_per_stock_backtest(body, registered)
+        elif body.mode == "screen":
+            response = run_cross_section_screen(body, registered)
+        else:
+            response = run_cross_section_backtest(body, registered)
         return response.model_dump(mode="json")
 
     if body.mode == "screen":
         raise ValueError("时序策略不支持 mode=screen")
+    if body.mode == "per_stock":
+        raise ValueError("时序策略不支持 mode=per_stock，仅横截面策略可用")
 
     if body.mode == "universe":
         return run_backtest_universe_request(body).model_dump(mode="json")

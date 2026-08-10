@@ -15,7 +15,7 @@
 
 ```json
 {
-  "decision_interval": 20,
+  "decision_frequency": "monthly",
   "top_n": 5
 }
 ```
@@ -29,11 +29,13 @@
 3. 按 **流通市值** 升序排序（缺失时回退总市值）
 4. 取前 `top_n` 只，等权持有
 
-当前策略用 `strategy_params.decision_interval` 生成决策日，单位为**交易日**：
+当前策略默认 `decision_frequency="monthly"`，决策日**锚定在自然月月末**；可改
+`weekly`（ISO 周周末）或 `daily`（每个交易日，配合 `decision_warmup` 冷启动）：
 
-- `20`：约月频（策略默认）
-- `5`：约周频
-- `1`：每个交易日调仓
+- `decision_frequency="monthly"` + `decision_every_n=1`：每月末调仓（默认）
+- `decision_frequency="monthly"` + `decision_every_n=3`：季末调仓
+
+锚定日历月而非回测起始日，因此回测结果不随起始日相位漂移。
 
 ## 3. 示例请求参数
 
@@ -68,7 +70,9 @@
 
 | 参数 | 示例值 | 默认 | 说明 |
 | --- | --- | --- | --- |
-| `decision_interval` | `30` | 20 | 当前策略生成决策日的交易日间隔；示例沿用原 30 日配置，并非引擎强制定时 |
+| `decision_frequency` | `monthly` | `monthly` | 决策频率：`daily`=每日（冷启动期后）/ `weekly`=每周末 / `monthly`=每自然月末；均锚定自然周期，与回测起始日无关 |
+| `decision_every_n` | `1` | 1 | 决策步长：`monthly`+3=季末、`weekly`+2=双周；`daily` 忽略 |
+| `decision_warmup` | `20` | 20 | 冷启动期（交易日），仅 `daily` 生效 |
 | `top_n` | `5` | 5 | 持仓只数（流通市值最小的 N 只） |
 | `exclude_st` | `true` | true | 剔除名称含 ST/退 的标的 |
 | `exclude_limit` | `true` | true | 剔除疑似涨跌停（按涨跌幅阈值） |

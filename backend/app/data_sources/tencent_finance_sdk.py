@@ -71,6 +71,17 @@ class KlineBar(TypedDict):
     volume: int | None
 
 
+class KlineTurnoverBar(TypedDict):
+    date: str
+    open: float | None
+    close: float | None
+    high: float | None
+    low: float | None
+    volume: int | None
+    amount: float | None  # 成交额（元）
+    turnover_rate: float | None  # 换手率小数（0.01 = 1%）
+
+
 class FundFlowData(TypedDict):
     symbol: str
     main_inflow: float | None
@@ -138,6 +149,7 @@ class TencentFinanceSDK:
 
     quote_url = "https://qt.gtimg.cn/q="
     kline_url = "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
+    kline_turnover_url = "https://proxy.finance.qq.com/ifzqgtimg/appstock/app/newfqkline/get"
     smartbox_url = "https://smartbox.gtimg.cn/s3/"
 
     def __init__(
@@ -452,6 +464,73 @@ class TencentFinanceSDK:
                     high=_to_float(str(row[3])),
                     low=_to_float(str(row[4])),
                     volume=_to_int(str(row[5])),
+                )
+            )
+
+        if not bars:
+            raise TencentFinanceError("parse_error", "K 线解析后为空", symbol=norm)
+        return bars
+
+    def get_kline_with_turnover(
+        self,
+        symbol: str,
+        period: Literal["day", "week", "month"] = "day",
+        *,
+        count: int = 640,
+        end: str | None = None,
+        fq: str = "qfq",
+    ) -> list[KlineTurnoverBar]:
+        """腾讯 newfqkline 日线：含**真实历史换手率**与前复权价格。
+
+        单次最多返回约 640 条（count 上限）；end 为 YYYY-MM-DD，返回该日期（含）
+        向前 count 条，配合 count 可逐页向前翻长历史。返回的换手率为小数
+        （0.01 = 1%），成交额已由万元换算为元。
+        """
+        norm = self.normalize_symbol(symbol)
+        api_period = _PERIOD_MAP.get(period)
+        if api_period is None:
+            raise TencentFinanceError("invalid_period", f"不支持 period: {period}", symbol=norm)
+        param = f"{norm},{api_period},,{end or ''},{count},{fq}"
+        text = self._request_text(self.kline_turnover_url, params={"param": param}, symbol=norm)
+        try:
+            payload = json.loads(text)
+        except json.JSONDecodeError as exc:
+            raise TencentFinanceError("parse_error", "K 线响应不是合法 JSON", symbol=norm, cause=exc) from exc
+
+        data = payload.get("data")
+        if not isinstance(data, dict) or norm not in data:
+            raise TencentFinanceError("parse_error", "K 线响应缺少 symbol 数据", symbol=norm)
+
+        entry = data[norm]
+        if not isinstance(entry, dict):
+            raise TencentFinanceError("parse_error", "K 线数据结构异常", symbol=norm)
+
+        candidates = [f"{fq}{api_period}", api_period]
+        rows: list[list[str]] = []
+        for key in candidates:
+            value = entry.get(key)
+            if isinstance(value, list):
+                rows = value
+                break
+        if not rows:
+            raise TencentFinanceError("empty_response", "K 线数据为空", symbol=norm)
+
+        bars: list[KlineTurnoverBar] = []
+        for row in rows:
+            if not isinstance(row, list) or len(row) < 9:
+                continue
+            turnover_pct = _to_float(str(row[7]))
+            amount_wan = _to_float(str(row[8]))
+            bars.append(
+                KlineTurnoverBar(
+                    date=str(row[0]),
+                    open=_to_float(str(row[1])),
+                    close=_to_float(str(row[2])),
+                    high=_to_float(str(row[3])),
+                    low=_to_float(str(row[4])),
+                    volume=_to_int(str(row[5])),
+                    turnover_rate=(turnover_pct / 100.0) if turnover_pct is not None else None,
+                    amount=(amount_wan * 10000.0) if amount_wan is not None else None,
                 )
             )
 

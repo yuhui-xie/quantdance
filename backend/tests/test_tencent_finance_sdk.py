@@ -146,6 +146,58 @@ def test_get_kline_parses_json_rows():
     assert bars[1]["volume"] == 12000
 
 
+def test_get_kline_with_turnover_parses_10_field_rows():
+    payload = {
+        "code": 0,
+        "data": {
+            "sh600519": {
+                "qfqday": [
+                    ["2026-05-20", "1800.0", "1812.0", "1820.0", "1790.0", "10000", "", "0.55", "1229.5", ""],
+                    ["2026-05-21", "1812.0", "1825.0", "1838.0", "1808.0", "12000", "", "0.62", "1489.2", ""],
+                ]
+            }
+        },
+    }
+    session = _FakeSession([_FakeResponse(json.dumps(payload))])
+    sdk = TencentFinanceSDK(session=session)
+
+    bars = sdk.get_kline_with_turnover("600519", count=640, end="2026-05-21")
+
+    assert len(bars) == 2
+    assert bars[0]["date"] == "2026-05-20"
+    assert bars[1]["close"] == pytest.approx(1825.0)
+    assert bars[1]["volume"] == 12000
+    # 换手率：百分比 → 小数；成交额：万元 → 元
+    assert bars[0]["turnover_rate"] == pytest.approx(0.0055)
+    assert bars[0]["amount"] == pytest.approx(12295000.0)
+    # 翻页参数：end 与 count 应进入 param
+    call = session.calls[0]
+    assert call["url"] == sdk.kline_turnover_url
+    assert "2026-05-21" in call["params"]["param"]
+    assert "640" in call["params"]["param"]
+
+
+def test_get_kline_with_turnover_skips_short_rows():
+    # 仅 6 字段的行没有换手率/成交额，应跳过；不足 9 字段按无效行处理。
+    payload = {
+        "code": 0,
+        "data": {
+            "sh600519": {
+                "qfqday": [
+                    ["2026-05-20", "1800.0", "1812.0", "1820.0", "1790.0", "10000"],
+                    ["2026-05-21", "1812.0", "1825.0", "1838.0", "1808.0", "12000", "", "0.62", "1489.2", ""],
+                ]
+            }
+        },
+    }
+    sdk = TencentFinanceSDK(session=_FakeSession([_FakeResponse(json.dumps(payload))]))
+
+    bars = sdk.get_kline_with_turnover("600519")
+
+    assert len(bars) == 1
+    assert bars[0]["date"] == "2026-05-21"
+
+
 def test_get_fund_flow_parses_response():
     fields = ["", "", "", "", "", "88.8", "77.7", "11.1", "3.5", "-1.2"]
     payload = 'v_ff_sh600519="' + "~".join(fields) + '";'

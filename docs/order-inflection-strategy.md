@@ -29,7 +29,7 @@
 
 ```json
 {
-  "decision_interval": 20,
+  "decision_frequency": "monthly",
   "top_n": 10,
   "min_contract_liab_yoy": 0.0,
   "min_gross_margin": 0.15,
@@ -59,8 +59,10 @@ score = w_contract * 合同负债同比
       + w_inventory* soft(存货同比)
 ```
 
-同分时市值更小者优先。当前策略用 `strategy_params.decision_interval`
-生成决策日（默认 20 个交易日≈月频）；这是策略规则，不是共享资金引擎强制的调仓周期。
+同分时市值更小者优先。当前策略默认 `decision_frequency="monthly"`，决策日**锚定在
+自然月月末**；可改 `weekly`（ISO 周周末）或 `daily`（每个交易日，配合
+`decision_warmup` 冷启动）。决策频率统一锚定自然周期而非回测起始日，因此回测
+结果不随起始日相位漂移。这是策略规则，不是共享资金引擎强制的调仓周期。
 
 ## 3. 示例请求参数
 
@@ -96,7 +98,9 @@ score = w_contract * 合同负债同比
 
 | 参数 | 示例值 | 默认 | 说明 |
 | --- | --- | --- | --- |
-| `decision_interval` | `20` | 20 | 当前策略生成决策日的交易日间隔；财报低频更新，不宜过高频决策 |
+| `decision_frequency` | `monthly` | `monthly` | 决策频率：`daily`=每日（冷启动期后）/ `weekly`=每周末 / `monthly`=每自然月末；均锚定自然周期，与回测起始日无关 |
+| `decision_every_n` | `1` | 1 | 决策步长：`monthly`+3=季末、`weekly`+2=双周；`daily` 忽略 |
+| `decision_warmup` | `20` | 20 | 冷启动期（交易日），仅 `daily` 生效 |
 | `top_n` | `10` | 10 | 持仓只数（按拐点分排序） |
 | `min_contract_liab` | `0` | 0 | 合同负债绝对值下限（元） |
 | `min_contract_liab_yoy` | `0.0` | 0 | 合同负债同比下限（%）；0=至少不萎缩 |

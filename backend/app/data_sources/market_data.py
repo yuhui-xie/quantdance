@@ -10,6 +10,7 @@ from typing import Any, Literal
 import pandas as pd
 
 from app.data_sources.a_stock_data import AStockDataError, AStockDataSDK, MarketKlineBar
+from app.data_sources.tencent_finance_sdk import TencentFinanceError, TencentFinanceSDK
 
 class MarketDataError(Exception):
     """行情不可用：网络、数据源为空或参数错误。"""
@@ -488,5 +489,114 @@ def fetch_a_share_valuation_snapshot(symbol: str) -> dict[str, float] | None:
             out[key] = float(value)
     if not out:
         return None
+    return out
+
+
+def _to_iso_date(d: date | datetime | str) -> str:
+    if isinstance(d, str):
+        return d.strip()[:10]
+    if isinstance(d, datetime):
+        return d.date().isoformat()
+    return d.isoformat()
+
+
+def _fetch_tencent_turnover_page(
+    sdk: TencentFinanceSDK,
+    symbol: str,
+    end: str | None,
+) -> list[dict[str, Any]]:
+    try:
+        return sdk.get_kline_with_turnover(symbol, count=_PAGE_SIZE, end=end)
+    except TencentFinanceError as e:
+        raise MarketDataError(f"腾讯日线获取失败: {e}") from e
+
+
+_PAGE_SIZE = 640
+
+
+def fetch_a_share_daily_turnover(
+    symbol: str,
+    *,
+    start: str | date | datetime | None = None,
+    end: str | date | datetime | None = None,
+    limit: int | None = None,
+) -> pd.DataFrame:
+    """获取 A 股日线（含换手率），数据源为腾讯财经 newfqkline。
+
+    返回**前复权**日线，换手率为腾讯公布的**真实历史换手率**（非估算），
+    DatetimeIndex 索引，列为 open/high/low/close/volume/amount/turnover_rate；
+    turnover_rate 为小数（0.01 = 1%）。单次接口上限约 640 条，超过时自动逐页向前翻取。
+
+    调用方式二选一：
+    - 同时提供 start 与 end：取该区间全部 K 线；
+    - 仅提供 limit：取最近 limit 条交易日。
+    """
+    code = normalize_a_share_symbol(symbol)
+    if start is not None and end is not None:
+        iso_start = _to_iso_date(start)
+        iso_end = _to_iso_date(end)
+    elif limit is not None:
+        if limit < 50:
+            raise ValueError("limit 至少为 50")
+        iso_start = None
+        iso_end = None
+    else:
+        raise ValueError("请同时提供 start 与 end，或提供 limit")
+
+    sdk = TencentFinanceSDK()
+    pages: list[list[dict[str, Any]]] = []
+    page_end: str | None = iso_end
+    while True:
+        page = _fetch_tencent_turnover_page(sdk, symbol, page_end)
+        if not page:
+            break
+        pages.append(page)
+        if len(page) < _PAGE_SIZE:
+            break
+        if limit is not None and sum(len(p) for p in pages) >= limit:
+            break
+        if iso_start is not None and page[0]["date"] <= iso_start:
+            break
+        page_end = page[0]["date"]
+
+    # 各页内部升序、页间按时间先后拼接（旧页在前），跨页边界日期去重。
+    bars: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for page in reversed(pages):
+        for bar in page:
+            d = bar["date"]
+            if d in seen:
+                continue
+            seen.add(d)
+            bars.append(bar)
+
+    if limit is not None:
+        bars = bars[-limit:]
+    elif iso_start is not None:
+        bars = [b for b in bars if iso_start <= b["date"] <= iso_end]
+
+    if not bars:
+        raise MarketDataError(f"未获取到 {code} 的日线数据")
+
+    raw = pd.DataFrame(bars)
+    out = pd.DataFrame(
+        {
+            "open": pd.to_numeric(raw["open"], errors="coerce"),
+            "high": pd.to_numeric(raw["high"], errors="coerce"),
+            "low": pd.to_numeric(raw["low"], errors="coerce"),
+            "close": pd.to_numeric(raw["close"], errors="coerce"),
+            "volume": pd.to_numeric(raw["volume"], errors="coerce").fillna(0),
+            "amount": pd.to_numeric(raw["amount"], errors="coerce").fillna(0),
+            "turnover_rate": pd.to_numeric(raw["turnover_rate"], errors="coerce"),
+        }
+    )
+    dates = pd.to_datetime(raw["date"], errors="coerce")
+    out.index = dates
+    out = out.dropna(subset=["open", "high", "low", "close"])
+    out = out[~out.index.isna()]
+    out = out.sort_index()
+    out = out[~out.index.duplicated(keep="last")]
+    if out.empty:
+        raise MarketDataError(f"指定范围内未获取到 {code} 的日线数据")
     return out
 

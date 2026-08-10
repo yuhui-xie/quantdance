@@ -7,3 +7,5 @@ backend/data/
 ./third-party/akshare-stock-data-fetcher/
 ./tests/__pycache__/**
 ./backend/.pytest_cache/**
+./backend/out/*
+./backend/.venv/**

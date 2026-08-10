@@ -68,6 +68,7 @@ def run_shared_backtest(
     take_profit_exit_pct: float | None = None,
     stop_loss_pct: float | None = None,
     position_policy: PositionManagementPolicy | None = None,
+    rebalance_mode: str = "full",
 ) -> SharedBacktestResult:
     """按日期目标映射执行共享账户回测；仅映射中出现的交易日进行换仓。"""
     if close_panel.empty:
@@ -252,13 +253,29 @@ def run_shared_backtest(
                 positions = {s: n for s, n in positions.items() if n > 0}
             else:
                 if target_changed:
-                    for symbol in list(positions):
-                        sell(day, symbol, "rebalance")
-                    positions = {s: n for s, n in positions.items() if n > 0}
-                    if target:
-                        budget = cash / len(target)
-                        for symbol in target:
-                            buy(day, symbol, budget)
+                    if rebalance_mode == "incremental":
+                        # 增量换仓：只卖掉落出名单的、买进新加入的，保留共同持仓。
+                        # 新标的用卖出释放的现金等权建仓，存量持仓维持不动（权重自然漂移）。
+                        target_set = set(target or [])
+                        for symbol in list(positions):
+                            if symbol not in target_set:
+                                sell(day, symbol, "rebalance")
+                        positions = {s: n for s, n in positions.items() if n > 0}
+                        new_symbols = [
+                            s for s in (target or []) if positions.get(s, 0) <= 0
+                        ]
+                        if new_symbols:
+                            budget = cash / len(new_symbols)
+                            for symbol in new_symbols:
+                                buy(day, symbol, budget)
+                    else:
+                        for symbol in list(positions):
+                            sell(day, symbol, "rebalance")
+                        positions = {s: n for s, n in positions.items() if n > 0}
+                        if target:
+                            budget = cash / len(target)
+                            for symbol in target:
+                                buy(day, symbol, budget)
 
         if target is not None:
             rebalances.append({

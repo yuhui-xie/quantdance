@@ -27,7 +27,8 @@
   "force_refresh": false,
   "max_workers": 32,
   "strategy_params": {
-    "decision_interval": 20,
+    "decision_warmup": 20,
+    "hysteresis_rank_threshold": 3,
     "top_n": 10,
     "min_price": 5.0,
     "max_price": 100.0,

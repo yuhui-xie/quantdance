@@ -99,6 +99,10 @@ print(vals["sh600519"]["pe_ttm"], vals["sz000858"]["market_cap"])
 - 各策略专文：`docs/*-strategy.md`（如 [量比脉冲](docs/volume-ma-pulse-strategy.md)、[双均线](docs/ma-crossover-strategy.md)）
 - 横截面共享资金：[菜场大妈](docs/market-auntie-strategy.md)、[中小综指微盘](docs/small-cap-zz399101-strategy.md)、[涨停回落埋伏](docs/limit-up-pullback-strategy.md)、[订单开工拐点](docs/order-inflection-strategy.md)
 
+数据功能专文：
+
+- 筹码分布分析（`chip-dist`）：[docs/chip-distribution.md](docs/chip-distribution.md)
+
 新增策略时请同步新增对应专文，并更新总览索引表。
 
 ## 测试

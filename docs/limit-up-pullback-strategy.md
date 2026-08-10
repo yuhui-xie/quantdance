@@ -15,7 +15,7 @@
 
 ```json
 {
-  "decision_interval": 20,
+  "decision_frequency": "monthly",
   "top_n": 10,
   "lookback_days": 40,
   "min_limit_ups": 1,
@@ -47,7 +47,9 @@
 9. **概念叠加（可选）**：`concept_symbols` 非空时，仅保留白名单内标的。
 10. **排序持仓**：按总市值升序，其次涨停次数多、分位更低、窗口涨幅更小；取前 `top_n` 只等权。
 
-当前策略用 `strategy_params.decision_interval` 生成决策日（默认 `20` 个交易日≈月频）。
+当前策略默认 `decision_frequency="monthly"`，决策日**锚定在自然月月末**；可改
+`weekly`（ISO 周周末）或 `daily`（每个交易日，配合 `decision_warmup` 冷启动）。
+决策频率统一锚定自然周期而非回测起始日，因此回测结果不随起始日相位漂移。
 这是策略规则，不是共享资金引擎强制的调仓周期。
 
 ## 3. 示例请求参数
@@ -88,7 +90,9 @@
 
 | 参数                                   | 示例值                  | 默认    | 说明                                          |
 | -------------------------------------- | ----------------------- | ------- | --------------------------------------------- |
-| `decision_interval`                   | `20`                  | 20      | 当前策略生成决策日的交易日间隔，并非引擎强制定时 |
+| `decision_frequency`                | `monthly`             | `monthly`| 决策频率：`daily`=每日（冷启动期后）/ `weekly`=每周末 / `monthly`=每自然月末；均锚定自然周期，与回测起始日无关 |
+| `decision_every_n`                  | `1`                   | 1       | 决策步长：`monthly`+3=季末、`weekly`+2=双周；`daily` 忽略 |
+| `decision_warmup`                   | `20`                  | 20      | 冷启动期（交易日），仅 `daily` 生效 |
 | `top_n`                              | `10`                  | 10      | 最终持仓只数                                  |
 | `lookback_days`                      | `40`                  | 40      | 涨停观察窗口（交易日）                        |
 | `min_limit_ups`                      | `1`                   | 1       | 窗口内最少涨停次数（可改为 2）                |

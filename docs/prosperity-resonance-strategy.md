@@ -1,6 +1,6 @@
 # 景气共振策略说明
 
-本文档描述横截面共享资金策略 `prosperity_resonance`：**盈利增长性价比（PEG）+ 趋势确认 + 回调入场**，三重共振后综合评分选股，按决策日等权换仓。
+本文档描述横截面共享资金策略 `prosperity_resonance`：**盈利增长性价比（PEG）+ 趋势确认 + 回调入场**，三重共振后综合评分选股，**每个交易日检查是否有更优标的，带防抖滞后带、只增量换仓**。
 
 实现代码：`backend/app/strategies/cross_section/prosperity_resonance.py`
 横截面执行：`backend/app/backtest/cross_section_runner.py`，共享资金引擎：`backend/app/backtest/shared_engine.py`
@@ -30,7 +30,9 @@ A 股有两个被反复验证的 alpha 来源：
 
 ```json
 {
-  "decision_interval": 20,
+  "decision_frequency": "daily",
+  "decision_warmup": 20,
+  "hysteresis_rank_threshold": 3,
   "top_n": 8,
   "min_peg": 0.1,
   "max_peg": 1.5,
@@ -41,7 +43,29 @@ A 股有两个被反复验证的 alpha 来源：
 }
 ```
 
-## 2. 选股规则（每个调仓日）
+> 与多数横截面策略不同，本策略默认 `decision_frequency="daily"`，**每天检查一次**
+> （`decision_warmup` 只跳过区间前 N 日冷启动），并通过滞后带抑制日频噪音引起的
+> 频繁换仓；可把 `decision_frequency` 调成 `weekly` / `monthly` 降低决策频率。
+> 换仓执行采用增量模式（见下文"决策与换仓"）。
+
+## 2. 决策与换仓（默认日频 + 防抖滞后带 + 增量）
+
+本策略默认**每天重算**候选池与综合评分（`decision_frequency="daily"`，可改
+`weekly` / `monthly` 锚定周/月末，配合 `decision_every_n` 步长），加上防抖滞后带与
+增量换仓共同抑制来回换仓：
+
+1. **重算候选池与综合评分**，得到当日完整排名。
+2. **防抖滞后带**（`hysteresis_rank_threshold`，默认 3）：上一次选出的持仓只要仍可交易，就默认保留——
+   - 持仓排名仍在 `top_n` 内 → 原样保留；
+   - 持仓掉出 `top_n` → 不立刻卖出，只有当某个未持有候选比它领先至少 `hysteresis_rank_threshold` 个名次时才换掉，避免日频评分噪音引起来回换仓；
+   - 持仓数不足 `top_n` → 用排名最高的未持有候选补足（新增资金不触发替换）。
+3. **增量换仓**（`BacktestRequest.rebalance_mode="incremental"`）：目标集合变化时只交易差异——卖出掉出名单的、买进新加入的，共同持仓保持不动（不再全仓清空重建，持仓权重自然漂移）。
+
+状态（上次持仓）保存在策略上下文的 `ctx.cache` 中，随决策日时序自动推进。
+
+
+
+## 3. 选股规则（每个决策日）
 
 在股票池内，对调仓日 `T`：
 
@@ -65,9 +89,9 @@ A 股有两个被反复验证的 alpha 来源：
    - 动量因子分 = `w_momentum × 窗口收益率百分位排名`——动量越强分越高
    - 入场因子分 = `w_entry × (1 − |均线偏离| / 最大带宽)`——越接近均线分越高
    - 总分 = PEG 分 + 动量分 + 入场分
-8. **排序持仓**：按总分降序，取前 `top_n` 只等权持有。
+8. **排序与滞后带**：按总分降序排序；经 `hysteresis_rank_threshold` 防抖后，取前 `top_n` 只作为目标持仓（见第 2 节）。
 
-## 3. 参数总表
+## 4. 参数总表
 
 ### 3.1 公共字段
 
@@ -89,7 +113,10 @@ A 股有两个被反复验证的 alpha 来源：
 
 | 参数 | 默认 | 范围 | 说明 |
 |------|------|------|------|
-| `decision_interval` | 20 | ≥1 | 决策间隔（交易日），≈月频 |
+| `decision_frequency` | `daily` | `daily`/`weekly`/`monthly` | 决策频率：`daily`=每日（冷启动期后）/ `weekly`=每周末 / `monthly`=每自然月末 |
+| `decision_every_n` | 1 | ≥1 | 决策步长：`monthly`+3=季末、`weekly`+2=双周；`daily` 忽略 |
+| `decision_warmup` | 20 | 0–250 | 日频决策的冷启动期（交易日）：跳过区间前 N 日不做决策 |
+| `hysteresis_rank_threshold` | 3 | 0–50 | 防抖滞后带：新候选须比持仓排名领先至少该名次才替换；0 关闭 |
 | `top_n` | 10 | 1–50 | 持仓只数 |
 | `min_price` | 5.0 | ≥0 | 最低股价（元） |
 | `max_price` | 100.0 | ≥min | 最高股价（元） |
@@ -119,7 +146,7 @@ A 股有两个被反复验证的 alpha 来源：
 | `exclude_suspended` | true | — | 剔除疑似停牌 |
 | `limit_pct_threshold` | 9.5 | 1–30 | 涨跌停近似阈值（%） |
 
-## 4. 数据说明与局限
+## 5. 数据说明与局限
 
 - **PEG**：来自东财 `stock_value_em`，计算口径为 PE(TTM) / 盈利增速。部分成分股 PEG 缺失或不稳定，候选池可能偏小。
 - **均线**：用 K 线日数据计算简单移动平均（SMA），非交易所官方均线。
@@ -128,7 +155,7 @@ A 股有两个被反复验证的 alpha 来源：
 - **小市值偏差**：默认市值范围 50 亿–500 亿（中小盘），在大小盘风格切换时可能阶段性跑输沪深 300 等大市值指数。
 - **候选不足**：若通过全部过滤的标的少于 `top_n`，只持有能选出的标的；放宽 `max_peg`、`max_pb`、均线偏离带可扩大候选池。
 
-## 5. 运行示例
+## 6. 运行示例
 
 ```bash
 cd backend
@@ -150,7 +177,7 @@ python -m app.script backtest --strategy prosperity_resonance --mode universe \
   --initial-cash 100000 --plot out/test_prosperity.svg
 ```
 
-## 6. 调参指南
+## 7. 调参指南
 
 ### 候选太少 → 扩大候选池
 - 提高 `max_peg`（如 1.5 → 2.0）
@@ -171,7 +198,7 @@ python -m app.script backtest --strategy prosperity_resonance --mode universe \
 - 缩小市值范围（更纯粹的小市值暴露）
 - 设为 `main_board_only: true`（排除创业板等高波动板块）
 
-## 7. 与其他策略的关系
+## 8. 与其他策略的关系
 
 | 策略 | 与本策略的关系 |
 |------|---------------|
@@ -181,7 +208,7 @@ python -m app.script backtest --strategy prosperity_resonance --mode universe \
 | `order_inflection` | 都关注基本面改善，但本策略用 PEG 而非财报科目 |
 | `small_cap_zz399101` | 都偏小市值，但本策略多了盈利质量和趋势过滤 |
 
-## 8. 默认参数回测结果
+## 9. 默认参数回测结果
 
 以下为默认参数 + zz500 成分股 500 只在 2020-01-01 ~ 2026-07-31 的回测表现：
 

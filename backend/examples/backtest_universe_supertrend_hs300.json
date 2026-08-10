@@ -1,0 +1,29 @@
+{
+  "mode": "universe",
+  "data_source": "a_stock_data",
+  "strategy_id": "supertrend",
+  "universe": "hs300",
+  "max_universe": 300,
+  "seed": 42,
+  "start_date": "2019-01-01",
+  "end_date": "2026-08-01",
+  "initial_cash": 100000,
+  "commission": 0.0003,
+  "max_workers": 16,
+  "include_equity": true,
+  "include_trades": true,
+  "include_price": true,
+  "strategy_params": {
+    "atr_period": 10,
+    "multiplier": 3.0,
+    "adx_period": 14,
+    "min_adx": 20.0,
+    "ema_period": 60
+  },
+  "output_options": {
+    "json": false,
+    "output": "out/backtest_universe_supertrend_hs300.json",
+    "plot": "out/backtest_universe_supertrend_hs300.svg",
+    "report": "out/backtest_universe_supertrend_hs300.html"
+  }
+}

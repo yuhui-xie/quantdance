@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field, model_validator
 
 
 class BacktestRequest(BaseModel):
-    mode: Literal["single", "universe", "screen"] = "single"
+    mode: Literal["single", "universe", "screen", "per_stock"] = "single"
     data_source: Literal["a_stock_data"] = "a_stock_data"
     strategy_id: str = "ma_crossover"
     initial_cash: float = Field(100_000, ge=1000)
@@ -39,6 +39,10 @@ class BacktestRequest(BaseModel):
     take_profit_arm_pct: float | None = Field(None, gt=0, le=5)
     take_profit_exit_pct: float | None = Field(None, ge=0, le=5)
     position_management: "PositionManagementConfig | None" = None
+    rebalance_mode: Literal["full", "incremental"] = Field(
+        "full",
+        description="换仓模式：full=目标变动时全仓清空重建；incremental=只交易差异，保留共同持仓",
+    )
     include_equity: bool = True
     include_trades: bool = True
     include_price: bool = False
@@ -82,6 +86,11 @@ class BacktestRequest(BaseModel):
             "k_period",
             "d_period",
             "smooth",
+            # supertrend
+            "atr_period",
+            "multiplier",
+            "adx_period",
+            "min_adx",
         }
         found = sorted(strategy_keys.intersection(data))
         if found:
@@ -98,11 +107,11 @@ class BacktestRequest(BaseModel):
                 raise ValueError("screen 模式填写 start_date 时须同时填写 end_date")
         elif (start and not end) or (end and not start):
             raise ValueError("start_date 与 end_date 须同时填写或同时留空")
-        if self.mode == "universe":
+        if self.mode in {"universe", "per_stock"}:
             if not start or not end:
-                raise ValueError("universe 模式须同时提供 start_date 与 end_date")
+                raise ValueError(f"{self.mode} 模式须同时提供 start_date 与 end_date")
             if self.symbol and self.symbol.strip():
-                raise ValueError("universe 模式请使用 symbols，不应填写 symbol")
+                raise ValueError(f"{self.mode} 模式请使用 symbols，不应填写 symbol")
         arm = self.take_profit_arm_pct
         exit_level = self.take_profit_exit_pct
         if (arm is None) ^ (exit_level is None):
@@ -298,6 +307,41 @@ class BacktestSharedResponse(BaseModel):
     )
     warnings: list[str] = Field(default_factory=list)
     disclaimer: str = "演示用途，不构成投资建议。"
+
+
+class ChipDistRequest(BaseModel):
+    """筹码分布分析请求。"""
+
+    symbol: str = Field(..., min_length=1, description="A 股 6 位代码或带 SH/SZ 后缀")
+    days: int = Field(500, ge=50, le=5000, description="回溯交易日数量")
+    bins: int = Field(200, ge=50, le=1000, description="价格区间网格数")
+    detailed: bool = Field(False, description="是否包含完整分布数组")
+
+    model_config = {"extra": "ignore"}
+
+
+class ChipDistResponse(BaseModel):
+    """筹码分布分析结果。"""
+
+    symbol: str
+    name: str | None = None
+    profit_ratio: float = Field(..., description="获利盘比例 (0~1)")
+    average_cost: float = Field(..., description="平均成本（元）")
+    peak_price: float = Field(..., description="筹码峰值价格（元）")
+    interval_90_low: float = Field(..., description="90% 成本区间下沿")
+    interval_90_high: float = Field(..., description="90% 成本区间上沿")
+    concentration_90: float = Field(..., description="90% 集中度，越小越集中")
+    interval_70_low: float = Field(..., description="70% 成本区间下沿")
+    interval_70_high: float = Field(..., description="70% 成本区间上沿")
+    concentration_70: float = Field(..., description="70% 集中度，越小越集中")
+    current_price: float = Field(..., description="最新收盘价")
+    days_used: int = Field(..., description="实际使用的交易日数")
+    price_grid: list[float] | None = Field(None, description="价格网格（detailed=true 时返回）")
+    distribution: list[float] | None = Field(None, description="筹码分布（detailed=true 时返回）")
+    warning: str | None = None
+    disclaimer: str = "演示用途，筹码分布分析不构成投资建议。"
+
+    model_config = {"extra": "ignore"}
 
 
 BacktestRequest.model_rebuild()

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Sequence
+from typing import Any, Literal, Sequence
 
 import pandas as pd
 from pydantic import BaseModel, Field
@@ -10,13 +10,17 @@ from pydantic import BaseModel, Field
 from app.strategies.base import (
     CrossSectionContext,
     CrossSectionStrategySpec,
-    every_n_trading_days,
+    decision_dates_by_frequency,
 )
 from app.strategies.cross_section.common import asof_tradeable_row
 
 
 class EtfRotationParams(BaseModel):
-    decision_interval: int = Field(20, ge=1, description="决策间隔（交易日）")
+    decision_frequency: Literal["daily", "weekly", "monthly"] = Field(
+        "monthly", description="决策频率：daily=每日（冷启动期后）| weekly=每周末 | monthly=每自然月末"
+    )
+    decision_every_n: int = Field(1, ge=1, description="决策步长：monthly+3=季末、weekly+2=双周；daily 忽略")
+    decision_warmup: int = Field(20, ge=0, le=250, description="冷启动期（交易日），仅 daily 生效")
     top_n: int = Field(1, ge=1, le=10, description="持有动量最强的 ETF 数量")
     lookback_days: int = Field(60, ge=2, le=504, description="动量回看交易日数")
     trend_days: int = Field(
@@ -112,7 +116,12 @@ def decision_dates(
     params: EtfRotationParams,
 ) -> list[str]:
     del ctx
-    return every_n_trading_days(calendar, params.decision_interval)
+    return decision_dates_by_frequency(
+        calendar,
+        frequency=params.decision_frequency,
+        every_n=params.decision_every_n,
+        warmup=params.decision_warmup,
+    )
 
 
 STRATEGY = CrossSectionStrategySpec(
