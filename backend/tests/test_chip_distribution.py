@@ -8,7 +8,7 @@ import pytest
 
 from app.data_sources.market_data import MarketDataError, fetch_a_share_daily_turnover
 from app.data_sources.tencent_finance_sdk import TencentFinanceError
-from app.indicators import chip_cost_distribution
+from app.factors import chip_cost_distribution
 
 
 def _make_df(

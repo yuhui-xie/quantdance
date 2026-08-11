@@ -7,7 +7,7 @@ import pandas as pd
 import pytest
 
 import app.strategies.higher_moment as higher_moment_strategy
-from app.indicators.higher_moment import rolling_standardized_moment
+from app.factors.higher_moment import rolling_standardized_moment
 from app.strategies.higher_moment import (
     HigherMomentParams,
     _signals_from_smoothed,

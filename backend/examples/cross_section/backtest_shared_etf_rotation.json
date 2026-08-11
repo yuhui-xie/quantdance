@@ -11,7 +11,7 @@
     "518880",
     "511010"
   ],
-  "start_date": "2020-01-01",
+  "start_date": "2016-01-01",
   "end_date": "2026-07-31",
   "initial_cash": 100000,
   "commission": 0.0003,
@@ -22,7 +22,7 @@
   "force_refresh": false,
   "max_workers": 6,
   "strategy_params": {
-    "decision_frequency": "monthly",
+    "decision_frequency": "weekly",
     "top_n": 1,
     "lookback_days": 60,
     "trend_days": 120,

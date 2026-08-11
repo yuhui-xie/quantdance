@@ -6,6 +6,7 @@ from collections.abc import Sequence
 
 from app.data_sources.market_data import (
     fetch_a_share_universe,
+    fetch_etf_universe,
     fetch_gz2000_universe,
     fetch_hs300_universe,
     fetch_star50_universe,
@@ -52,4 +53,6 @@ def resolve_universe_rows(
         return fetch_gz2000_universe(max_universe, seed=seed)
     if selected in {"star_board", "kcb"}:
         return fetch_star_board_universe(max_universe, seed=seed)
+    if selected in {"etf", "etfs"}:
+        return fetch_etf_universe(max_universe, seed=seed)
     return fetch_a_share_universe(max_universe, seed=seed)

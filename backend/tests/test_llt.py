@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from app.indicators import llt
+from app.factors import llt
 from app.strategies.cross_section.limit_up_pullback import _mild_ma_up
 
 

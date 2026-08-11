@@ -467,6 +467,76 @@ def fetch_gz2000_universe(
     )
 
 
+def fetch_etf_universe(
+    max_universe: int = 500,
+    *,
+    seed: int | None = None,
+) -> tuple[list[dict[str, str]], str]:
+    """通过 akshare 拉取场内 ETF 列表（fund_etf_spot_em）。
+
+    返回 (ETF 列表, universe_note)，每项为 {"symbol": 六位代码, "name": 名称}。
+    ETF 代码为 6 位数字（沪 5xxxxx、深 15xxxx），行情走 a_stock_data/腾讯时由
+    normalize_symbol 按 5→SH、其余→SZ 自动映射市场。
+    """
+    if max_universe < 1:
+        raise ValueError("max_universe 至少为 1")
+
+    try:
+        import akshare as ak  # type: ignore[import-not-found]
+    except Exception as e:  # pragma: no cover - 依赖环境分支
+        raise MarketDataError(f"akshare 不可用，无法获取 ETF 列表: {e}") from e
+
+    func = getattr(ak, "fund_etf_spot_em", None)
+    if not callable(func):
+        raise MarketDataError("未找到可用的 akshare ETF 接口 fund_etf_spot_em")
+    try:
+        df = func()
+    except Exception as e:
+        raise MarketDataError(f"akshare ETF 列表获取失败: {e}") from e
+    if not isinstance(df, pd.DataFrame) or df.empty:
+        raise MarketDataError("akshare ETF 列表为空")
+
+    code_col = _first_existing_column(df, ("代码", "code", "symbol"))
+    name_col = _first_existing_column(df, ("名称", "name"))
+    if code_col is None:
+        raise MarketDataError("akshare ETF 列表缺少代码列")
+
+    rows: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for _, row in df.iterrows():
+        code = str(row.get(code_col, "")).strip()
+        if not re.fullmatch(r"\d{6}", code):
+            continue
+        if code in seen:
+            continue
+        seen.add(code)
+        name = str(row.get(name_col, "")).strip() if name_col is not None else ""
+        rows.append({"symbol": code, "name": name})
+
+    total = len(rows)
+    if total == 0:
+        raise MarketDataError("akshare ETF 列表解析后为空")
+
+    n_take = min(max_universe, total)
+    if total <= n_take:
+        note = f"akshare 场内 ETF 共 {total} 只，已全部纳入本次回测。"
+        return rows, note
+
+    if seed is not None:
+        rng = random.Random(seed)
+        sampled = list(rows)
+        rng.shuffle(sampled)
+        out = sampled[:n_take]
+        note = (
+            f"akshare 场内 ETF 共 {total} 只，已使用随机种子 {seed} 抽样 {n_take} 只（可复现）。"
+        )
+        return out, note
+
+    out = sorted(rows, key=lambda x: x["symbol"])[:n_take]
+    note = f"akshare 场内 ETF 共 {total} 只，已按代码升序截取前 {n_take} 只。"
+    return out, note
+
+
 def fetch_a_share_valuation_snapshot(symbol: str) -> dict[str, float] | None:
     """
     通过 a_stock_data 拉取个股最新估值截面（PE TTM、PB 等）。

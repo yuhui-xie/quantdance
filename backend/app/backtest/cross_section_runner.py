@@ -19,6 +19,7 @@ from app.data_sources.financial_reports import load_financials_panel
 from app.data_sources.market_data import (
     MarketDataError,
     fetch_a_share_daily,
+    fetch_a_share_daily_turnover,
     normalize_a_share_symbol,
 )
 from app.position_management import PositionManagementPolicy
@@ -105,17 +106,27 @@ def _load_panel(
         panel: dict[str, dict[str, pd.DataFrame]] = {}
 
         def load_daily(symbol: str) -> tuple[str, pd.DataFrame]:
-            daily = fetch_a_share_daily(
-                symbol,
-                limit=5000,
-                data_source=request.data_source,
-            )
+            if spec.needs_turnover:
+                daily = fetch_a_share_daily_turnover(
+                    symbol,
+                    limit=5000,
+                )
+            else:
+                daily = fetch_a_share_daily(
+                    symbol,
+                    limit=5000,
+                    data_source=request.data_source,
+                )
             value = daily.reset_index()
             value = value.rename(columns={value.columns[0]: "date"})
             value["date"] = pd.to_datetime(
                 value["date"], errors="coerce"
             ).dt.strftime("%Y-%m-%d")
             value["close"] = pd.to_numeric(value["close"], errors="coerce")
+            if spec.needs_turnover and "turnover_rate" in value.columns:
+                value["turnover_rate"] = pd.to_numeric(
+                    value["turnover_rate"], errors="coerce"
+                )
             value["pct_change"] = value["close"].pct_change() * 100.0
             return symbol, value.dropna(subset=["date", "close"])
 

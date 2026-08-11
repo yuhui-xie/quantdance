@@ -11,6 +11,7 @@ import pytest
 from app.data_sources.market_data import (
     fetch_a_share_daily,
     fetch_a_share_universe,
+    fetch_etf_universe,
     fetch_gz2000_universe,
     fetch_hs300_universe,
     fetch_star50_universe,
@@ -277,3 +278,62 @@ def test_fetch_star_board_universe_sampling_with_seed(monkeypatch):
     assert len(rows) == 3
     assert all(row["symbol"].startswith("688") for row in rows)
     assert "随机种子 42 抽样 3 只" in note
+
+
+def test_fetch_etf_universe_parses_akshare_spot(monkeypatch):
+    fake_ak = SimpleNamespace(
+        fund_etf_spot_em=lambda: pd.DataFrame(
+            {
+                "代码": ["510300", "159915", "518880", "not_a_code", "511880"],
+                "名称": ["沪深300ETF", "创业板ETF", "黄金ETF", "忽略", "货币ETF"],
+            }
+        )
+    )
+    monkeypatch.setitem(sys.modules, "akshare", fake_ak)
+
+    rows, note = fetch_etf_universe(2)
+
+    # 非 6 位代码被过滤；按代码升序截取前 2 只
+    assert rows == [
+        {"symbol": "159915", "name": "创业板ETF"},
+        {"symbol": "510300", "name": "沪深300ETF"},
+    ]
+    assert "场内 ETF 共 4 只" in note
+    assert "截取前 2 只" in note
+
+
+def test_fetch_etf_universe_sampling_with_seed(monkeypatch):
+    fake_ak = SimpleNamespace(
+        fund_etf_spot_em=lambda: pd.DataFrame(
+            {
+                "代码": [f"51{i:04d}" for i in range(10)],
+                "名称": [f"ETF{i}" for i in range(10)],
+            }
+        )
+    )
+    monkeypatch.setitem(sys.modules, "akshare", fake_ak)
+
+    rows, note = fetch_etf_universe(3, seed=7)
+
+    assert len(rows) == 3
+    assert all(row["symbol"].startswith("51") for row in rows)
+    assert "随机种子 7 抽样 3 只" in note
+
+
+def test_resolve_universe_rows_etf_preset(monkeypatch):
+    from app.universe import resolve_universe_rows
+
+    monkeypatch.setattr(
+        "app.universe.fetch_etf_universe",
+        lambda max_universe, seed=None: (
+            [{"symbol": "510300", "name": "沪深300ETF"}],
+            "akshare 场内 ETF mock",
+        ),
+    )
+
+    rows, note = resolve_universe_rows(
+        symbols=None, universe="etf", max_universe=50, seed=None
+    )
+
+    assert rows == [{"symbol": "510300", "name": "沪深300ETF"}]
+    assert note == "akshare 场内 ETF mock"

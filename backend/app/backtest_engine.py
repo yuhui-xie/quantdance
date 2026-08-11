@@ -205,9 +205,15 @@ def metrics_from_equity(
     initial_cash: float,
     trades: list[dict[str, Any]],
     dates: Sequence[str],
+    pnls: Sequence[float] | None = None,
 ) -> dict[str, float]:
-    """由权益曲线与成交记录计算统一绩效指标（单票/组合回测共用）。"""
-    return _metrics_from_equity(eq_arr, initial_cash, trades, dates)
+    """由权益曲线与成交记录计算统一绩效指标（单票/组合回测共用）。
+
+    默认由 ``trades`` 里的买卖配对估算回合盈亏（``_round_trip_pnls``，仅适用
+    单票全仓引擎）。共享资金引擎的 ``cash_after`` 是账户级现金而非单笔到账，
+    须自行按平均成本计算已实现盈亏后通过 ``pnls`` 传入。
+    """
+    return _metrics_from_equity(eq_arr, initial_cash, trades, dates, pnls)
 
 
 def _metrics_from_equity(
@@ -215,12 +221,13 @@ def _metrics_from_equity(
     initial_cash: float,
     trades: list[dict[str, Any]],
     dates: Sequence[str],
+    pnls: Sequence[float] | None = None,
 ) -> dict[str, float]:
     ret = np.diff(eq_arr) / np.where(eq_arr[:-1] > 0, eq_arr[:-1], np.nan)
     ret = ret[np.isfinite(ret)]
     total_return = (eq_arr[-1] - initial_cash) / initial_cash if initial_cash > 0 else 0.0
     max_drawdown = _max_drawdown(eq_arr)
-    pnls = _round_trip_pnls(trades)
+    pnls = _round_trip_pnls(trades) if pnls is None else list(pnls)
     wins = [p for p in pnls if p > 0]
     losses = [p for p in pnls if p < 0]
     gross_profit = float(sum(wins))

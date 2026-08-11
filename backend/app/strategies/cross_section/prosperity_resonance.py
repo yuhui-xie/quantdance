@@ -28,22 +28,25 @@ A 股适用逻辑：
 
 from __future__ import annotations
 
-from typing import Any, Literal, Sequence
+from typing import Any
 
 import numpy as np
-from pydantic import BaseModel, Field, model_validator
+from pydantic import Field, model_validator
 
-from app.indicators import llt
+from app.factors import llt
+from app.factors.cross_section import percentile_ranks
+from app.factors.momentum import simple_momentum
+from app.factors.trend import sma_last
 from app.strategies.base import (
     CrossSectionContext,
     CrossSectionStrategySpec,
-    decision_dates_by_frequency,
 )
 from app.strategies.cross_section.common import (
     apply_hysteresis,
     is_hs_main_board_symbol,
     is_st_stock,
 )
+from app.strategies.cross_section.decision import DecisionFrequencyParams
 from app.strategies.cross_section.value_bars import (
     ValueBars,
     asof_tradeable_from_bars,
@@ -51,11 +54,11 @@ from app.strategies.cross_section.value_bars import (
 )
 
 
-class ProsperityResonanceParams(BaseModel):
+class ProsperityResonanceParams(DecisionFrequencyParams):
     """景气共振策略参数。"""
 
     # ── 决策节奏 ──
-    decision_frequency: Literal["daily", "weekly", "monthly"] = Field(
+    decision_frequency: str = Field(
         "daily", description="决策频率：daily=每日（冷启动期后）| weekly=每周末 | monthly=每自然月末"
     )
     decision_every_n: int = Field(1, ge=1, description="决策步长：monthly+3=季末、weekly+2=双周；daily 忽略")
@@ -160,28 +163,6 @@ class ProsperityResonanceParams(BaseModel):
 # ═══════════════════════════════════════════════════════════════════
 
 
-def _sma_last(closes: np.ndarray, window: int) -> float | None:
-    """末尾 window 根 K 线的均值；不足或含 NaN 返回 None。"""
-    if len(closes) < window:
-        return None
-    chunk = closes[-window:]
-    if not np.all(np.isfinite(chunk)):
-        return None
-    return float(chunk.mean())
-
-
-def _percentile_ranks(values: list[float]) -> list[float]:
-    """返回每个值在列表中的 [0, 1] 百分位排名（值越小排名越低）。"""
-    n = len(values)
-    if n <= 1:
-        return [0.5] * n
-    arr = np.asarray(values, dtype=float)
-    order = np.argsort(arr)
-    ranks = np.empty(n, dtype=float)
-    ranks[order] = np.arange(n, dtype=float) / (n - 1)
-    return ranks.tolist()
-
-
 def _panel_bars(ctx: CrossSectionContext) -> dict[str, ValueBars]:
     """获取或构建 ValueBars 缓存（同一截面复用）。"""
     cached = ctx.cache.get("prosperity_resonance_bars")
@@ -275,15 +256,14 @@ def select_prosperity_resonance(
         closes = bars.close[start_i : end_i + 1]
 
         # 窗口收益
-        look = closes[-params.lookback_days - 1 :]
-        if len(look) < params.lookback_days + 1:
+        period_ret = simple_momentum(closes, params.lookback_days)
+        if period_ret is None:
             continue
-        period_ret = float(look[-1]) / float(look[0]) - 1.0
         if period_ret < params.momentum_min or period_ret > params.momentum_max:
             continue
 
         # 趋势均线
-        trend_sma = _sma_last(closes, params.trend_ma)
+        trend_sma = sma_last(closes, params.trend_ma)
         if trend_sma is None or close < trend_sma:
             continue
 
@@ -301,7 +281,7 @@ def select_prosperity_resonance(
                 continue
 
         # ── 第 3 层：入场时机 ──
-        entry_sma = _sma_last(closes, params.entry_ma)
+        entry_sma = sma_last(closes, params.entry_ma)
         if entry_sma is None:
             continue
         ma_dev = close / entry_sma - 1.0
@@ -338,8 +318,8 @@ def select_prosperity_resonance(
     peg_values = [c["peg"] for c in candidates]
     ret_values = [c["period_return"] for c in candidates]
 
-    peg_ranks = _percentile_ranks(peg_values)
-    ret_ranks = _percentile_ranks(ret_values)
+    peg_ranks = percentile_ranks(peg_values)
+    ret_ranks = percentile_ranks(ret_values)
 
     # 均线偏离度评分归一化用的带宽
     max_band = max(
@@ -385,21 +365,6 @@ def select_prosperity_resonance(
     return [c["symbol"] for c in picked], picked
 
 
-def decision_dates(
-    calendar: Sequence[str],
-    ctx: CrossSectionContext,
-    params: ProsperityResonanceParams,
-) -> list[str]:
-    """决策日：默认日频每天检查是否有更优标的，跳过冷启动期；可调为 weekly/monthly。"""
-    del ctx
-    return decision_dates_by_frequency(
-        calendar,
-        frequency=params.decision_frequency,
-        every_n=params.decision_every_n,
-        warmup=params.decision_warmup,
-    )
-
-
 # ═══════════════════════════════════════════════════════════════════
 # 策略注册
 # ═══════════════════════════════════════════════════════════════════
@@ -413,7 +378,6 @@ STRATEGY = CrossSectionStrategySpec(
     ),
     params_model=ProsperityResonanceParams,
     select=select_prosperity_resonance,
-    decision_dates=decision_dates,
     default_universe="zz500",
     needs_dividend=False,
     needs_financials=False,

@@ -74,7 +74,7 @@ python -m app.script backtest --mode universe --universe hs300 \
 | `strategy_id` | 横截面策略 id（见 `backtest --list-strategies`） |
 | `mode` | `universe` 共享资金回测；`screen` 仅做截面选股 |
 | `data_source` | 行情源，目前仅支持 `a_stock_data` |
-| `universe` | `symbols` 为空时的股票池：`all_a`（全A）/ `hs300` / `zz500` / `zz399101`（中小综指）/ `zz1000`（中证1000）/ `gz2000`（国证2000）/ `star50`（科创50）/ `star_board`（科创板全板块） |
+| `universe` | `symbols` 为空时的股票池：`all_a`（全A）/ `hs300` / `zz500` / `zz399101`（中小综指）/ `zz1000`（中证1000）/ `gz2000`（国证2000）/ `star50`（科创50）/ `star_board`（科创板全板块）/ `etf`（场内 ETF） |
 | `symbols` | 显式股票列表；非空时覆盖 `universe` |
 | `max_universe` | 股票池上限（组合请求 1~10000）；超出时截取或按 `seed` 抽样；全 A 约设 `6000` |
 | `seed` | 抽样随机种子，便于复现 |
@@ -161,6 +161,7 @@ weekly/monthly 均锚定日历周期而非回测起始日，回测结果不随�
 | `cyclical_rotation` | 顺周期行业轮动 | 商品信号驱动的有色/能源/农业轮动 | [cyclical-rotation-strategy.md](./cyclical-rotation-strategy.md) |
 | `prosperity_resonance` | 景气共振 | PEG + 趋势确认 + 回调入场三重共振 | [prosperity-resonance-strategy.md](./prosperity-resonance-strategy.md) |
 | `new_stock_ice_reversal` | 次新情绪冰点反转 | 次新跌停潮冰点 → 次日反转次新篮 | [new-stock-ice-reversal-strategy.md](./new-stock-ice-reversal-strategy.md) |
+| `chip_accumulation` | 筹码单峰密集突破 | 筹码集中 + 获利盘适中 + 突破筹码峰 | [chip-accumulation-strategy.md](./chip-accumulation-strategy.md) |
 
 查看全部已注册策略：
 

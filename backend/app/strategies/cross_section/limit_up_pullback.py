@@ -2,18 +2,19 @@
 
 from __future__ import annotations
 
-from typing import Any, Literal, Sequence
+from typing import Any
 
 import numpy as np
-from pydantic import BaseModel, Field, model_validator
+from pydantic import Field, model_validator
 
-from app.indicators import llt
+from app.factors import llt
+from app.factors.trend import sma_last
 from app.strategies.base import (
     CrossSectionContext,
     CrossSectionStrategySpec,
-    decision_dates_by_frequency,
 )
 from app.strategies.cross_section.common import is_hs_main_board_symbol, is_st_stock
+from app.strategies.cross_section.decision import DecisionFrequencyParams
 from app.strategies.cross_section.value_bars import (
     ValueBars,
     asof_tradeable_from_bars,
@@ -21,12 +22,7 @@ from app.strategies.cross_section.value_bars import (
 )
 
 
-class LimitUpPullbackParams(BaseModel):
-    decision_frequency: Literal["daily", "weekly", "monthly"] = Field(
-        "monthly", description="决策频率：daily=每日（冷启动期后）| weekly=每周末 | monthly=每自然月末"
-    )
-    decision_every_n: int = Field(1, ge=1, description="决策步长：monthly+3=季末、weekly+2=双周；daily 忽略")
-    decision_warmup: int = Field(20, ge=0, le=250, description="冷启动期（交易日），仅 daily 生效")
+class LimitUpPullbackParams(DecisionFrequencyParams):
     top_n: int = Field(10, ge=1, le=50)
     lookback_days: int = Field(40, ge=10, le=120, description="涨停观察窗口（交易日）")
     min_limit_ups: int = Field(1, ge=1, le=20, description="窗口内最少涨停次数")
@@ -123,15 +119,6 @@ def _price_position(closes: np.ndarray) -> float | None:
     return (last - lo) / (hi - lo)
 
 
-def _sma_last(closes: np.ndarray, window: int) -> float | None:
-    if len(closes) < window:
-        return None
-    chunk = closes[-window:]
-    if not np.all(np.isfinite(chunk)):
-        return None
-    return float(chunk.mean())
-
-
 def _mild_ma_up(
     closes: np.ndarray,
     *,
@@ -144,9 +131,9 @@ def _mild_ma_up(
     need = max(slow, llt_period) + llt_slope_lookback
     if len(closes) < need:
         return False
-    sma_f = _sma_last(closes, fast)
-    sma_m = _sma_last(closes, mid)
-    sma_s = _sma_last(closes, slow)
+    sma_f = sma_last(closes, fast)
+    sma_m = sma_last(closes, mid)
+    sma_s = sma_last(closes, slow)
     if None in (sma_f, sma_m, sma_s):
         return False
     trend = llt(closes, period=llt_period)
@@ -305,27 +292,12 @@ def select_limit_up_pullback(
     return [c["symbol"] for c in picked], picked
 
 
-def decision_dates(
-    calendar: Sequence[str],
-    ctx: CrossSectionContext,
-    params: LimitUpPullbackParams,
-) -> list[str]:
-    del ctx
-    return decision_dates_by_frequency(
-        calendar,
-        frequency=params.decision_frequency,
-        every_n=params.decision_every_n,
-        warmup=params.decision_warmup,
-    )
-
-
 STRATEGY = CrossSectionStrategySpec(
     id="limit_up_pullback",
     name="涨停回落埋伏",
     description="近40日有涨停且回落、窗口内未亏损亦未大幅上涨；低价小盘盈利、月线相对低位、均线与 LLT 趋势略多或平台整理",
     params_model=LimitUpPullbackParams,
     select=select_limit_up_pullback,
-    decision_dates=decision_dates,
     default_universe="zz500",
     needs_dividend=False,
     default_top_n=10,

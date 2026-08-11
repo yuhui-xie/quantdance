@@ -1,26 +1,26 @@
-"""ETF 动量轮动：选择趋势向上且中期动量最强的 ETF。"""
+"""ETF 动量轮动：选择趋势向上且中期动量最强的 ETF。
+
+动量与趋势均线复用 ``app.factors`` 因子库的 ``simple_momentum`` /
+``price_history`` / ``trend_ma``。
+"""
 
 from __future__ import annotations
 
-from typing import Any, Literal, Sequence
+from typing import Any
 
-import pandas as pd
-from pydantic import BaseModel, Field
+from pydantic import Field
 
+from app.factors.momentum import price_history, simple_momentum
+from app.factors.trend import trend_ma
 from app.strategies.base import (
     CrossSectionContext,
     CrossSectionStrategySpec,
-    decision_dates_by_frequency,
 )
 from app.strategies.cross_section.common import asof_tradeable_row
+from app.strategies.cross_section.decision import DecisionFrequencyParams
 
 
-class EtfRotationParams(BaseModel):
-    decision_frequency: Literal["daily", "weekly", "monthly"] = Field(
-        "monthly", description="决策频率：daily=每日（冷启动期后）| weekly=每周末 | monthly=每自然月末"
-    )
-    decision_every_n: int = Field(1, ge=1, description="决策步长：monthly+3=季末、weekly+2=双周；daily 忽略")
-    decision_warmup: int = Field(20, ge=0, le=250, description="冷启动期（交易日），仅 daily 生效")
+class EtfRotationParams(DecisionFrequencyParams):
     top_n: int = Field(1, ge=1, le=10, description="持有动量最强的 ETF 数量")
     lookback_days: int = Field(60, ge=2, le=504, description="动量回看交易日数")
     trend_days: int = Field(
@@ -38,18 +38,6 @@ class EtfRotationParams(BaseModel):
     exclude_limit: bool = True
     exclude_suspended: bool = True
     limit_pct_threshold: float = Field(9.5, ge=1.0, le=30.0)
-
-
-def _price_history(value_df: pd.DataFrame, asof: str) -> pd.DataFrame:
-    history = value_df.loc[
-        value_df["date"].astype(str).str[:10] <= str(asof)[:10],
-        ["date", "close"],
-    ].copy()
-    history["date"] = pd.to_datetime(history["date"], errors="coerce")
-    history["close"] = pd.to_numeric(history["close"], errors="coerce")
-    history = history.dropna(subset=["date", "close"])
-    history = history[history["close"] > 0]
-    return history.sort_values("date").drop_duplicates("date", keep="last")
 
 
 def select_etf_rotation(
@@ -75,20 +63,23 @@ def select_etf_rotation(
         if row is None:
             continue
 
-        history = _price_history(value_df, asof)
+        history = price_history(value_df, asof)
         if len(history) < required_bars:
             continue
 
         close = float(history["close"].iloc[-1])
-        base_close = float(history["close"].iloc[-params.lookback_days - 1])
-        momentum = close / base_close - 1.0
-        if momentum < params.min_momentum:
+        momentum = simple_momentum(
+            history["close"].astype(float).values, params.lookback_days
+        )
+        if momentum is None or momentum < params.min_momentum:
             continue
 
-        trend_ma: float | None = None
+        trend_value: float | None = None
         if params.trend_days > 0:
-            trend_ma = float(history["close"].iloc[-params.trend_days :].mean())
-            if close < trend_ma:
+            trend_value = trend_ma(
+                history["close"].astype(float).values, params.trend_days
+            )
+            if trend_value is None or close < trend_value:
                 continue
 
         candidates.append(
@@ -99,7 +90,7 @@ def select_etf_rotation(
                 "close": close,
                 "momentum": momentum,
                 "lookback_days": params.lookback_days,
-                "trend_ma": trend_ma,
+                "trend_ma": trend_value,
                 "trend_days": params.trend_days,
                 "pct_change": row.get("pct_change"),
             }
@@ -110,27 +101,12 @@ def select_etf_rotation(
     return [item["symbol"] for item in picked], picked
 
 
-def decision_dates(
-    calendar: Sequence[str],
-    ctx: CrossSectionContext,
-    params: EtfRotationParams,
-) -> list[str]:
-    del ctx
-    return decision_dates_by_frequency(
-        calendar,
-        frequency=params.decision_frequency,
-        every_n=params.decision_every_n,
-        warmup=params.decision_warmup,
-    )
-
-
 STRATEGY = CrossSectionStrategySpec(
     id="etf_rotation",
     name="ETF 动量轮动",
     description="在显式 ETF 池中选择趋势向上且中期动量最强的标的，周期等权调仓",
     params_model=EtfRotationParams,
     select=select_etf_rotation,
-    decision_dates=decision_dates,
     default_universe="all_a",
     requires_symbols=True,
     needs_fundamentals=False,

@@ -6,13 +6,11 @@ import numpy as np
 import pandas as pd
 
 import app.strategies.cross_section.etf_rotation_3factor as mod
+from app.factors.cross_section import zscore
+from app.factors.momentum import bias_momentum, efficiency_momentum, slope_momentum
 from app.strategies.base import CrossSectionContext
 from app.strategies.cross_section.etf_rotation_3factor import (
     STRATEGY,
-    _bias_momentum,
-    _efficiency_momentum,
-    _slope_momentum,
-    _zscore,
     select_three_factor,
 )
 
@@ -54,35 +52,35 @@ def test_bias_momentum_trend_detection():
     # 加速上涨（偏离均线扩大）→ 正；减速上涨（偏离收敛）→ 负
     accelerating = np.exp(np.linspace(0.0, 1.0, 80) ** 2)
     decelerating = np.sqrt(np.linspace(1.0, 4.0, 80))
-    assert _bias_momentum(accelerating, 20, 25) > 0
-    assert _bias_momentum(decelerating, 20, 25) < 0
+    assert bias_momentum(accelerating, 20, 25) > 0
+    assert bias_momentum(decelerating, 20, 25) < 0
     # 历史不足返回 None
-    assert _bias_momentum(np.linspace(1, 2, 10), 20, 25) is None
+    assert bias_momentum(np.linspace(1, 2, 10), 20, 25) is None
 
 
 def test_slope_momentum_trend_detection():
     up = np.linspace(1.0, 2.0, 80)
     down = np.linspace(2.0, 1.0, 80)
-    assert _slope_momentum(up, 60) > 0
-    assert _slope_momentum(down, 60) < 0
-    assert _slope_momentum(np.linspace(1, 2, 10), 60) is None
+    assert slope_momentum(up, 60) > 0
+    assert slope_momentum(down, 60) < 0
+    assert slope_momentum(np.linspace(1, 2, 10), 60) is None
 
 
 def test_efficiency_momentum_trend_detection():
     up = _value_df(list(np.linspace(1.0, 2.0, 80)))
-    assert _efficiency_momentum(up, 60) > 0
+    assert efficiency_momentum(up, 60) > 0
     down = _value_df(list(np.linspace(2.0, 1.0, 80)))
-    assert _efficiency_momentum(down, 60) < 0
+    assert efficiency_momentum(down, 60) < 0
 
 
 def test_zscore_standardization():
-    z = _zscore([1.0, 2.0, 3.0])
+    z = zscore([1.0, 2.0, 3.0])
     assert len(z) == 3
     assert abs(sum(z)) < 1e-9  # 均值 ≈ 0
     assert z[2] > z[0]  # 输入越大 z 越大
     # 方差为 0 或样本不足 → 全 0
-    assert _zscore([1.0, 1.0, 1.0]) == [0.0, 0.0, 0.0]
-    assert _zscore([1.0]) == [0.0]
+    assert zscore([1.0, 1.0, 1.0]) == [0.0, 0.0, 0.0]
+    assert zscore([1.0]) == [0.0]
 
 
 # ── 端到端选股（真实因子）──
@@ -131,7 +129,7 @@ def test_rebalance_threshold_hysteresis(monkeypatch):
     def fake_zscore(values):
         return [float(x) for x in current][: len(values)]
 
-    monkeypatch.setattr(mod, "_zscore", fake_zscore)
+    monkeypatch.setattr(mod, "zscore", fake_zscore)
     params = STRATEGY.params_model(rebalance_threshold=1.5)
 
     # 第 1 次：A 最高 → 持有 A
@@ -165,7 +163,7 @@ def test_rebalance_threshold_holds_cash_when_all_negative(monkeypatch):
     def fake_zscore(values):
         return [-1.0, -2.0, -3.0][: len(values)]
 
-    monkeypatch.setattr(mod, "_zscore", fake_zscore)
+    monkeypatch.setattr(mod, "zscore", fake_zscore)
     targets, details = select_three_factor(
         asof, ctx, STRATEGY.params_model(rebalance_threshold=1.5)
     )
@@ -187,7 +185,7 @@ def test_threshold_1_0_disables_hysteresis(monkeypatch):
     def fake_zscore(values):
         return [float(x) for x in current][: len(values)]
 
-    monkeypatch.setattr(mod, "_zscore", fake_zscore)
+    monkeypatch.setattr(mod, "zscore", fake_zscore)
     params = STRATEGY.params_model(rebalance_threshold=1.0)
 
     current[:] = [1.0, 0.5, -1.0]

@@ -7,7 +7,7 @@ import pandas as pd
 from pydantic import BaseModel, Field, model_validator
 
 from app.backtest_engine import BacktestResult, run_from_signals
-from app.indicators import ema_alpha, rolling_standardized_moment
+from app.factors import ema_alpha, rolling_standardized_moment
 from app.strategies.base import BaseBacktestParams, StrategySpec
 
 

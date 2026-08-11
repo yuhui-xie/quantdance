@@ -2,26 +2,21 @@
 
 from __future__ import annotations
 
-from typing import Any, Literal, Sequence
+from typing import Any
 
 import pandas as pd
-from pydantic import BaseModel, Field, model_validator
+from pydantic import Field, model_validator
 
 from app.data_sources.financial_reports import asof_financial_row
 from app.strategies.base import (
     CrossSectionContext,
     CrossSectionStrategySpec,
-    decision_dates_by_frequency,
 )
 from app.strategies.cross_section.common import asof_tradeable_row, is_st_stock
+from app.strategies.cross_section.decision import DecisionFrequencyParams
 
 
-class OrderInflectionParams(BaseModel):
-    decision_frequency: Literal["daily", "weekly", "monthly"] = Field(
-        "monthly", description="决策频率：daily=每日（冷启动期后）| weekly=每周末 | monthly=每自然月末"
-    )
-    decision_every_n: int = Field(1, ge=1, description="决策步长：monthly+3=季末、weekly+2=双周；daily 忽略")
-    decision_warmup: int = Field(20, ge=0, le=250, description="冷启动期（交易日），仅 daily 生效")
+class OrderInflectionParams(DecisionFrequencyParams):
     top_n: int = Field(10, ge=1, le=50)
     # 第一步：合同负债 —— 明天有活干
     min_contract_liab: float = Field(0.0, ge=0, description="合同负债绝对值下限（元）")
@@ -223,27 +218,12 @@ def select_order_inflection(
     return [c["symbol"] for c in picked], picked
 
 
-def decision_dates(
-    calendar: Sequence[str],
-    ctx: CrossSectionContext,
-    params: OrderInflectionParams,
-) -> list[str]:
-    del ctx
-    return decision_dates_by_frequency(
-        calendar,
-        frequency=params.decision_frequency,
-        every_n=params.decision_every_n,
-        warmup=params.decision_warmup,
-    )
-
-
 STRATEGY = CrossSectionStrategySpec(
     id="order_inflection",
     name="订单开工拐点",
     description="合同负债→毛利率→经营现金流→存货备货→综合拐点分，周期等权调仓",
     params_model=OrderInflectionParams,
     select=select_order_inflection,
-    decision_dates=decision_dates,
     default_universe="zz500",
     needs_dividend=False,
     needs_financials=True,

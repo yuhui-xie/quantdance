@@ -108,6 +108,7 @@ def run_shared_backtest(
     trades: list[dict[str, Any]] = []
     holdings: list[dict[str, Any]] = []
     rebalances: list[dict[str, Any]] = []
+    realized_pnls: list[float] = []
     equity_values: list[float] = []
     previous_target: tuple[str, ...] | None = None
 
@@ -125,10 +126,14 @@ def run_shared_backtest(
             fee = max(fee, min_commission)
         cost += fee
         cash += notional - cost
+        # 已实现盈亏：按平均成本（已含买入滑点）卖出，再扣卖出滑点与佣金。
+        basis = average_cost.get(symbol, price)
+        realized = shares * (price - basis) - cost
+        realized_pnls.append(float(realized))
         trades.append({
             "date": day, "symbol": symbol, "side": "sell", "price": price,
             "shares": float(shares), "cash_after": float(cash), "cost": float(cost),
-            "reason": reason,
+            "pnl": float(realized), "reason": reason,
         })
         positions[symbol] = 0
         average_cost.pop(symbol, None)
@@ -298,7 +303,8 @@ def run_shared_backtest(
         equity_values.append(float(value))
 
     metrics = metrics_from_equity(
-        np.asarray(equity_values, dtype=float), initial_cash, trades, calendar
+        np.asarray(equity_values, dtype=float), initial_cash, trades, calendar,
+        pnls=realized_pnls,
     )
     return SharedBacktestResult(
         equity=[

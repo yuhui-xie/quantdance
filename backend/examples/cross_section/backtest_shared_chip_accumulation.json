@@ -1,0 +1,48 @@
+{
+  "strategy_id": "chip_accumulation",
+  "mode": "universe",
+  "data_source": "a_stock_data",
+  "universe": "zz500",
+  "symbols": [],
+  "max_universe": 300,
+  "seed": 42,
+  "start_date": "2020-01-01",
+  "end_date": "2026-07-31",
+  "initial_cash": 100000,
+  "commission": 0.0003,
+  "min_commission": 5.0,
+  "slippage": 0.01,
+  "lot_size": 100,
+  "position_management": {
+    "max_positions": 5,
+    "initial_allocation_pct": 0.5,
+    "add_allocation_pct": 0.25,
+    "add_trigger_pct": 0.10,
+    "stop_loss_pct": 0.10,
+    "take_profit_mode": "trailing",
+    "take_profit_pct": 0.30,
+    "trailing_drawdown_pct": 0.10
+  },
+  "use_cache": true,
+  "force_refresh": false,
+  "max_workers": 16,
+  "strategy_params": {
+    "decision_frequency": "monthly",
+    "decision_every_n": 1,
+    "decision_warmup": 20,
+    "top_n": 5,
+    "lookback_bars": 120,
+    "bins": 200,
+    "profit_ratio_min": 0.35,
+    "profit_ratio_max": 0.90,
+    "concentration_max": 0.50,
+    "require_price_above_cost": true,
+    "require_breakout_peak": true,
+    "exclude_st": true
+  },
+  "output_options": {
+    "output": "out/backtest_shared_chip_accumulation.json",
+    "plot": "out/backtest_shared_chip_accumulation.svg",
+    "json": false
+  }
+}

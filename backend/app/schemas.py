@@ -25,7 +25,7 @@ class BacktestRequest(BaseModel):
     bars: int = Field(500, ge=50, le=5000)
     symbol: str | None = Field(None, description="A 股 6 位代码或带 SH/SZ 后缀")
     universe: Literal[
-        "all_a", "hs300", "zz500", "zz399101", "zz1000", "gz2000", "star50", "star_board"
+        "all_a", "hs300", "zz500", "zz399101", "zz1000", "gz2000", "star50", "star_board", "etf"
     ] = Field(
         "all_a",
         description="universe 模式且 symbols 为空时使用的股票池",

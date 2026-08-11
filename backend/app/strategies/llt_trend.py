@@ -7,7 +7,7 @@ import pandas as pd
 from pydantic import BaseModel, Field
 
 from app.backtest_engine import BacktestResult, run_from_signals
-from app.indicators import llt
+from app.factors import llt
 from app.strategies.base import BaseBacktestParams, StrategySpec
 
 

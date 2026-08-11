@@ -12,16 +12,18 @@
 
 from __future__ import annotations
 
-from typing import Any, Literal, Sequence
+from typing import Any, Literal
 
 import pandas as pd
 from pydantic import BaseModel, Field
 
+from app.factors.momentum import price_history, simple_momentum
+from app.factors.trend import sma_last
 from app.strategies.base import (
     CrossSectionContext,
     CrossSectionStrategySpec,
-    decision_dates_by_frequency,
 )
+from app.strategies.cross_section.decision import DecisionFrequencyParams
 from app.strategies.cross_section.common import asof_tradeable_row
 
 
@@ -71,13 +73,7 @@ DEFAULT_CYCLES: list[CycleGroup] = [
 ]
 
 
-class CyclicalRotationParams(BaseModel):
-    decision_frequency: Literal["daily", "weekly", "monthly"] = Field(
-        "monthly", description="决策频率：daily=每日（冷启动期后）| weekly=每周末 | monthly=每自然月末"
-    )
-    decision_every_n: int = Field(1, ge=1, description="决策步长：monthly+3=季末、weekly+2=双周；daily 忽略")
-    decision_warmup: int = Field(20, ge=0, le=250, description="冷启动期（交易日），仅 daily 生效")
-
+class CyclicalRotationParams(DecisionFrequencyParams):
     top_n_per_cycle: int = Field(1, ge=1, le=10, description="每个激活周期内按动量持有的 ETF 数量")
     allocation: Literal["all", "strongest"] = Field(
         "all",
@@ -108,19 +104,6 @@ class CyclicalRotationParams(BaseModel):
     limit_pct_threshold: float = Field(9.5, ge=1.0, le=30.0)
 
 
-def _price_history(value_df: pd.DataFrame, asof: str) -> pd.DataFrame:
-    """取 asof 及之前的收盘价历史，按日期排序去重。"""
-    history = value_df.loc[
-        value_df["date"].astype(str).str[:10] <= str(asof)[:10],
-        ["date", "close"],
-    ].copy()
-    history["date"] = pd.to_datetime(history["date"], errors="coerce")
-    history["close"] = pd.to_numeric(history["close"], errors="coerce")
-    history = history.dropna(subset=["date", "close"])
-    history = history[history["close"] > 0]
-    return history.sort_values("date").drop_duplicates("date", keep="last")
-
-
 def _signal_bullish(
     history: pd.DataFrame,
     params: CyclicalRotationParams,
@@ -133,13 +116,18 @@ def _signal_bullish(
     )
     if len(history) < required:
         return None
-    close = history["close"].astype(float)
-    last = float(close.iloc[-1])
-    momentum = last / float(close.iloc[-1 - params.signal_momentum_days]) - 1.0
-    trend_ma = float(close.iloc[-params.signal_trend_days:].mean())
-    exit_ma = float(close.iloc[-params.exit_ma_days:].mean())
-    peak = float(close.iloc[-params.signal_trend_days:].max())
-    low = float(close.iloc[-params.signal_trend_days:].min())
+    closes = history["close"].astype(float).values
+    last = float(closes[-1])
+    momentum = simple_momentum(closes, params.signal_momentum_days)
+    if momentum is None:
+        return None
+    trend_ma = sma_last(closes, params.signal_trend_days)
+    exit_ma = sma_last(closes, params.exit_ma_days)
+    window = closes[-params.signal_trend_days:]
+    peak = float(window.max())
+    low = float(window.min())
+    if trend_ma is None or exit_ma is None or peak <= 0:
+        return None
     drawdown = last / peak - 1.0
     bullish = (
         momentum > 0
@@ -172,16 +160,12 @@ def _cycle_holding(
         value_df = payload.get("value") if payload else None
         if value_df is None or value_df.empty:
             continue
-        history = _price_history(value_df, asof)
+        history = price_history(value_df, asof)
         res = _signal_bullish(history, params)
         if res is None:
             continue
         signals.append(res)
-        for day in history["date"]:
-            if isinstance(day, pd.Timestamp):
-                calendar.append(day.strftime("%Y-%m-%d"))
-            else:
-                calendar.append(str(day)[:10])
+        calendar.extend(str(day)[:10] for day in history["date"])
     calendar = sorted(set(calendar))
     if not signals:
         return False, [], calendar
@@ -258,12 +242,15 @@ def select_cyclical_rotation(
             )
             if row is None:
                 continue
-            history = _price_history(value_df, asof)
+            history = price_history(value_df, asof)
             if len(history) < params.signal_momentum_days + 1:
                 continue
             close_now = float(history["close"].iloc[-1])
-            close_base = float(history["close"].iloc[-1 - params.signal_momentum_days])
-            momentum = close_now / close_base - 1.0
+            momentum = simple_momentum(
+                history["close"].astype(float).values, params.signal_momentum_days
+            )
+            if momentum is None:
+                continue
             ranked.append(
                 {
                     "symbol": symbol,
@@ -285,20 +272,6 @@ def select_cyclical_rotation(
     return targets, details
 
 
-def decision_dates(
-    calendar: Sequence[str],
-    ctx: CrossSectionContext,
-    params: CyclicalRotationParams,
-) -> list[str]:
-    del ctx
-    return decision_dates_by_frequency(
-        calendar,
-        frequency=params.decision_frequency,
-        every_n=params.decision_every_n,
-        warmup=params.decision_warmup,
-    )
-
-
 def _default_symbols() -> tuple[str, ...]:
     seen: list[str] = []
     for cycle in DEFAULT_CYCLES:
@@ -317,7 +290,6 @@ STRATEGY = CrossSectionStrategySpec(
     ),
     params_model=CyclicalRotationParams,
     select=select_cyclical_rotation,
-    decision_dates=decision_dates,
     default_universe="all_a",
     default_symbols=_default_symbols(),
     requires_symbols=False,

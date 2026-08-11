@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from app.indicators import bbi
+from app.factors import bbi
 
 
 def test_bbi_uses_classic_four_moving_average_formula():

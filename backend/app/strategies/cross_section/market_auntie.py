@@ -2,26 +2,21 @@
 
 from __future__ import annotations
 
-from typing import Any, Literal, Sequence
+from typing import Any
 
 import pandas as pd
-from pydantic import BaseModel, Field, model_validator
+from pydantic import Field, model_validator
 
 from app.data_sources.em_fundamentals import trailing_dividend_yield
 from app.strategies.base import (
     CrossSectionContext,
     CrossSectionStrategySpec,
-    decision_dates_by_frequency,
 )
 from app.strategies.cross_section.common import asof_tradeable_row, is_st_stock
+from app.strategies.cross_section.decision import DecisionFrequencyParams
 
 
-class MarketAuntieParams(BaseModel):
-    decision_frequency: Literal["daily", "weekly", "monthly"] = Field(
-        "monthly", description="决策频率：daily=每日（冷启动期后）| weekly=每周末 | monthly=每自然月末"
-    )
-    decision_every_n: int = Field(1, ge=1, description="决策步长：monthly+3=季末、weekly+2=双周；daily 忽略")
-    decision_warmup: int = Field(20, ge=0, le=250, description="冷启动期（交易日），仅 daily 生效")
+class MarketAuntieParams(DecisionFrequencyParams):
     top_n: int = Field(10, ge=1, le=50)
     min_price: float = Field(2.0, ge=0)
     max_price: float = Field(9.0, gt=0)
@@ -109,27 +104,12 @@ def select_market_auntie(
     return [c["symbol"] for c in picked], picked
 
 
-def decision_dates(
-    calendar: Sequence[str],
-    ctx: CrossSectionContext,
-    params: MarketAuntieParams,
-) -> list[str]:
-    del ctx
-    return decision_dates_by_frequency(
-        calendar,
-        frequency=params.decision_frequency,
-        every_n=params.decision_every_n,
-        warmup=params.decision_warmup,
-    )
-
-
 STRATEGY = CrossSectionStrategySpec(
     id="market_auntie",
     name="菜场大妈",
     description="质好（股息率+PEG）价低市值小，周期等权调仓",
     params_model=MarketAuntieParams,
     select=select_market_auntie,
-    decision_dates=decision_dates,
     default_universe="zz500",
     needs_dividend=True,
     default_top_n=10,

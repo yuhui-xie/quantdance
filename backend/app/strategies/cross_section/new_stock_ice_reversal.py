@@ -23,18 +23,18 @@
 
 from __future__ import annotations
 
-from typing import Any, Literal, Sequence
+from typing import Any, Literal
 
 import numpy as np
-from pydantic import BaseModel, Field, model_validator
+from pydantic import Field, model_validator
 
 from app.data_sources.market_data import normalize_a_share_symbol
 from app.strategies.base import (
     CrossSectionContext,
     CrossSectionStrategySpec,
-    decision_dates_by_frequency,
 )
 from app.strategies.cross_section.common import is_st_stock
+from app.strategies.cross_section.decision import DecisionFrequencyParams
 from app.strategies.cross_section.value_bars import (
     ValueBars,
     build_panel_value_bars,
@@ -45,7 +45,7 @@ _BARS_CACHE_KEY = "new_stock_ice_reversal_bars"
 _STATE_KEY = "new_stock_ice_reversal_state"
 
 
-class NewStockIceReversalParams(BaseModel):
+class NewStockIceReversalParams(DecisionFrequencyParams):
     """次新情绪冰点反转策略参数。"""
 
     # ── 决策节奏 ──
@@ -433,21 +433,6 @@ def select_new_stock_ice_reversal(
     return targets, details
 
 
-def decision_dates(
-    calendar: Sequence[str],
-    ctx: CrossSectionContext,
-    params: NewStockIceReversalParams,
-) -> list[str]:
-    """决策日：默认日频每个交易日检查信号，跳过冷启动期。"""
-    del ctx
-    return decision_dates_by_frequency(
-        calendar,
-        frequency=params.decision_frequency,
-        every_n=params.decision_every_n,
-        warmup=params.decision_warmup,
-    )
-
-
 # ═══════════════════════════════════════════════════════════════════
 # 策略注册
 # ═══════════════════════════════════════════════════════════════════
@@ -461,7 +446,6 @@ STRATEGY = CrossSectionStrategySpec(
     ),
     params_model=NewStockIceReversalParams,
     select=select_new_stock_ice_reversal,
-    decision_dates=decision_dates,
     default_universe="all_a",
     needs_fundamentals=True,
     needs_dividend=False,

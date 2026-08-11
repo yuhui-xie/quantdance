@@ -98,6 +98,29 @@ def test_take_profit_requires_both_thresholds():
         )
 
 
+def test_win_rate_reflects_realized_pnl_not_account_cash():
+    # A 盈利、B 亏损，两回合各持一手。真实胜率应为 0.5。
+    # 旧实现用卖出后的账户级 cash_after 估算回合盈亏，B 的回合会被
+    # A 的到账现金垫成盈利，导致胜率被系统性抬高。
+    panel = pd.DataFrame(
+        {"000001": [10.0, 11.0], "000002": [10.0, 9.0]},
+        index=["2024-01-02", "2024-01-03"],
+    )
+    result = run_shared_backtest(
+        panel,
+        targets_by_date={"2024-01-02": ["000001", "000002"], "2024-01-03": []},
+        initial_cash=10_000,
+        commission=0,
+        min_commission=0,
+        slippage=0,
+        lot_size=1,
+    )
+    m = result.metrics
+    assert m["closed_trades"] == 2
+    assert m["win_rate"] == 0.5
+    assert m["avg_win"] > 0 and m["avg_loss"] < 0
+
+
 def test_progressive_position_management_adds_and_exits():
     panel = _panel([10, 11, 12, 13, 10])
     policy = PositionManagementPolicy(

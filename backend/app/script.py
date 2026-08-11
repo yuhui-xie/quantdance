@@ -506,7 +506,7 @@ def _cmd_chip_dist(args: argparse.Namespace) -> int:
         fetch_a_share_daily_turnover,
         normalize_a_share_symbol,
     )
-    from app.indicators.chip_distribution import chip_cost_distribution
+    from app.factors.chip_distribution import chip_cost_distribution
 
     symbol = normalize_a_share_symbol(args.symbol)
     try:
@@ -613,7 +613,7 @@ def _build_backtest_cmd(sub: argparse._SubParsersAction[argparse.ArgumentParser]
     p.add_argument("--symbol")
     p.add_argument(
         "--universe",
-        choices=("all_a", "hs300", "zz500", "zz399101", "zz1000", "gz2000", "star50", "star_board"),
+        choices=("all_a", "hs300", "zz500", "zz399101", "zz1000", "gz2000", "star50", "star_board", "etf"),
     )
     p.add_argument("--symbols", nargs="+", help="批量回测时直接指定股票池")
     p.add_argument("--max-universe", type=int, dest="max_universe")

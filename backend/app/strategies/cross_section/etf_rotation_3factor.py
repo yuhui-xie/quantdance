@@ -7,31 +7,32 @@
 
 三个因子在候选池内做 Z-Score 标准化后加权融合，消除量纲差异；再以
 ``rebalance_threshold``（默认 1.5×）做调仓滞后带，避免震荡期频繁换仓。
+
+三个因子与 Z-Score 标准化从 ``app.factors`` 因子库复用。
 """
 
 from __future__ import annotations
 
-from typing import Any, Literal, Sequence
+from typing import Any
 
-import numpy as np
-import pandas as pd
-from pydantic import BaseModel, Field
+from pydantic import Field
 
+from app.factors.cross_section import zscore
+from app.factors.momentum import (
+    bias_momentum,
+    efficiency_momentum,
+    price_history,
+    slope_momentum,
+)
 from app.strategies.base import (
     CrossSectionContext,
     CrossSectionStrategySpec,
-    decision_dates_by_frequency,
 )
 from app.strategies.cross_section.common import asof_tradeable_row
+from app.strategies.cross_section.decision import DecisionFrequencyParams
 
 
-class ThreeFactorEtfRotationParams(BaseModel):
-    decision_frequency: Literal["daily", "weekly", "monthly"] = Field(
-        "monthly", description="决策频率：daily=每日（冷启动期后）| weekly=每周末 | monthly=每自然月末"
-    )
-    decision_every_n: int = Field(1, ge=1, description="决策步长：monthly+3=季末、weekly+2=双周；daily 忽略")
-    decision_warmup: int = Field(20, ge=0, le=250, description="冷启动期（交易日），仅 daily 生效")
-
+class ThreeFactorEtfRotationParams(DecisionFrequencyParams):
     # ── 三因子参数 ──
     bias_ma_days: int = Field(
         20, ge=2, le=504, description="乖离因子：计算乖离度所用的长周期均线（BIAS_N）"
@@ -64,106 +65,6 @@ class ThreeFactorEtfRotationParams(BaseModel):
     limit_pct_threshold: float = Field(9.5, ge=1.0, le=30.0)
 
 
-def _linreg(x: np.ndarray, y: np.ndarray) -> tuple[float, float]:
-    """最小二乘线性回归，返回 (斜率, R²)。"""
-    x = np.asarray(x, dtype=float)
-    y = np.asarray(y, dtype=float)
-    x_mean = float(x.mean())
-    y_mean = float(y.mean())
-    sxx = float(((x - x_mean) ** 2).sum())
-    if sxx == 0:
-        return 0.0, 0.0
-    slope = float(((x - x_mean) * (y - y_mean)).sum() / sxx)
-    ss_tot = float(((y - y_mean) ** 2).sum())
-    if ss_tot == 0:
-        return slope, 0.0
-    ss_res = float(((y - (slope * (x - x_mean) + y_mean)) ** 2).sum())
-    r_squared = 1.0 - ss_res / ss_tot
-    return slope, r_squared
-
-
-def _price_history(value_df: pd.DataFrame, asof: str) -> pd.DataFrame:
-    """取 asof 及之前的日线历史（保留 OHLC 列供效率因子使用），按日期排序去重。"""
-    cols = [c for c in ("date", "open", "high", "low", "close") if c in value_df.columns]
-    if "date" not in cols:
-        return pd.DataFrame()
-    history = value_df.loc[
-        value_df["date"].astype(str).str[:10] <= str(asof)[:10],
-        cols,
-    ].copy()
-    history["date"] = pd.to_datetime(history["date"], errors="coerce")
-    for c in ("open", "high", "low", "close"):
-        if c in history.columns:
-            history[c] = pd.to_numeric(history[c], errors="coerce")
-    history = history.dropna(subset=["date", "close"])
-    history = history[history["close"] > 0]
-    return history.sort_values("date").drop_duplicates("date", keep="last")
-
-
-def _bias_momentum(
-    closes: np.ndarray,
-    ma_days: int,
-    momentum_days: int,
-) -> float | None:
-    """乖离动量因子：价格相对长期均线的偏离程度与趋势方向。"""
-    if len(closes) < ma_days + momentum_days:
-        return None
-    series = pd.Series(closes)
-    bias = (series / series.rolling(ma_days, min_periods=1).mean()).values
-    recent = bias[-momentum_days:]
-    y = recent / recent[0]
-    x = np.arange(momentum_days)
-    slope, _ = _linreg(x, y)
-    return slope * 10000.0
-
-
-def _slope_momentum(closes: np.ndarray, slope_days: int) -> float | None:
-    """斜率动量因子：归一化价格的回归斜率 × R²，衡量趋势强度与质量。"""
-    if len(closes) < slope_days:
-        return None
-    window = closes[-slope_days:]
-    normalized = window / window[0]
-    x = np.arange(1, slope_days + 1)
-    slope, r_squared = _linreg(x, normalized)
-    return 10000.0 * slope * r_squared
-
-
-def _efficiency_momentum(
-    history: pd.DataFrame,
-    efficiency_days: int,
-) -> float | None:
-    """效率动量因子：价格中枢对数动量 × 效率系数（净移动距离/总移动距离）。"""
-    if len(history) < efficiency_days:
-        return None
-    if not {"open", "high", "low"}.issubset(history.columns):
-        return None
-    pivot = (
-        history["open"] + history["high"] + history["low"] + history["close"]
-    ) / 4.0
-    pivot = pivot.astype(float).tail(efficiency_days)
-    pivot = pivot[pivot > 0]
-    if len(pivot) < 2:
-        return None
-    log_p = np.log(pivot.values)
-    momentum = 100.0 * (log_p[-1] - log_p[0])
-    direction = abs(log_p[-1] - log_p[0])
-    volatility = float(np.abs(np.diff(log_p)).sum())
-    efficiency_ratio = direction / volatility if volatility > 0 else 0.0
-    return momentum * efficiency_ratio
-
-
-def _zscore(values: Sequence[float]) -> list[float]:
-    """横截面 Z-Score 标准化：均值为 0、标准差为 1。样本不足或方差为 0 时返回全 0。"""
-    arr = np.asarray(list(values), dtype=float)
-    if len(arr) < 2:
-        return [0.0] * len(arr)
-    std = float(arr.std())
-    if std == 0 or not np.isfinite(std):
-        return [0.0] * len(arr)
-    mean = float(arr.mean())
-    return [float((v - mean) / std) for v in arr]
-
-
 def select_three_factor(
     asof: str,
     ctx: CrossSectionContext,
@@ -189,14 +90,14 @@ def select_three_factor(
         )
         if row is None:
             continue
-        history = _price_history(value_df, asof)
+        history = price_history(value_df, asof)
         if len(history) < required:
             continue
 
         closes = history["close"].astype(float).values
-        bias_score = _bias_momentum(closes, params.bias_ma_days, params.bias_momentum_days)
-        slope_score = _slope_momentum(closes, params.slope_days)
-        efficiency_score = _efficiency_momentum(history, params.efficiency_days)
+        bias_score = bias_momentum(closes, params.bias_ma_days, params.bias_momentum_days)
+        slope_score = slope_momentum(closes, params.slope_days)
+        efficiency_score = efficiency_momentum(history, params.efficiency_days)
         if bias_score is None or slope_score is None or efficiency_score is None:
             continue
 
@@ -217,9 +118,9 @@ def select_three_factor(
         return [], []
 
     # ── 横截面 Z-Score 标准化 + 加权融合 ──
-    z_bias = _zscore([c["bias_score"] for c in candidates])
-    z_slope = _zscore([c["slope_score"] for c in candidates])
-    z_eff = _zscore([c["efficiency_score"] for c in candidates])
+    z_bias = zscore([c["bias_score"] for c in candidates])
+    z_slope = zscore([c["slope_score"] for c in candidates])
+    z_eff = zscore([c["efficiency_score"] for c in candidates])
 
     total_w = params.weight_bias + params.weight_slope + params.weight_efficiency
     w_b = params.weight_bias / total_w if total_w > 0 else 1 / 3
@@ -274,20 +175,6 @@ def select_three_factor(
     return targets, ranked
 
 
-def decision_dates(
-    calendar: Sequence[str],
-    ctx: CrossSectionContext,
-    params: ThreeFactorEtfRotationParams,
-) -> list[str]:
-    del ctx
-    return decision_dates_by_frequency(
-        calendar,
-        frequency=params.decision_frequency,
-        every_n=params.decision_every_n,
-        warmup=params.decision_warmup,
-    )
-
-
 STRATEGY = CrossSectionStrategySpec(
     id="etf_rotation_3factor",
     name="三因子ETF轮动",
@@ -297,7 +184,6 @@ STRATEGY = CrossSectionStrategySpec(
     ),
     params_model=ThreeFactorEtfRotationParams,
     select=select_three_factor,
-    decision_dates=decision_dates,
     default_universe="all_a",
     default_symbols=("512890", "159949", "513100", "518880"),
     requires_symbols=False,

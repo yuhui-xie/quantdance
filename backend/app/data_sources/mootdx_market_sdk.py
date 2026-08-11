@@ -103,6 +103,9 @@ _PERIOD_TO_CATEGORY: dict[str, int] = {
     "1m": 8,
 }
 
+# TDX 协议单次 K 线请求最多约 800 根；超过时须按 start 偏移向前翻页拼接。
+_KLINE_PAGE_SIZE = 800
+
 
 def _to_float(value: Any) -> float | None:
     if value is None:
@@ -327,44 +330,83 @@ class MootdxMarketSDK:
         *,
         count: int = 200,
     ) -> list[MootdxKlineBar]:
+        """获取 K 线；超过单页上限（约 800 根）时按 start 偏移向前翻页拼接。
+
+        mootdx/TDX 协议单次请求最多约 800 根，`count` 更大时若不翻页会被截断到
+        约 3 年历史。这里从最新页向前逐页取，按 datetime 去重，返回最近 ``count``
+        根（时间升序）。
+        """
         norm = self._parse_symbol(symbol)
         category = self.map_period(period)
-        try:
-            method = getattr(self.client, "bars", None)
-            if callable(method):
-                try:
-                    raw = method(norm.code, frequency=category, start=0, offset=count)
-                except TypeError:
-                    raw = method(category, norm.market, norm.code, 0, count)
-            else:
-                raw = self._call_first(
-                    ("get_security_bars", "get_kline"),
-                    category,
-                    norm.market,
-                    norm.code,
-                    0,
-                    count,
-                )
-        except MootdxMarketError:
-            raise
-        except Exception as exc:
-            raise MootdxMarketError("source_error", f"获取 K 线失败: {exc}", symbol=norm.symbol, cause=exc) from exc
 
-        rows = _to_records(raw, label="K 线", symbol=norm.symbol)
-        bars: list[MootdxKlineBar] = []
-        for item in rows:
-            bars.append(
-                MootdxKlineBar(
-                    datetime=self._parse_datetime(_pick(item, ("datetime", "date"))),
-                    open=_to_float(_pick(item, ("open",))),
-                    high=_to_float(_pick(item, ("high",))),
-                    low=_to_float(_pick(item, ("low",))),
-                    close=_to_float(_pick(item, ("close",))),
-                    volume=_to_int(_pick(item, ("vol", "volume"))),
-                    amount=_to_float(_pick(item, ("amount",))),
+        def fetch_page(start_offset: int) -> list[MootdxKlineBar]:
+            try:
+                method = getattr(self.client, "bars", None)
+                if callable(method):
+                    try:
+                        raw = method(
+                            norm.code,
+                            frequency=category,
+                            start=start_offset,
+                            offset=_KLINE_PAGE_SIZE,
+                        )
+                    except TypeError:
+                        raw = method(category, norm.market, norm.code, start_offset, _KLINE_PAGE_SIZE)
+                else:
+                    raw = self._call_first(
+                        ("get_security_bars", "get_kline"),
+                        category,
+                        norm.market,
+                        norm.code,
+                        start_offset,
+                        _KLINE_PAGE_SIZE,
+                    )
+            except MootdxMarketError:
+                raise
+            except Exception as exc:
+                raise MootdxMarketError(
+                    "source_error", f"获取 K 线失败: {exc}", symbol=norm.symbol, cause=exc
+                ) from exc
+
+            bars: list[MootdxKlineBar] = []
+            for item in _to_records(raw, label="K 线", symbol=norm.symbol):
+                bars.append(
+                    MootdxKlineBar(
+                        datetime=self._parse_datetime(_pick(item, ("datetime", "date"))),
+                        open=_to_float(_pick(item, ("open",))),
+                        high=_to_float(_pick(item, ("high",))),
+                        low=_to_float(_pick(item, ("low",))),
+                        close=_to_float(_pick(item, ("close",))),
+                        volume=_to_int(_pick(item, ("vol", "volume"))),
+                        amount=_to_float(_pick(item, ("amount",))),
+                    )
                 )
-            )
-        return bars
+            return bars
+
+        # start 递增得到的是更新的历史，需先取完再从旧到新拼接。
+        pages: list[list[MootdxKlineBar]] = []
+        start_offset = 0
+        fetched = 0
+        while fetched < count:
+            page = fetch_page(start_offset)
+            if not page:
+                break
+            pages.append(page)
+            fetched += len(page)
+            if len(page) < _KLINE_PAGE_SIZE:
+                break  # 已到历史起点，无更早数据
+            start_offset += _KLINE_PAGE_SIZE
+
+        all_bars: list[MootdxKlineBar] = []
+        seen: set[str] = set()
+        for page in reversed(pages):  # 旧页在前
+            for bar in page:
+                key = bar["datetime"] or ""
+                if not key or key in seen:
+                    continue
+                seen.add(key)
+                all_bars.append(bar)
+        return all_bars[-count:]
 
     def get_orderbook(self, symbol: str) -> MootdxOrderBook:
         norm = self._parse_symbol(symbol)
