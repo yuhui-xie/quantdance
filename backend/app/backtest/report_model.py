@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import os
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
+from functools import partial
 from typing import Any
 
 from app.backtest.shared_report_model import _fifo_round_trips, _load_symbol_bars
@@ -28,6 +30,7 @@ _FIELD_LABELS = {
     "donchian_high": "唐奇安上轨",
     "donchian_low": "唐奇安下轨",
     "llt": "LLT",
+    "llt_dt": "LLT 斜率 D_t",
     "macd": "DIF",
     "macd_signal": "DEA",
     "macd_hist": "能量柱",
@@ -59,6 +62,7 @@ _INDICATOR_GROUPS = [
     ("布林带", ("bb_upper", "bb_middle", "bb_lower")),
     ("唐奇安通道", ("donchian_high", "donchian_low")),
     ("LLT 趋势", ("llt",)),
+    ("LLT 斜率 D_t", ("llt_dt",)),
     ("MACD 指标", ("macd", "macd_signal", "macd_hist")),
     ("RSI", ("rsi",)),
     ("随机指标", ("stoch_k", "stoch_d")),
@@ -287,6 +291,23 @@ def _indicator_data(
     return series, price_fields, charts
 
 
+def _apply_ref_lines(
+    charts: list[dict[str, Any]], slope_threshold: float | None
+) -> list[dict[str, Any]]:
+    """给 LLT 斜率图挂上 ±threshold 参考线（死区边界），便于观察过滤区间。"""
+    if not slope_threshold or slope_threshold <= 0:
+        return charts
+    for chart in charts:
+        keys = [field.get("key") for field in chart.get("fields") or []]
+        if "llt_dt" not in keys:
+            continue
+        chart["refs"] = [
+            {"value": slope_threshold, "label": f"看多阈值 +{slope_threshold}"},
+            {"value": -slope_threshold, "label": f"看空阈值 -{slope_threshold}"},
+        ]
+    return charts
+
+
 def _trade_rows(run: dict[str, Any]) -> list[dict[str, Any]]:
     symbol = str(run.get("symbol") or "")
     name = str(run.get("name") or "")
@@ -310,6 +331,98 @@ def _trade_rows(run: dict[str, Any]) -> list[dict[str, Any]]:
         )
         rows.append(row)
     return rows
+
+
+def _build_one_detail(
+    run: dict[str, Any],
+    default_initial_cash: float,
+    *,
+    slope_threshold: float | None = None,
+) -> tuple[str, dict[str, Any]]:
+    """构建单只股票的明细视图；模块级函数以便进程池 worker 可序列化调用。"""
+    symbol = str(run.get("symbol") or "")
+    metrics = dict(run.get("metrics") or {})
+    run_initial = _nf(metrics.get("initial_cash")) or default_initial_cash
+    trades = _trade_rows(run)
+    raw_prices = list(run.get("price") or [])
+    prices, has_ohlc = _price_rows(raw_prices)
+    indicator_series, price_overlay_fields, indicator_charts = _indicator_data(raw_prices)
+    indicator_charts = _apply_ref_lines(indicator_charts, slope_threshold)
+    return (
+        symbol,
+        {
+            "symbol": symbol,
+            "name": str(run.get("name") or ""),
+            "rank": run.get("rank"),
+            "metrics": metrics,
+            "equity": _equity_series(list(run.get("equity") or []), run_initial),
+            "trades": trades,
+            "round_trips": _fifo_round_trips(
+                trades,
+                names={symbol: str(run.get("name") or "")},
+            ),
+            "prices": prices,
+            "has_ohlc": has_ohlc,
+            "indicator_series": indicator_series,
+            "price_overlay_fields": price_overlay_fields,
+            "indicator_charts": indicator_charts,
+        },
+    )
+
+
+def _build_all_details(
+    runs: list[dict[str, Any]],
+    default_initial_cash: float,
+    *,
+    slope_threshold: float | None = None,
+) -> dict[str, dict[str, Any]]:
+    """并行构建全部逐票明细；进程池不可用时回退到单进程。
+
+    ``QUANTDANCE_REPORT_PARALLEL`` 置为 ``0`` 可强制关闭并行（便于排查/测试）。
+    """
+    details: dict[str, dict[str, Any]] = {}
+    if not runs:
+        return details
+    if len(runs) == 1:
+        symbol, detail = _build_one_detail(
+            runs[0],
+            default_initial_cash,
+            slope_threshold=slope_threshold,
+        )
+        details[symbol] = detail
+        return details
+
+    parallel = os.environ.get("QUANTDANCE_REPORT_PARALLEL", "1").lower() not in {
+        "0",
+        "false",
+        "no",
+        "off",
+    }
+    try:
+        if parallel:
+            workers = max(1, min((os.cpu_count() or 2) - 1, len(runs)))
+            with ProcessPoolExecutor(max_workers=workers) as pool:
+                for symbol, detail in pool.map(
+                    partial(
+                        _build_one_detail,
+                        default_initial_cash=default_initial_cash,
+                        slope_threshold=slope_threshold,
+                    ),
+                    runs,
+                ):
+                    details[symbol] = detail
+            return details
+    except Exception:
+        # 进程池不可用（冻结环境、序列化失败等）时回退到单进程
+        details = {}
+    for run in runs:
+        symbol, detail = _build_one_detail(
+            run,
+            default_initial_cash,
+            slope_threshold=slope_threshold,
+        )
+        details[symbol] = detail
+    return details
 
 
 def _rank_row(run: dict[str, Any]) -> dict[str, Any]:
@@ -343,6 +456,8 @@ def build_backtest_universe_report_model(
     if str(out.get("mode") or "") != "universe":
         raise ValueError("批量回测报告仅支持 mode='universe'")
 
+    strategy_params = dict(out.get("strategy_params") or {})
+    slope_threshold = _nf(strategy_params.get("slope_threshold"))
     aggregate = dict(out.get("aggregate") or {})
     aggregate_metrics = dict(aggregate.get("metrics") or {})
     initial_cash = _nf(aggregate_metrics.get("initial_cash")) or 1.0
@@ -361,34 +476,7 @@ def build_backtest_universe_report_model(
     successful.sort(key=lambda run: int(run.get("rank") or 10**9))
     detail_runs = successful if top_k is None else successful[: max(0, top_k)]
 
-    details: dict[str, dict[str, Any]] = {}
-    for run in detail_runs:
-        symbol = str(run.get("symbol") or "")
-        metrics = dict(run.get("metrics") or {})
-        run_initial = _nf(metrics.get("initial_cash")) or initial_cash
-        trades = _trade_rows(run)
-        raw_prices = list(run.get("price") or [])
-        prices, has_ohlc = _price_rows(raw_prices)
-        indicator_series, price_overlay_fields, indicator_charts = _indicator_data(
-            raw_prices
-        )
-        details[symbol] = {
-            "symbol": symbol,
-            "name": str(run.get("name") or ""),
-            "rank": run.get("rank"),
-            "metrics": metrics,
-            "equity": _equity_series(list(run.get("equity") or []), run_initial),
-            "trades": trades,
-            "round_trips": _fifo_round_trips(
-                trades,
-                names={symbol: str(run.get("name") or "")},
-            ),
-            "prices": prices,
-            "has_ohlc": has_ohlc,
-            "indicator_series": indicator_series,
-            "price_overlay_fields": price_overlay_fields,
-            "indicator_charts": indicator_charts,
-        }
+    details = _build_all_details(detail_runs, initial_cash, slope_threshold=slope_threshold)
 
     price_symbols = [
         str(run.get("symbol") or "")

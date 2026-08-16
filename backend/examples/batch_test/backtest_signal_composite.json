@@ -2,7 +2,7 @@
   "mode": "universe",
   "data_source": "a_stock_data",
   "strategy_id": "signal_composite",
-  "universe": "hs300",
+  "universe": "zz500",
   "max_universe": 500,
   "seed": 42,
   "start_date": "2020-01-01",
@@ -17,32 +17,37 @@
     "legs": [
       {
         "strategy_id": "llt_trend",
-        "weight": 0.4,
         "params": {
           "period": 20,
           "slope_lookback": 1
         }
       },
       {
-        "strategy_id": "higher_moment",
-        "weight": 0.35,
-        "params": {
-          "order": 5,
-          "window": 20
+        "strategy_id": "bullish_alignment",
+        "strategy_params": {
+          "periods": [
+            5,
+            10,
+            20,
+            40
+          ],
+          "enter_threshold": 1.0,
+          "exit_threshold": 0.5
         }
       },
       {
-        "strategy_id": "ema_crossover",
-        "weight": 0.25,
-        "params": {
-          "fast_period": 10,
-          "slow_period": 30
+        "strategy_id": "bbi_trend",
+        "strategy_params": {
+          "short_period": 3,
+          "medium_period": 6,
+          "long_period": 12,
+          "longest_period": 24
         }
       }
     ]
   },
   "output_options": {
     "json": false,
-    "plot": "out/backtest_signal_composite.svg"
+    "report": "out\\backtest_signal_composite.html"
   }
 }

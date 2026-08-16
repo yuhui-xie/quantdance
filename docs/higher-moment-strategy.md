@@ -70,7 +70,7 @@ $$
 - `initial_cash`：初始资金
 - `commission`：买卖手续费率
 - `strategy_params`：上表中的指标及优化参数
-- `output_options.plot`：图表输出路径
+- `output_options.report`：交互报告输出路径
 
 ## 5. 运行示例
 

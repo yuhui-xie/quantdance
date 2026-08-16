@@ -81,7 +81,7 @@
 | `force_refresh` | `false` | 不强制重新拉取 |
 | `max_workers` | `8` | 并行拉取线程数 |
 | `output_options.output` | `out/backtest_shared_market_auntie.json` | 结果 JSON 路径 |
-| `output_options.plot` | `out/backtest_shared_market_auntie.svg` | 权益曲线图路径 |
+| `output_options.report` | `out/backtest_shared_market_auntie.html` | 交互报告路径 |
 | `output_options.json` | `false` | 是否向 stdout 打印完整 JSON |
 
 ### 4.2 `strategy_params`
@@ -126,7 +126,7 @@ python -m app.script backtest --request examples/backtest_shared_market_auntie.j
 # CLI 等价写法
 python -m app.script backtest --strategy market_auntie --mode universe --universe all_a --max-universe 60 --seed 42 \
   --start-date 2023-01-01 --end-date 2024-12-31 \
-  --slippage 0.01 --top-n 10 --max-price 9 --plot out/market_auntie.svg
+  --slippage 0.01 --top-n 10 --max-price 9 --report out/market_auntie.html
 ```
 
 若分红数据稀疏导致持仓过少，可临时加 `--no-dividend-filter`，或放宽 `--max-peg`。

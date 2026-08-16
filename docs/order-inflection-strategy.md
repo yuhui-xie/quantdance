@@ -89,7 +89,7 @@ score = w_contract * 合同负债同比
 | `force_refresh` | `false` | 不强制重新拉取 |
 | `max_workers` | `4` | 并行拉取线程数（报表接口宜保守） |
 | `output_options.output` | `out/backtest_shared_order_inflection.json` | 结果 JSON 路径 |
-| `output_options.plot` | `out/backtest_shared_order_inflection.svg` | 权益曲线图路径 |
+| `output_options.report` | `out/backtest_shared_order_inflection.html` | 交互报告路径 |
 | `output_options.json` | `false` | 是否向 stdout 打印完整 JSON |
 
 > 示例文件中的 `__comments__` 仅作人类可读备注，运行时会被忽略。

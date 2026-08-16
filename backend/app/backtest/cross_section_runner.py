@@ -4,7 +4,10 @@ from __future__ import annotations
 
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
+
+# 进度回调：done / total / current（标的或决策日）
+ProgressCallback = Callable[[int, int, str], None]
 
 import numpy as np
 import pandas as pd
@@ -225,6 +228,7 @@ def run_cross_section_screen(
 def run_cross_section_backtest(
     request: BacktestRequest,
     spec: CrossSectionStrategySpec,
+    progress: ProgressCallback | None = None,
 ) -> BacktestSharedResponse:
     """运行一个横截面策略；策略选择只在其决策日调用一次。"""
     start = (request.start_date or "").strip()
@@ -263,10 +267,13 @@ def run_cross_section_backtest(
 
     targets_by_date: dict[str, list[str]] = {}
     selection_by_date: dict[str, list[dict[str, Any]]] = {}
-    for asof in decision_dates:
+    total_dates = len(decision_dates)
+    for done, asof in enumerate(decision_dates, start=1):
         targets, details = spec.select(asof, context, params)
         targets_by_date[asof] = targets
         selection_by_date[asof] = details
+        if progress is not None:
+            progress(done, total_dates, str(asof))
 
     policy_config = getattr(request, "position_management", None)
     policy = (
@@ -349,6 +356,7 @@ def _generate_selection_signal(
 def run_cross_section_per_stock_backtest(
     request: BacktestRequest,
     spec: CrossSectionStrategySpec,
+    progress: ProgressCallback | None = None,
 ) -> BacktestUniverseResponse:
     """横截面策略的独立资金逐票回测：每只股票用 select 结果作为买卖信号。
 
@@ -470,11 +478,19 @@ def run_cross_section_per_stock_backtest(
             result.equity,
         )
 
-    with ThreadPoolExecutor(max_workers=min(request.max_workers, len(symbols))) as pool:
-        completed = list(pool.map(
-            lambda item: run_one(item["symbol"], item.get("name") or None),
-            universe,
-        ))
+    total = len(universe)
+    with ThreadPoolExecutor(max_workers=min(request.max_workers, total)) as pool:
+        futures = {
+            pool.submit(run_one, item["symbol"], item.get("name") or None): item
+            for item in universe
+        }
+        result_by_symbol: dict[str, tuple[BacktestSymbolRun, list[dict[str, Any]]]] = {}
+        for done, future in enumerate(as_completed(futures), start=1):
+            item = futures[future]
+            result_by_symbol[item["symbol"]] = future.result()
+            if progress is not None:
+                progress(done, total, item["symbol"])
+    completed = [result_by_symbol[item["symbol"]] for item in universe]
 
     runs = [item[0] for item in completed]
     curves = [curve for run, curve in completed if run.status == "ok" and curve]

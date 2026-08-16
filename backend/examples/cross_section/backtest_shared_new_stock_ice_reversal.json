@@ -24,7 +24,7 @@
     "min_listed_days": 5,
     "ice_metric": "avg_drop",
     "crash_days": 2,
-    "min_limit_down_ratio": 0.30,
+    "min_limit_down_ratio": 0.3,
     "crash_pct_threshold": -1.0,
     "entry_timing": "next_day",
     "limit_pct_threshold": 9.5,
@@ -40,7 +40,6 @@
   },
   "output_options": {
     "output": "out/backtest_shared_new_stock_ice_reversal.json",
-    "plot": "out/backtest_shared_new_stock_ice_reversal.svg",
     "report": "out/backtest_shared_new_stock_ice_reversal.html",
     "json": false
   }

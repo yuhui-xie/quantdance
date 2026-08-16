@@ -26,6 +26,6 @@
   },
   "output_options": {
     "json": false,
-    "plot": "out/backtest_volume_ma_pulse.svg"
+    "report": "out\\backtest_volume_ma_pulse.html"
   }
 }

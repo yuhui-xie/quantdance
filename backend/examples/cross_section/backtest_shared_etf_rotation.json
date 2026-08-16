@@ -33,7 +33,6 @@
   },
   "output_options": {
     "output": "out/backtest_shared_etf_rotation.json",
-    "plot": "out/backtest_shared_etf_rotation.svg",
     "report": "out/backtest_shared_etf_rotation.html",
     "json": true
   }

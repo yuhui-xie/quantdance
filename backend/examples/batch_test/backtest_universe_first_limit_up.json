@@ -1,0 +1,40 @@
+{
+  "mode": "universe",
+  "data_source": "a_stock_data",
+  "strategy_id": "first_limit_up",
+  "universe": "hs300",
+  "max_universe": 500,
+  "seed": 42,
+  "start_date": "2023-01-01",
+  "end_date": "2026-08-01",
+  "initial_cash": 100000,
+  "commission": 0.0003,
+  "max_workers": 8,
+  "include_equity": true,
+  "include_trades": true,
+  "include_price": true,
+  "strategy_params": {
+    "limit_pct": 9.5,
+    "board_lookback": 60,
+    "platform_days": 20,
+    "platform_max_range": 0.15,
+    "ma_fast": 5,
+    "ma_mid": 10,
+    "ma_slow": 20,
+    "min_crossed": 2,
+    "ma_slope_lookback": 3,
+    "position_lookback": 250,
+    "max_price_position": 0.5,
+    "spec_lookback": 60,
+    "max_spec_ret": 0.30,
+    "max_gap_up": 0.05,
+    "max_hold_days": 5,
+    "min_profit": 0.0,
+    "trailing_pct": 0.04
+  },
+  "output_options": {
+    "json": false,
+    "output": "out/backtest_universe_first_limit_up.json",
+    "report": "out/backtest_universe_first_limit_up.html"
+  }
+}

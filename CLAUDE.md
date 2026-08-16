@@ -29,7 +29,7 @@ python -m app.script screen --preset momentum --top-k 10 --json
 python -m app.script stock-search 贵州茅台
 ```
 
-回测请求由 `backend/examples/*.json` 驱动（`--request`），也支持全部 CLI 参数覆盖。结果默认打印摘要；追加 `--json` 打印完整结果，`--output out/x.json` 落盘，`--plot path`（默认 `.svg`）存图，`--report path`（仅 universe / 横截面模式）存交互 HTML。`output_options.*` 可放进请求 JSON（见 `docs/strategy-guide.md` 的字段表）。
+回测请求由 `backend/examples/*.json` 驱动（`--request`），也支持全部 CLI 参数覆盖。结果默认打印摘要；追加 `--json` 打印完整结果，`--output out/x.json` 落盘，`--report path` 存交互 HTML（仅此一种可视化产物，无静态图）。`output_options.*` 可放进请求 JSON（见 `docs/strategy-guide.md` 的字段表）。
 
 ## 架构
 
@@ -50,7 +50,7 @@ python -m app.script stock-search 贵州茅台
 - `app/backtest/shared_engine.py`：共享账户、多标的目标持仓引擎 `run_shared_backtest(close_panel, targets_by_date, ...)`，支持滑点、整手、最低佣金、止盈止损与 `position_management`。
 - `app/backtest/cross_section_runner.py`：横截面策略的数据面板加载、决策日与选股预计算、执行编排（`run_cross_section_backtest` / `run_cross_section_screen`）。
 - `app/backtest_aggregate.py`：批量回测的等权净值曲线汇总；`app/backtest/benchmarks.py` 挂沪深300基准。
-- `app/cli_plot.py` / `app/cli_backtest_report.py`：SVG 图与 HTML 交互报告渲染；报告模板在 `app/backtest/templates/`。
+- `app/cli_backtest_report.py`：HTML 交互报告渲染（`backtest --report`，无静态图输出）；报告模板在 `app/backtest/templates/`。
 
 ### 策略插件系统（自动注册）
 

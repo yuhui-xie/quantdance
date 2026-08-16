@@ -45,8 +45,8 @@
   },
   "output_options": {
     "output": "out/backtest_shared_order_inflection.json",
-    "plot": "out/backtest_shared_order_inflection.svg",
-    "json": false
+    "json": false,
+    "report": "out\\backtest_shared_order_inflection.html"
   },
   "__comments__": {
     "idea": "五步法：合同负债(有活干)→毛利率(赚不赚钱)→经营现金流(钱够不够)→存货同比(备货开工)→综合拐点分排序",

@@ -33,7 +33,7 @@
 | `commission` | 买卖手续费率（如 `0.0003` = 万三） |
 | `strategy_params` | 该策略专属参数，见对应策略文档 |
 | `output_options.output` | 可选，结果 JSON 落盘路径 |
-| `output_options.plot` | 可选，权益曲线图路径（`.svg` / `.png`） |
+| `output_options.report` | 可选，交互报告路径（`.html`） |
 | `output_options.json` | 是否向 stdout 打印完整 JSON |
 
 ### 股票池独立资金批量回测
@@ -57,7 +57,7 @@
 cd backend
 python -m app.script backtest --mode universe --universe hs300 \
   --strategy llt_trend --start-date 2023-01-01 --end-date 2024-12-31 \
-  --max-universe 30 --plot out/backtest_universe_llt_trend.svg
+  --max-universe 30 --report out/backtest_universe_llt_trend.html
 ```
 
 两类 `mode=universe` 能力的资金语义不同：
@@ -92,7 +92,7 @@ python -m app.script backtest --mode universe --universe hs300 \
 | `force_refresh` | 是否强制重新拉取并覆盖缓存 |
 | `max_workers` | 并行拉取估值/财报的线程数 |
 | `strategy_params` | 该横截面策略专属参数，见对应策略文档；决策频率由 `decision_frequency`（`daily`/`weekly`/`monthly`）+ `decision_every_n`（步长）统一控制，`daily` 下 `decision_warmup` 控制冷启动，`prosperity_resonance` 另用 `hysteresis_rank_threshold` 防抖 |
-| `output_options.*` | `output` / `plot` / `json`；另支持 `report`（交互 HTML，含调仓买卖与区间收益；未写时若有 `plot` 则自动派生同名 `.html`） |
+| `output_options.*` | `output` / `plot` / `json`；另支持 `report`（交互 HTML，含调仓买卖与区间收益；未写时若有 `plot` 则自动派生同名 `.html`）。`report_top_k`（正整数，universe 模式）限制 HTML 内嵌的逐票明细图数量：仅前 N 名保留可点击的净值/K 线/指标图，排行榜仍保留全部标的指标；省略或 0 表示全部。`report_top_k` 越小，报告生成越快、HTML 越小（500 只全量内嵌需序列化数百万个点，是大池子报告慢的主因） |
 
 各策略文档的「示例请求参数」一节会对照其 example 文件逐字段说明（含
 `strategy_params`）。决策频率由 `decision_frequency` 统一控制，取 `daily` /
@@ -141,6 +141,8 @@ weekly/monthly 均锚定日历周期而非回测起始日，回测结果不随�
 | `rsi_reversal` | RSI 反转 | 振荡反转 | [rsi-reversal-strategy.md](./rsi-reversal-strategy.md) |
 | `stochastic_cross` | 随机指标交叉 | 振荡反转 | [stochastic-cross-strategy.md](./stochastic-cross-strategy.md) |
 | `volume_ma_pulse` | 量比放量/缩量脉冲 | 量价触发 | [volume-ma-pulse-strategy.md](./volume-ma-pulse-strategy.md) |
+| `bullish_alignment` | 多头排列 | 趋势跟随 | [bullish-alignment-strategy.md](./bullish-alignment-strategy.md) |
+| `first_limit_up` | 首板超短线（次日开盘进） | 首板事件 + 次日进场 + 5日离场 | [first-limit-up-strategy.md](./first-limit-up-strategy.md) |
 
 ### 横截面共享资金策略（`backtest` 子命令）
 

@@ -8,10 +8,11 @@
   "commission": 0.0003,
   "strategy_params": {
     "period": 20,
-    "slope_lookback": 1
+    "slope_lookback": 1,
+    "slope_threshold": 0.5
   },
   "output_options": {
     "json": false,
-    "plot": "out/backtest_llt_trend.svg"
+    "report": "out\\backtest_llt_trend.html"
   }
 }

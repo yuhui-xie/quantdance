@@ -1,19 +1,22 @@
 {
   "data_source": "a_stock_data",
-  "strategy_id": "bbi_trend",
+  "strategy_id": "bullish_alignment",
   "symbol": "600000",
   "start_date": "2023-01-01",
   "end_date": "2024-12-31",
   "initial_cash": 100000,
   "commission": 0.0003,
   "strategy_params": {
-    "short_period": 3,
-    "medium_period": 6,
-    "long_period": 12,
-    "longest_period": 24
+    "periods": [
+      5,
+      10,
+      20
+    ],
+    "enter_threshold": 1.0,
+    "exit_threshold": 0.5
   },
   "output_options": {
     "json": false,
-    "report": "out\\backtest_bbi_trend.html"
+    "report": "out\\backtest_bullish_alignment.html"
   }
 }

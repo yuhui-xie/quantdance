@@ -33,7 +33,7 @@
   },
   "output_options": {
     "output": "out/backtest_shared_market_auntie.json",
-    "plot": "out/backtest_shared_market_auntie.svg",
-    "json": false
+    "json": false,
+    "report": "out\\backtest_shared_market_auntie.html"
   }
 }

@@ -28,7 +28,6 @@
   },
   "output_options": {
     "output": "out/backtest_shared_small_cap_zz399101.json",
-    "plot": "out/backtest_shared_small_cap_zz399101.svg",
     "report": "out/backtest_shared_small_cap_zz399101.html",
     "json": true
   }

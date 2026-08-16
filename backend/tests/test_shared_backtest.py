@@ -338,7 +338,7 @@ def test_unified_backtest_runner_routes_cross_section_to_shared_runner(monkeypat
     )
     monkeypatch.setattr(
         "app.backtest_runner.run_cross_section_backtest",
-        lambda request, received_spec: (
+        lambda request, received_spec, **kwargs: (
             sentinel
             if request.strategy_id == "cross_route" and received_spec is spec
             else {}

@@ -12,6 +12,6 @@
   },
   "output_options": {
     "json": false,
-    "plot": "out/backtest_ma_crossover.svg"
+    "report": "out\\backtest_ma_crossover.html"
   }
 }

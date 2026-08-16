@@ -507,7 +507,7 @@ class TestPerStockDispatch:
         )
         monkeypatch.setattr(
             "app.backtest_runner.run_cross_section_per_stock_backtest",
-            lambda request, received_spec: (
+            lambda request, received_spec, **kwargs: (
                 sentinel
                 if request.strategy_id == "per_stock_route" and received_spec is spec
                 else None

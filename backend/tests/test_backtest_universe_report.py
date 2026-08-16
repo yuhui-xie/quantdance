@@ -6,6 +6,7 @@ from pathlib import Path
 
 from app.cli_backtest_report import (
     build_backtest_universe_report_model,
+    render_backtest_html,
     render_backtest_universe_html,
 )
 
@@ -42,6 +43,7 @@ def _mini_out() -> dict:
                     "low": 9.7,
                     "close": 10,
                     "llt": 9.95,
+                    "llt_dt": 0.2,
                 }
             ],
         }
@@ -104,7 +106,7 @@ def test_build_report_model_contains_ranking_and_top_details():
     assert detail["equity"][-1]["nav"] == 1.1
     assert detail["has_ohlc"] is True
     assert detail["indicator_series"] == [
-        {"date": "2024-01-03", "llt": 9.95}
+        {"date": "2024-01-03", "llt": 9.95, "llt_dt": 0.2}
     ]
     assert detail["price_overlay_fields"][0]["key"] == "llt"
     assert detail["indicator_charts"][0]["title"] == "LLT 趋势"
@@ -117,6 +119,27 @@ def test_build_report_model_contains_ranking_and_top_details():
         "negative": 0,
         "flat": 1,
     }
+
+
+def test_slope_threshold_attaches_ref_lines_to_llt_slope_chart():
+    out = _mini_out()
+    out["strategy_params"] = {"slope_threshold": 0.5}
+
+    model = build_backtest_universe_report_model(out, load_prices=False)
+    detail = model["details"]["600000"]
+
+    slope_chart = next(
+        chart
+        for chart in detail["indicator_charts"]
+        if any(f["key"] == "llt_dt" for f in chart["fields"])
+    )
+    assert slope_chart["refs"] == [
+        {"value": 0.5, "label": "看多阈值 +0.5"},
+        {"value": -0.5, "label": "看空阈值 -0.5"},
+    ]
+
+    # threshold 为 0 / 未设置时不挂参考线
+    assert "refs" not in model["details"]["600000"]["indicator_charts"][0]
 
 
 def test_build_report_model_includes_all_successful_details_by_default():
@@ -174,6 +197,48 @@ def test_build_report_model_groups_composite_indicator_fields():
             "leg_2_llt_trend__llt",
         }
     )
+
+
+def _single_out() -> dict:
+    return {
+        "strategy_id": "llt_trend",
+        "metrics": {
+            "initial_cash": 100_000,
+            "total_return": 0.08,
+            "max_drawdown": 0.02,
+            "sharpe": 1.3,
+        },
+        "equity": [
+            {"date": "2024-01-02", "equity": 100_000},
+            {"date": "2024-01-31", "equity": 108_000},
+        ],
+        "trades": [
+            {"date": "2024-01-03", "side": "buy", "price": 10, "shares": 1000},
+            {"date": "2024-01-30", "side": "sell", "price": 11, "shares": 1000},
+        ],
+        "price": [
+            {
+                "date": "2024-01-03",
+                "open": 9.8,
+                "high": 10.2,
+                "low": 9.7,
+                "close": 10,
+                "llt": 9.95,
+            }
+        ],
+        "symbol": "600000",
+    }
+
+
+def test_render_backtest_html_supports_single_stock(tmp_path: Path):
+    path = render_backtest_html(_single_out(), tmp_path / "single.html", load_prices=False)
+
+    text = path.read_text(encoding="utf-8")
+    assert path == (tmp_path / "single.html").resolve()
+    assert "llt_trend" in text
+    assert "600000" in text
+    assert "const DATA=" in text
+    assert 'id="detailIndicators"' in text
 
 
 def test_render_backtest_universe_html(tmp_path: Path):

@@ -23,7 +23,6 @@
   "output_options": {
     "json": false,
     "output": "out/backtest_universe_supertrend_hs300.json",
-    "plot": "out/backtest_universe_supertrend_hs300.svg",
     "report": "out/backtest_universe_supertrend_hs300.html"
   }
 }

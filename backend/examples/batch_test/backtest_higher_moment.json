@@ -18,6 +18,6 @@
   },
   "output_options": {
     "json": false,
-    "plot": "out/backtest_higher_moment.svg"
+    "report": "out\\backtest_higher_moment.html"
   }
 }

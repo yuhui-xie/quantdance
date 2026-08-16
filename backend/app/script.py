@@ -42,6 +42,15 @@ def _open_file_with_default_app(path: Path) -> None:
         print(f"图表已保存，但自动打开失败: {exc}")
 
 
+def _print_backtest_progress(done: int, total: int, current: str = "") -> None:
+    """把逐票/逐决策日进度写到 stderr，回车刷新、不污染 stdout 结果。"""
+    pct = (done / total * 100.0) if total else 100.0
+    sys.stderr.write(f"\r回测进度: {done}/{total} ({pct:5.1f}%) {current:<12}")
+    if done >= total:
+        sys.stderr.write("\n")
+    sys.stderr.flush()
+
+
 def _write_json(payload: dict[str, Any], *, output: Path | None, as_json: bool) -> None:
     text = json.dumps(payload, ensure_ascii=False, indent=2)
     if as_json:
@@ -201,15 +210,6 @@ def _path_from_output_option(value: Any, key: str) -> Path | None:
     return Path(value)
 
 
-def _normalize_plot_path(path: Path | None) -> Path | None:
-    """图表默认保存为 SVG；显式扩展名（如 .png/.pdf）仍按原样保留。"""
-    if path is None:
-        return None
-    if path.suffix:
-        return path
-    return path.with_suffix(".svg")
-
-
 def _normalize_report_path(path: Path | None) -> Path | None:
     """交互报告默认保存为 HTML。"""
     if path is None:
@@ -244,12 +244,16 @@ def _resolve_backtest_output_options(
 
     output = args.output or _path_from_output_option(output_options.get("output"), "output")
     as_json = args.json or json_option
-    plot = _normalize_plot_path(args.plot or _path_from_output_option(output_options.get("plot"), "plot"))
     report = _normalize_report_path(
         getattr(args, "report", None)
         or _path_from_output_option(output_options.get("report"), "report")
     )
-    return output, as_json, plot, report
+    report_top_k = getattr(args, "report_top_k", None)
+    if report_top_k is None:
+        raw = output_options.get("report_top_k")
+        if raw is not None:
+            report_top_k = int(raw) if str(raw).strip() else None
+    return output, as_json, report, report_top_k
 
 
 def _resolve_json_output_options(args: argparse.Namespace) -> tuple[Path | None, bool]:
@@ -423,40 +427,29 @@ def _cmd_backtest(args: argparse.Namespace) -> int:
             spec = ALL_STRATEGIES[sid]
             print(f"{spec.id}\t{spec.name}\t{spec.description}")
         return 0
-    output, as_json, plot, report = _resolve_backtest_output_options(args)
+    output, as_json, report, report_top_k = _resolve_backtest_output_options(args)
     body = _resolve_backtest_body(args)
     shared = body.strategy_id in {
         sid for sid, spec in ALL_STRATEGIES.items() if hasattr(spec, "select")
     }
-    if (body.mode in {"universe", "per_stock"} or shared) and report is None and plot is not None:
-        report = plot.with_suffix(".html")
-    if not shared and body.mode not in {"universe", "per_stock"} and report is not None:
-        raise ValueError("backtest --report 仅支持 universe、per_stock 或横截面共享资金回测")
-    if not shared and body.mode == "universe" and report is not None and not body.include_price:
+    if not shared and report is not None and body.mode in {"universe", "single"} and not body.include_price:
         # 逐票指标随 price overlay 返回；报告需要这些序列来绘制指标图。
         body = body.model_copy(update={"include_price": True})
-    out = run_backtest_request(body)
+    out = run_backtest_request(body, progress=_print_backtest_progress)
     _write_json(out, output=output, as_json=as_json)
-    if plot is not None:
-        if shared and body.mode != "per_stock":
-            from app.cli_plot import render_backtest_shared_figure
-
-            saved = render_backtest_shared_figure(out, plot)
-        elif body.mode in {"universe", "per_stock"}:
-            from app.cli_plot import render_backtest_universe_figure
-
-            saved = render_backtest_universe_figure(out, plot)
-        else:
-            from app.cli_plot import render_backtest_figure
-
-            saved = render_backtest_figure(out, plot)
-        print("图表已保存: " + " | ".join(str(p) for p in saved))
-        _open_file_with_default_app(plot)
     if report is not None:
         from app.cli_backtest_report import render_backtest_html
 
-        report_path = render_backtest_html(out, report)
-        print(f"交互报告已保存: {report_path}")
+        # report_top_k：0 或 None=全部；正数=仅前 N 名保留逐票明细图
+        top_k = None if report_top_k is None or report_top_k <= 0 else report_top_k
+        if not shared and body.mode == "single":
+            # 单票结果不含 symbol，注入以便报告标题与明细展示。
+            out = {**out, "symbol": body.symbol}
+        report_path = render_backtest_html(out, report, top_k=top_k)
+        print(
+            f"交互报告已保存: {report_path}"
+            + (f"（明细图 top-{top_k}）" if top_k else "（含全部明细图）")
+        )
         _open_file_with_default_app(report_path)
     if not as_json:
         if shared and body.mode != "per_stock":
@@ -589,12 +582,18 @@ def _build_backtest_cmd(sub: argparse._SubParsersAction[argparse.ArgumentParser]
     p.add_argument("--request", type=Path, metavar="FILE.json")
     p.add_argument("--json", action="store_true")
     p.add_argument("--output", type=Path, metavar="FILE.json")
-    p.add_argument("--plot", type=Path, metavar="PATH", help="保存图表路径（默认 .svg）")
     p.add_argument(
         "--report",
         type=Path,
         metavar="FILE.html",
-        help="批量回测交互报告路径；批量 plot 默认自动派生同名 .html",
+        help="交互报告（HTML）输出路径",
+    )
+    p.add_argument(
+        "--report-top-k",
+        type=int,
+        metavar="N",
+        default=None,
+        help="交互报告仅嵌入前 N 名逐票明细图（排行榜保留全部指标）；0 或省略=全部",
     )
     p.add_argument("--list-strategies", action="store_true")
     p.add_argument("--mode", choices=("single", "universe", "screen", "per_stock"), default=None)

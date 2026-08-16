@@ -31,7 +31,6 @@
   },
   "output_options": {
     "output": "out/backtest_shared_etf_rotation_3factor.json",
-    "plot": "out/backtest_shared_etf_rotation_3factor.svg",
     "report": "out/backtest_shared_etf_rotation_3factor.html",
     "json": true
   }

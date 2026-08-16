@@ -174,7 +174,7 @@ python -m app.script backtest --request examples/backtest_shared_prosperity_reso
 python -m app.script backtest --strategy prosperity_resonance --mode universe \
   --universe zz500 --max-universe 100 --seed 42 \
   --start-date 2023-01-01 --end-date 2024-12-31 \
-  --initial-cash 100000 --plot out/test_prosperity.svg
+  --initial-cash 100000 --report out/test_prosperity.html
 ```
 
 ## 7. 调参指南

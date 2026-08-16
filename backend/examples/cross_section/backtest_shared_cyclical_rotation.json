@@ -30,7 +30,6 @@
   },
   "output_options": {
     "output": "out/backtest_shared_cyclical_rotation.json",
-    "plot": "out/backtest_shared_cyclical_rotation.svg",
     "report": "out/backtest_shared_cyclical_rotation.html",
     "json": true
   }

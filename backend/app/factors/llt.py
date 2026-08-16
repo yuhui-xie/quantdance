@@ -52,3 +52,25 @@ def llt(values: Sequence[float] | np.ndarray, period: int = 20) -> np.ndarray:
         valid_run += 1
 
     return result
+
+
+def llt_slope(trend: np.ndarray, lookback: int = 1) -> np.ndarray:
+    """LLT 斜率（差分）D_t = L_t - L_{t-K}。
+
+    基于 LLT 趋势线的 K 期差分，用于刻画趋势方向与拐点；前 K 项为 NaN。
+    返回值与 ``trend`` 等长。``lookback`` 必须为正整数。
+    """
+    if isinstance(lookback, bool) or not isinstance(lookback, (int, np.integer)):
+        raise TypeError("lookback 必须是整数")
+    if lookback < 1:
+        raise ValueError("lookback 必须大于等于 1")
+
+    source = np.asarray(trend, dtype=float)
+    if source.ndim != 1:
+        raise ValueError("trend 必须是一维序列")
+
+    K = int(lookback)
+    dt = np.full(source.shape, np.nan, dtype=float)
+    if source.size > K:
+        dt[K:] = source[K:] - source[:-K]
+    return dt

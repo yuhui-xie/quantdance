@@ -306,7 +306,7 @@ $$
 | `initial_cash` | `100000` | 初始资金（元） |
 | `commission` | `0.0003` | 手续费率（万三） |
 | `output_options.json` | `false` | 是否向 stdout 打印完整 JSON |
-| `output_options.plot` | `out/backtest_volume_ma_pulse.svg` | 权益曲线图路径 |
+| `output_options.report` | `out/backtest_volume_ma_pulse.html` | 交互报告路径 |
 
 ### 8.2 `strategy_params`
 

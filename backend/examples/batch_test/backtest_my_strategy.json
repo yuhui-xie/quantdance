@@ -1,26 +1,24 @@
 {
   "mode": "universe",
   "data_source": "a_stock_data",
-  "strategy_id": "llt_trend",
+  "strategy_id": "my_strategy",
   "universe": "zz500",
   "max_universe": 500,
-  "seed": 42,
-  "start_date": "2023-01-01",
-  "end_date": "2026-08-01",
+  "start_date": "2024-01-01",
+  "end_date": "2026-12-31",
   "initial_cash": 100000,
   "commission": 0.0003,
-  "max_workers": 8,
+  "stop_loss_pct": 0.1,
   "include_equity": true,
   "include_trades": true,
   "include_price": true,
   "strategy_params": {
-    "period": 20,
-    "slope_lookback": 1,
-    "slope_threshold": 0.4
+    "use_chop_filter": true,
+    "llt_period": 20,
+    "slope_lookback": 1
   },
   "output_options": {
     "json": false,
-    "output": "out/backtest_universe_llt.json",
-    "report": "out/backtest_universe_llt.html"
+    "report": "out/backtest_my_strategy.html"
   }
 }

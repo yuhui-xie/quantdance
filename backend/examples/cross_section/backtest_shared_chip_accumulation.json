@@ -17,11 +17,11 @@
     "max_positions": 5,
     "initial_allocation_pct": 0.5,
     "add_allocation_pct": 0.25,
-    "add_trigger_pct": 0.10,
-    "stop_loss_pct": 0.10,
+    "add_trigger_pct": 0.1,
+    "stop_loss_pct": 0.1,
     "take_profit_mode": "trailing",
-    "take_profit_pct": 0.30,
-    "trailing_drawdown_pct": 0.10
+    "take_profit_pct": 0.3,
+    "trailing_drawdown_pct": 0.1
   },
   "use_cache": true,
   "force_refresh": false,
@@ -34,15 +34,15 @@
     "lookback_bars": 120,
     "bins": 200,
     "profit_ratio_min": 0.35,
-    "profit_ratio_max": 0.90,
-    "concentration_max": 0.50,
+    "profit_ratio_max": 0.9,
+    "concentration_max": 0.5,
     "require_price_above_cost": true,
     "require_breakout_peak": true,
     "exclude_st": true
   },
   "output_options": {
     "output": "out/backtest_shared_chip_accumulation.json",
-    "plot": "out/backtest_shared_chip_accumulation.svg",
-    "json": false
+    "json": false,
+    "report": "out\\backtest_shared_chip_accumulation.html"
   }
 }

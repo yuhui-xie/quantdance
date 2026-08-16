@@ -78,7 +78,7 @@
 | `force_refresh`             | `false`                                | 不强制重新拉取                                     |
 | `max_workers`               | `8`                                    | 并行拉取线程数                                     |
 | `output_options.output`     | `out/backtest_shared_limit_up_pullback.json` | 结果 JSON 路径                               |
-| `output_options.plot`       | `out/backtest_shared_limit_up_pullback.svg`  | 权益曲线图路径                               |
+| `output_options.report`       | `out/backtest_shared_limit_up_pullback.html`  | 交互报告路径                               |
 | `output_options.json`       | `false`                                | 是否向 stdout 打印完整 JSON                        |
 
 示例中最大持仓 5 只，因此每只股票的资金上限为初始资金的 20%；首次投入该上限的

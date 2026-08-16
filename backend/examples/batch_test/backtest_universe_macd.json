@@ -20,7 +20,6 @@
   "output_options": {
     "json": false,
     "output": "out/backtest_universe_higher_moment.json",
-    "plot": "out/backtest_universe_higher_moment.svg",
     "report": "out/backtest_universe_higher_moment.html"
   }
 }

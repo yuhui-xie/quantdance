@@ -151,6 +151,10 @@ class BacktestUniverseResponse(BaseModel):
     mode: Literal["universe"] = "universe"
     strategy_id: str
     universe_note: str = ""
+    strategy_params: dict[str, Any] = Field(
+        default_factory=dict,
+        description="回测所用策略专属参数，供报告渲染（如 LLT 斜率阈值参考线）",
+    )
     summary: BacktestUniverseSummary
     aggregate: dict[str, Any]
     runs: list[BacktestSymbolRun] = Field(default_factory=list)

@@ -16,12 +16,12 @@
   "position_management": {
     "max_positions": 10,
     "initial_allocation_pct": 0.6,
-    "add_allocation_pct": 0.30,
+    "add_allocation_pct": 0.3,
     "add_trigger_pct": 0.12,
-    "stop_loss_pct": 0.10,
+    "stop_loss_pct": 0.1,
     "take_profit_mode": "trailing",
-    "take_profit_pct": 0.50,
-    "trailing_drawdown_pct": 0.10
+    "take_profit_pct": 0.5,
+    "trailing_drawdown_pct": 0.1
   },
   "use_cache": true,
   "force_refresh": false,
@@ -42,7 +42,7 @@
     "lookback_days": 60,
     "trend_ma": 25,
     "momentum_min": 0.0,
-    "momentum_max": 0.60,
+    "momentum_max": 0.6,
     "llt_period": 20,
     "llt_slope_lookback": 5,
     "require_llt_up": true,
@@ -60,7 +60,7 @@
   },
   "output_options": {
     "output": "out/backtest_shared_prosperity_resonance_zz500.json",
-    "plot": "out/backtest_shared_prosperity_resonance_zz500.svg",
-    "json": false
+    "json": false,
+    "report": "out\\backtest_shared_prosperity_resonance_zz500.html"
   }
 }

@@ -9,7 +9,6 @@ import pytest
 
 from app.schemas import BacktestRequest
 from app.script import (
-    _normalize_plot_path,
     _resolve_backtest_body,
     _resolve_backtest_output_options,
     _write_backtest_summary,
@@ -102,7 +101,6 @@ def test_backtest_request_can_define_output_options(tmp_path):
                 "strategy_id": "ma_crossover",
                 "output_options": {
                     "json": True,
-                    "plot": "out/example.svg",
                     "report": "out/example.html",
                 },
             }
@@ -111,14 +109,13 @@ def test_backtest_request_can_define_output_options(tmp_path):
     )
     args = build_parser().parse_args(["backtest", "--request", str(request_path)])
 
-    output, as_json, plot, report = _resolve_backtest_output_options(args)
+    output, as_json, report, report_top_k = _resolve_backtest_output_options(args)
 
     assert output is None
     assert as_json is True
-    assert plot is not None
-    assert plot.as_posix() == "out/example.svg"
     assert report is not None
     assert report.as_posix() == "out/example.html"
+    assert report_top_k is None
 
 
 def test_backtest_universe_report_automatically_includes_indicators(
@@ -129,7 +126,7 @@ def test_backtest_universe_report_automatically_includes_indicators(
 
     captured = {}
 
-    def fake_run(body):
+    def fake_run(body, **kwargs):
         captured["body"] = body
         return {
             "mode": "universe",
@@ -171,26 +168,6 @@ def test_backtest_universe_report_automatically_includes_indicators(
 def test_discover_command_is_not_available():
     with pytest.raises(SystemExit):
         build_parser().parse_args(["discover"])
-
-
-def test_plot_path_without_suffix_defaults_to_svg():
-    assert _normalize_plot_path(Path("out/chart")).as_posix() == "out/chart.svg"
-    assert _normalize_plot_path(Path("out/chart.png")).as_posix() == "out/chart.png"
-    assert _normalize_plot_path(None) is None
-
-
-def test_plot_output_paths_always_include_svg_and_png(tmp_path):
-    from app.cli_plot import _plot_output_paths
-
-    svg_dest = tmp_path / "chart.svg"
-    paths = _plot_output_paths(svg_dest)
-    assert [p.suffix for p in paths] == [".svg", ".png"]
-    assert paths[0] == svg_dest.resolve()
-    assert paths[1] == (tmp_path / "chart.png").resolve()
-
-    png_dest = tmp_path / "chart.png"
-    paths = _plot_output_paths(png_dest)
-    assert {p.suffix for p in paths} == {".svg", ".png"}
 
 
 def test_backtest_summary_prints_compact_result(capsys):
@@ -276,30 +253,6 @@ def test_backtest_universe_summary_prints_ranking(capsys):
     assert "批量回测完成" in printed
     assert "收益排行榜" in printed
     assert "600000" in printed
-
-
-def test_backtest_universe_plot_writes_svg_and_png(tmp_path):
-    from app.cli_plot import render_backtest_universe_figure
-
-    out = {
-        "aggregate": {
-            "metrics": {
-                "initial_cash": 100_000,
-                "total_return": 0.1,
-                "max_drawdown": 0.0,
-            },
-            "equity": [
-                {"date": "2024-01-02", "equity": 100_000},
-                {"date": "2024-01-03", "equity": 110_000},
-            ],
-        },
-        "runs": [],
-    }
-
-    saved = render_backtest_universe_figure(out, tmp_path / "batch.svg")
-
-    assert {path.suffix for path in saved} == {".svg", ".png"}
-    assert all(path.exists() for path in saved)
 
 
 def test_stock_search_command_accepts_keyword_and_limit():

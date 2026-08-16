@@ -62,7 +62,7 @@
 | `force_refresh` | `false` | 不强制重新拉取 |
 | `max_workers` | `8` | 并行拉取线程数 |
 | `output_options.output` | `out/backtest_shared_small_cap_zz399101.json` | 结果 JSON 路径 |
-| `output_options.plot` | `out/backtest_shared_small_cap_zz399101.svg` | 权益曲线图路径 |
+| `output_options.report` | `out/backtest_shared_small_cap_zz399101.html` | 交互报告路径 |
 | `output_options.report` | `out/backtest_shared_small_cap_zz399101.html` | 交互 HTML 报告（调仓买卖/区间收益）；未写时若有 `plot` 则自动派生同名 `.html` |
 | `output_options.json` | `true` | 是否向 stdout 打印完整 JSON |
 
