@@ -17,12 +17,14 @@ warnings.simplefilter("ignore", ResourceWarning)
 from app.backtest_runner import run_backtest_request
 from app.data_sources.tencent_finance_sdk import TencentFinanceSDK
 from app.data_sources.market_data import MarketDataError
+from app.ic_analysis import FACTOR_REGISTRY, compute_factor_ic, factor_source
 from app.schemas import (
     BacktestRequest,
     ScreenRequest,
 )
 from app.stock_screening import run_screen, screen_presets_catalog
 from app.strategies.registry import ALL_STRATEGIES
+from app.universe import resolve_universe_rows
 
 
 def _load_json_file(path: Path) -> Any:
@@ -235,7 +237,7 @@ def _load_output_options(args: argparse.Namespace) -> dict[str, Any]:
 
 def _resolve_backtest_output_options(
     args: argparse.Namespace,
-) -> tuple[Path | None, bool, Path | None, Path | None]:
+) -> tuple[Path | None, bool, Path | None, Path | None, int | None]:
     output_options = _load_output_options(args)
 
     json_option = output_options.get("json", False)
@@ -253,7 +255,12 @@ def _resolve_backtest_output_options(
         raw = output_options.get("report_top_k")
         if raw is not None:
             report_top_k = int(raw) if str(raw).strip() else None
-    return output, as_json, report, report_top_k
+    report_price_top_k = getattr(args, "report_price_top_k", None)
+    if report_price_top_k is None:
+        raw = output_options.get("report_price_top_k")
+        if raw is not None:
+            report_price_top_k = int(raw) if str(raw).strip() else None
+    return output, as_json, report, report_top_k, report_price_top_k
 
 
 def _resolve_json_output_options(args: argparse.Namespace) -> tuple[Path | None, bool]:
@@ -427,7 +434,7 @@ def _cmd_backtest(args: argparse.Namespace) -> int:
             spec = ALL_STRATEGIES[sid]
             print(f"{spec.id}\t{spec.name}\t{spec.description}")
         return 0
-    output, as_json, report, report_top_k = _resolve_backtest_output_options(args)
+    output, as_json, report, report_top_k, report_price_top_k = _resolve_backtest_output_options(args)
     body = _resolve_backtest_body(args)
     shared = body.strategy_id in {
         sid for sid, spec in ALL_STRATEGIES.items() if hasattr(spec, "select")
@@ -442,13 +449,18 @@ def _cmd_backtest(args: argparse.Namespace) -> int:
 
         # report_top_k：0 或 None=全部；正数=仅前 N 名保留逐票明细图
         top_k = None if report_top_k is None or report_top_k <= 0 else report_top_k
+        # report_price_top_k：0 或 None=全部；正数=仅前 N 名补拉 K 线
+        price_top_k = (
+            None if report_price_top_k is None or report_price_top_k <= 0 else report_price_top_k
+        )
         if not shared and body.mode == "single":
             # 单票结果不含 symbol，注入以便报告标题与明细展示。
             out = {**out, "symbol": body.symbol}
-        report_path = render_backtest_html(out, report, top_k=top_k)
+        report_path = render_backtest_html(out, report, top_k=top_k, price_top_k=price_top_k)
         print(
             f"交互报告已保存: {report_path}"
             + (f"（明细图 top-{top_k}）" if top_k else "（含全部明细图）")
+            + ("" if price_top_k else "（全部补拉 K 线）")
         )
         _open_file_with_default_app(report_path)
     if not as_json:
@@ -576,6 +588,169 @@ def _cmd_chip_dist(args: argparse.Namespace) -> int:
 
 
 
+def _resolve_factor_ic_body(args: argparse.Namespace) -> dict[str, Any]:
+    """把 --request JSON 与 CLI 参数合并为 factor-ic 参数（CLI 显式值优先）。
+
+    支持在请求 JSON 里放 ``symbols``/``universe``/``max_universe``/``seed`` 及全部
+    分析参数（start_date/end_date/limit/horizons/min_cs/factors/max_workers），
+    与 backtest 的 ``--request`` 用法对齐。
+    """
+    base: dict[str, Any] = {}
+    if args.request is not None:
+        req_data = _load_json_file(args.request)
+        if not isinstance(req_data, dict):
+            raise ValueError("--request 需为 JSON 对象")
+        base.update(req_data)
+
+    cli_map: dict[str, Any] = {}
+    for key in (
+        "symbols",
+        "universe",
+        "max_universe",
+        "seed",
+        "start_date",
+        "end_date",
+        "limit",
+        "horizons",
+        "min_cs",
+        "factors",
+        "max_workers",
+    ):
+        value = getattr(args, key, None)
+        if value is not None:
+            cli_map[key] = value
+    base.update(cli_map)
+
+    # 解析默认值
+    body = {
+        "symbols": base.get("symbols"),
+        "universe": base.get("universe"),
+        "max_universe": int(base.get("max_universe", 300)),
+        "seed": base.get("seed"),
+        "start_date": base.get("start_date"),
+        "end_date": base.get("end_date"),
+        "limit": int(base.get("limit", 1200)),
+        "horizons": [int(h) for h in (base.get("horizons") or [5, 10, 20])],
+        "min_cs": int(base.get("min_cs", 10)),
+        "factors": base.get("factors"),
+        "max_workers": int(base.get("max_workers", 8)),
+    }
+    if body["horizons"] and all(h >= 1 for h in body["horizons"]):
+        pass
+    else:
+        raise ValueError("horizons 须为不小于 1 的整数列表")
+    return body
+
+
+def _resolve_factor_ic_output(
+    args: argparse.Namespace,
+) -> tuple[Path | None, bool, Path | None]:
+    """factor-ic 输出：--json/--output/--report 优先，否则取请求 JSON 的 output_options。"""
+    if args.request is None:
+        return args.output, args.json, _normalize_report_path(getattr(args, "report", None))
+    output_options = _load_output_options(args)
+    json_option = output_options.get("json", False)
+    if not isinstance(json_option, bool):
+        raise ValueError("output_options.json 需为布尔值")
+    output = args.output or _path_from_output_option(output_options.get("output"), "output")
+    as_json = args.json or json_option
+    report = _normalize_report_path(
+        getattr(args, "report", None)
+        or _path_from_output_option(output_options.get("report"), "report")
+    )
+    return output, as_json, report
+
+
+def _cmd_factor_ic(args: argparse.Namespace) -> int:
+    """因子 IC 分析：横截面评价因子对未来收益的秩相关预测力。"""
+    if args.list_factors:
+        src_label = {"screening": "选股技术", "momentum": "动量/趋势", "strategy": "策略信号"}
+        print("可选因子（来源\t名称）:")
+        for name in sorted(FACTOR_REGISTRY):
+            print(f"  {src_label.get(factor_source(name), factor_source(name))}\t{name}")
+        return 0
+
+    body = _resolve_factor_ic_body(args)
+    output, as_json, report = _resolve_factor_ic_output(args)
+    if report is None:
+        # 默认产出交互 HTML 报告；可用 --report 或请求 JSON 的 output_options.report 覆盖
+        report = Path("out/ic_report.html")
+
+    start = (body["start_date"] or "").strip() or None
+    end = (body["end_date"] or "").strip() or None
+    if (start is None) != (end is None):
+        raise ValueError("start_date 与 end_date 须同时提供，或都省略（用尾部窗口）")
+
+    rows, note = resolve_universe_rows(
+        symbols=body["symbols"],
+        universe=body["universe"],
+        max_universe=body["max_universe"],
+        seed=body["seed"],
+        default_universe="all_a",
+        asof=start,
+    )
+    if not rows:
+        raise ValueError("股票池为空，无法进行 IC 分析")
+    symbols = [row["symbol"] for row in rows]
+
+    limit = None
+    if start is None:
+        limit = body["limit"]
+
+    out = compute_factor_ic(
+        symbols,
+        start=start,
+        end=end,
+        limit=limit,
+        horizons=tuple(body["horizons"]),
+        min_cs=body["min_cs"],
+        factors=body["factors"],
+        max_workers=body["max_workers"],
+    )
+    out["universe_note"] = note
+
+    _write_json(out, output=output, as_json=as_json)
+
+    if not as_json:
+        print(f"因子 IC 分析: {note}")
+        print(f"标的 {out['count']} 只 | 区间 {out['start_date']} ~ {out['end_date']} | "
+              f"持有期 {out['horizons']} | 横截面下限 {out['min_cs']}")
+        print(
+            "  因子 | 持有期 | 均值 RankIC | RankICIR | t 值 | IC>0 占比 | 期数"
+        )
+        for factor in out.get("results", []):
+            for h in factor.get("horizons", []):
+                n = h.get("n_dates", 0)
+                mean = h.get("mean_ic")
+                icir = h.get("icir")
+                t = h.get("t_stat")
+                pos = h.get("ic_positive_ratio")
+                if n == 0 or mean is None:
+                    mean_s = icir_s = t_s = pos_s = "-"
+                else:
+                    mean_s = f"{mean:.4f}"
+                    icir_s = f"{icir:.3f}" if icir is not None else "-"
+                    t_s = f"{t:.3f}" if t is not None else "-"
+                    pos_s = f"{pos * 100:.1f}%"
+                print(
+                    f"  {factor['factor']:<22} | {h['horizon']:>4}  | {mean_s:>10} | "
+                    f"{icir_s:>8} | {t_s:>6} | {pos_s:>8} | {n:>4}"
+                )
+        if out.get("warnings"):
+            print("提示: " + "；".join(out["warnings"]))
+        if output is not None:
+            print(f"完整结果: {output.resolve()}")
+        else:
+            print("完整结果: 使用 --json 打印，或 --output FILE.json 保存")
+    if report is not None:
+        from app.ic_report import render_factor_ic_html
+
+        report_path = render_factor_ic_html(out, report)
+        print(f"交互报告已保存: {report_path}")
+        _open_file_with_default_app(report_path)
+    return 0
+
+
 def _build_backtest_cmd(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     p = sub.add_parser("backtest", help="运行回测")
     p.set_defaults(handler=_cmd_backtest)
@@ -594,6 +769,13 @@ def _build_backtest_cmd(sub: argparse._SubParsersAction[argparse.ArgumentParser]
         metavar="N",
         default=None,
         help="交互报告仅嵌入前 N 名逐票明细图（排行榜保留全部指标）；0 或省略=全部",
+    )
+    p.add_argument(
+        "--report-price-top-k",
+        type=int,
+        metavar="N",
+        default=None,
+        help="从行情缓存补拉 K 线的股票数；0 或省略=全部，正数=仅前 N 名",
     )
     p.add_argument("--list-strategies", action="store_true")
     p.add_argument("--mode", choices=("single", "universe", "screen", "per_stock"), default=None)
@@ -752,15 +934,66 @@ def _build_chip_dist_cmd(sub: argparse._SubParsersAction[argparse.ArgumentParser
 
 
 
+def _build_factor_ic_cmd(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+    p = sub.add_parser("factor-ic", help="因子 IC 分析（横截面秩相关预测力评价）")
+    p.set_defaults(handler=_cmd_factor_ic)
+    p.add_argument("--request", type=Path, metavar="FILE.json", help="请求 JSON（可含股票池与全部分析参数）")
+    p.add_argument(
+        "--universe",
+        choices=(
+            "all_a", "hs300", "zz500", "zz399101", "zz1000", "gz2000",
+            "star50", "star_board", "etf",
+        ),
+    )
+    p.add_argument("--symbols", nargs="+", help="直接指定股票池（与 --universe 二选一）")
+    p.add_argument("--max-universe", type=int, dest="max_universe")
+    p.add_argument("--seed", type=int)
+    p.add_argument("--start-date", dest="start_date")
+    p.add_argument("--end-date", dest="end_date")
+    p.add_argument(
+        "--limit",
+        type=int,
+        help="未指定起止日期时回溯的交易日数量（默认 1200）",
+    )
+    p.add_argument(
+        "--horizons",
+        type=int,
+        nargs="+",
+        help="未来收益持有期（交易日），可传多个，如 5 10 20（默认 5 10 20）",
+    )
+    p.add_argument(
+        "--min-cs",
+        type=int,
+        dest="min_cs",
+        help="每个时点横截面有效样本下限（低于则跳过该期，默认 10）",
+    )
+    p.add_argument(
+        "--factors",
+        nargs="+",
+        help="要评价的因子名（省略则全部），用 --list-factors 查看",
+    )
+    p.add_argument("--list-factors", action="store_true", help="列出全部可用因子")
+    p.add_argument("--max-workers", type=int, dest="max_workers")
+    p.add_argument("--json", action="store_true")
+    p.add_argument("--output", type=Path, metavar="FILE.json")
+    p.add_argument(
+        "--report",
+        type=Path,
+        metavar="FILE.html",
+        help="交互 HTML 报告输出路径（不传则默认 out/ic_report.html，并自动浏览器打开）",
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        description="纯脚本版量化工具：回测、选股与筹码分布均通过子命令执行。",
+        description="纯脚本版量化工具：回测、选股、筹码分布与因子 IC 分析均通过子命令执行。",
     )
     sub = p.add_subparsers(dest="command", required=True)
     _build_backtest_cmd(sub)
     _build_screen_cmd(sub)
     _build_stock_search_cmd(sub)
     _build_chip_dist_cmd(sub)
+    _build_factor_ic_cmd(sub)
     return p
 
 

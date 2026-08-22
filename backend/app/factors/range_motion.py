@@ -17,6 +17,8 @@ from collections.abc import Sequence
 import numpy as np
 import pandas as pd
 
+from app.factors.base import FactorSpec
+
 
 def _validate_period(period: int) -> int:
     if isinstance(period, (bool, np.bool_)) or not isinstance(
@@ -144,3 +146,40 @@ def choppiness_index(
             np.nan,
         )
     return chop
+
+
+# ---------------------------------------------------------------------------
+# DataFrame → Series 因子 handler（供 IC 分析复用）
+# ---------------------------------------------------------------------------
+
+def adx_factor(df: pd.DataFrame, period: int = 14) -> pd.Series:
+    """ADX 趋势强度，返回与 df 索引对齐的 Series。"""
+    return pd.Series(
+        adx(
+            df["high"].astype(float).to_numpy(),
+            df["low"].astype(float).to_numpy(),
+            df["close"].astype(float).to_numpy(),
+            period=period,
+        ),
+        index=df.index,
+    )
+
+
+def chop_factor(df: pd.DataFrame, period: int = 14) -> pd.Series:
+    """Choppiness Index 震荡指数，返回与 df 索引对齐的 Series。"""
+    return pd.Series(
+        choppiness_index(
+            df["high"].astype(float).to_numpy(),
+            df["low"].astype(float).to_numpy(),
+            df["close"].astype(float).to_numpy(),
+            period=period,
+        ),
+        index=df.index,
+    )
+
+
+# 本模块导出的因子注册（供 app/factors/registry.py 自动汇总）
+FACTORS: list[FactorSpec] = [
+    FactorSpec("adx", adx_factor, min_bars=27, source="strategy"),
+    FactorSpec("chop", chop_factor, min_bars=15, source="strategy"),
+]

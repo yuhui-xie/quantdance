@@ -61,7 +61,7 @@ def test_run_small_cap_backtest_mocked(monkeypatch):
     panel = {f"00000{i}": make(1e9 * i) for i in range(1, 6)}
     monkeypatch.setattr(
         "app.backtest.cross_section_runner._resolve_universe",
-        lambda _req, default_universe=None: (
+        lambda _req, default_universe=None, **_kwargs: (
             [{"symbol": s, "name": "测试"} for s in panel],
             "mock",
         ),

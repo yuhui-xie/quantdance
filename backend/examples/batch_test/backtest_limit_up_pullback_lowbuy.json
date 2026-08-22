@@ -1,0 +1,32 @@
+{
+  "mode": "universe",
+  "data_source": "a_stock_data",
+  "strategy_id": "limit_up_pullback_lowbuy",
+  "universe": "zz1000",
+  "max_universe": 1000,
+  "seed": 42,
+  "start_date": "2024-01-01",
+  "end_date": "2026-08-01",
+  "initial_cash": 100000,
+  "commission": 0.0003,
+  "max_workers": 8,
+  "include_equity": true,
+  "include_trades": true,
+  "include_price": true,
+  "strategy_params": {
+    "limit_pct": 9.5,
+    "limit_lookback": 15,
+    "ma_period": 30,
+    "support_tolerance": 0.02,
+    "doji_body_ratio": 0.3,
+    "low_vol_ratio": 0.65,
+    "confirm_vol_ratio": 1.2,
+    "vol_ma_period": 5,
+    "stop_loss_pct": 0.05,
+    "max_hold_days": 5
+  },
+  "output_options": {
+    "json": false,
+    "report": "out/backtest_limit_up_pullback_lowbuy.html"
+  }
+}

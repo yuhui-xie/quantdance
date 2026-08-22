@@ -346,7 +346,7 @@ def test_screen_mode_via_runner(monkeypatch):
     symbols = [{"symbol": s, "name": s} for s in ALL_SYMBOLS]
     monkeypatch.setattr(
         "app.backtest.cross_section_runner._resolve_universe",
-        lambda *_args: (symbols, "test"),
+        lambda *_args, **_kwargs: (symbols, "test"),
     )
     monkeypatch.setattr(
         "app.backtest.cross_section_runner._load_panel",

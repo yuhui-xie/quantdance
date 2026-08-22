@@ -49,8 +49,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--price-top-k",
         type=int,
-        default=20,
-        help="从行情缓存补充价格的前 N 名（默认 20）",
+        default=None,
+        help="从行情缓存补拉 K 线的股票数；0 或省略=全部，正数=仅前 N 名",
     )
     parser.add_argument(
         "--no-load-prices",
@@ -64,7 +64,9 @@ def main(argv: list[str] | None = None) -> int:
             args.json_path,
             args.output,
             top_k=None if args.top_k is None else max(0, args.top_k),
-            price_top_k=max(0, args.price_top_k),
+            price_top_k=(
+                None if args.price_top_k is None or args.price_top_k <= 0 else args.price_top_k
+            ),
             load_prices=not args.no_load_prices,
         )
     else:

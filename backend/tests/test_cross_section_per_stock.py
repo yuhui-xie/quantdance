@@ -197,7 +197,7 @@ class TestRunCrossSectionPerStockBacktest:
 
         monkeypatch.setattr(
             "app.backtest.cross_section_runner._resolve_universe",
-            lambda *_args: (
+            lambda *_args, **_kwargs: (
                 [{"symbol": "A", "name": "A"}, {"symbol": "B", "name": "B"}],
                 "test",
             ),
@@ -293,7 +293,7 @@ class TestRunCrossSectionPerStockBacktest:
 
         monkeypatch.setattr(
             "app.backtest.cross_section_runner._resolve_universe",
-            lambda *_args: (
+            lambda *_args, **_kwargs: (
                 [{"symbol": "A", "name": "A"}, {"symbol": "B", "name": "B"}],
                 "test",
             ),
@@ -368,7 +368,7 @@ class TestRunCrossSectionPerStockBacktest:
 
         monkeypatch.setattr(
             "app.backtest.cross_section_runner._resolve_universe",
-            lambda *_args: (
+            lambda *_args, **_kwargs: (
                 [{"symbol": "A", "name": "A"}, {"symbol": "B", "name": "B"}],
                 "test",
             ),
@@ -438,7 +438,7 @@ class TestRunCrossSectionPerStockBacktest:
 
         monkeypatch.setattr(
             "app.backtest.cross_section_runner._resolve_universe",
-            lambda *_args: (
+            lambda *_args, **_kwargs: (
                 [{"symbol": "A", "name": "A"}, {"symbol": "B", "name": "B"}],
                 "test",
             ),
@@ -493,8 +493,8 @@ class TestPerStockDispatch:
             name="test",
             description="test",
             params_model=_PerStockParams,
-            select=lambda *_args: ([], []),
-            decision_dates=lambda *_args: [],
+            select=lambda *_args, **_kwargs: ([], []),
+            decision_dates=lambda *_args, **_kwargs: [],
         )
         sentinel = BacktestUniverseResponse(
             strategy_id="per_stock_route",

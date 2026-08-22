@@ -13,6 +13,50 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Callable, Literal, TypedDict
 
+import pandas as pd
+
+# ---------------------------------------------------------------------------
+# pandas 3.0 移除了 DataFrame/Series.fillna(method=...)，而 mootdx 0.11.x 的
+# 前复权计算（tools/reversion.py、utils/adjust.py）仍依赖它。这里安装一个兼容
+# 垫片，把 method='ffill'/'bfill' 转译为 ffill()/bfill()，仅恢复被移除的关键字
+# 语义，不改变其他行为；无 method 时原样走原实现。仅在数据层导入时生效。
+# ---------------------------------------------------------------------------
+def _install_fillna_method_shim() -> None:
+    try:
+        import pandas as pd
+    except Exception:  # pragma: no cover - 无 pandas 时不需垫片
+        return
+    if getattr(pd.DataFrame.fillna, "_qd_fillna_shim", False):
+        return
+    _orig_df_fillna = pd.DataFrame.fillna
+    _orig_s_fillna = pd.Series.fillna
+
+    def _shim(orig, frame, value=None, *, method=None, axis=None, inplace=False, limit=None, **kw):
+        if method is None:
+            return orig(frame, value=value, axis=axis, inplace=inplace, limit=limit, **kw)
+        if value is not None:
+            raise TypeError("fillna(): value 与 method 不能同时指定")
+        if method not in ("ffill", "bfill"):
+            return orig(frame, value=value, axis=axis, inplace=inplace, limit=limit, **kw)
+        if inplace:
+            getattr(frame, method)(axis=axis, limit=limit, inplace=True)
+            return None
+        return getattr(frame, method)(axis=axis, limit=limit)
+
+    def _df_shim(self, *args, **kw):
+        return _shim(_orig_df_fillna, self, *args, **kw)
+
+    def _s_shim(self, *args, **kw):
+        return _shim(_orig_s_fillna, self, *args, **kw)
+
+    _df_shim._qd_fillna_shim = True  # type: ignore[attr-defined]
+    _s_shim._qd_fillna_shim = True  # type: ignore[attr-defined]
+    pd.DataFrame.fillna = _df_shim  # type: ignore[method-assign]
+    pd.Series.fillna = _s_shim  # type: ignore[method-assign]
+
+
+_install_fillna_method_shim()
+
 
 class MootdxMarketError(Exception):
     """mootdx 适配层统一异常。"""
@@ -106,12 +150,21 @@ _PERIOD_TO_CATEGORY: dict[str, int] = {
 # TDX 协议单次 K 线请求最多约 800 根；超过时须按 start 偏移向前翻页拼接。
 _KLINE_PAGE_SIZE = 800
 
+# K 线复权口径：qfq=前复权。mootdx 自带 adjust='qfq' 有除权断层缺陷，
+# 本项目改为拉原始价 + 本地按除权记录折算（详见 docs/data-adjustment.md）。
+# 该常量仅作为缓存中的复权语义标记使用。
+_KLINE_ADJUST = "qfq"
+
 
 def _to_float(value: Any) -> float | None:
     if value is None:
         return None
     if isinstance(value, (int, float)):
-        return float(value)
+        f = float(value)
+        # 复权或当日未成交等情况下可能产生 NaN，统一视为缺值。
+        if f != f:  # NaN 判定
+            return None
+        return f
     s = str(value).strip().replace(",", "")
     if not s:
         return None
@@ -330,11 +383,15 @@ class MootdxMarketSDK:
         *,
         count: int = 200,
     ) -> list[MootdxKlineBar]:
-        """获取 K 线；超过单页上限（约 800 根）时按 start 偏移向前翻页拼接。
+        """获取 **前复权** 日线；超过单页上限（约 800 根）时按 start 偏移向前翻页拼接。
 
         mootdx/TDX 协议单次请求最多约 800 根，`count` 更大时若不翻页会被截断到
         约 3 年历史。这里从最新页向前逐页取，按 datetime 去重，返回最近 ``count``
         根（时间升序）。
+
+        注意：mootdx 自带的 `adjust='qfq'` 依赖新浪预计算因子表且按**乘**因子处理，
+        会在分红除权日留下虚假价格断层（见 docs/data-adjustment.md）。因此这里拉取**原始价**，
+        再用 TDX 本地除权记录按教科书前复权公式自行折算，保证序列连续。
         """
         norm = self._parse_symbol(symbol)
         category = self.map_period(period)
@@ -351,7 +408,9 @@ class MootdxMarketSDK:
                             offset=_KLINE_PAGE_SIZE,
                         )
                     except TypeError:
-                        raw = method(category, norm.market, norm.code, start_offset, _KLINE_PAGE_SIZE)
+                        raw = method(
+                            category, norm.market, norm.code, start_offset, _KLINE_PAGE_SIZE
+                        )
                 else:
                     raw = self._call_first(
                         ("get_security_bars", "get_kline"),
@@ -406,7 +465,69 @@ class MootdxMarketSDK:
                     continue
                 seen.add(key)
                 all_bars.append(bar)
-        return all_bars[-count:]
+        raw_bars = all_bars[-count:]
+        return self._forward_adjust_bars(norm.symbol, raw_bars)
+
+    def _get_xdxr_info(self, symbol: str) -> pd.DataFrame | None:
+        """获取除权除息记录（category==1：分红/送转），列为 fenhong/peigu/peigujia/songzhuangu。
+
+        数据来自 TDX 本地服务器（与原始 K 线同一来源），带 24h 缓存。
+        """
+        code = symbol[2:] if str(symbol)[:2].lower() in ("sh", "sz", "bj") else symbol
+        try:
+            from mootdx.utils.adjust import get_xdxr  # 延迟导入，避免 import 副作用
+
+            xdxr = get_xdxr(code)  # xdxr 接口只接受裸六位代码，带市场前缀会取不到数据
+        except Exception:
+            return None
+        if xdxr is None or getattr(xdxr, "empty", True) or "category" not in getattr(xdxr, "columns", ()):
+            return None
+        info = xdxr[xdxr["category"] == 1]
+        cols = [c for c in ("fenhong", "peigu", "peigujia", "songzhuangu") if c in info.columns]
+        if not cols:
+            return None
+        info = info[cols].apply(pd.to_numeric, errors="coerce").fillna(0.0)
+        info.index = pd.to_datetime(info.index).normalize()
+        info = info[~info.index.duplicated(keep="last")]
+        return info
+
+    def _forward_adjust_bars(
+        self, symbol: str, bars: list[MootdxKlineBar]
+    ) -> list[MootdxKlineBar]:
+        """把原始价按前复权折算，消除分红除权日的价格断层。
+
+        公式与 mootdx `reversion._reversion` 的前复权分支一致：
+        preclose = (close[前]*10 - fenhong + peigu*peigujia) / (10 + peigu + songzhuangu)
+        adj      = (preclose.next / close).fillna(1)[::-1].cumprod()   # 最新根因子=1
+        复权价   = 原始价 * adj
+        """
+        if not bars:
+            return bars
+        info = self._get_xdxr_info(symbol)
+        if info is None or info.empty:
+            return bars  # 无除权记录，无需调整
+
+        def _d(b: MootdxKlineBar) -> datetime:
+            return pd.to_datetime(b["datetime"]).normalize()
+
+        df = pd.DataFrame({"close": [b["close"] for b in bars]}, index=pd.DatetimeIndex([_d(b) for b in bars]))
+        df = df[~df.index.duplicated(keep="last")].sort_index()
+        data = df.join(info, how="left").fillna(0.0)
+        data["preclose"] = (
+            data["close"].shift(1) * 10 - data["fenhong"] + data["peigu"] * data["peigujia"]
+        ) / (10 + data["peigu"] + data["songzhuangu"])
+        data["adj"] = (data["preclose"].shift(-1) / data["close"]).fillna(1.0)[::-1].cumprod()
+        adj_map = {d: a for d, a in zip(data.index, data["adj"])}
+
+        out: list[MootdxKlineBar] = []
+        for b in bars:
+            f = adj_map.get(_d(b), 1.0)
+            nb = dict(b)
+            for col in ("open", "high", "low", "close"):
+                if nb.get(col) is not None:
+                    nb[col] = nb[col] * f
+            out.append(nb)
+        return out
 
     def get_orderbook(self, symbol: str) -> MootdxOrderBook:
         norm = self._parse_symbol(symbol)

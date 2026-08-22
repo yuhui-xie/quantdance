@@ -132,7 +132,7 @@ def test_cross_section_runner_hysteresis_stabilizes_targets(monkeypatch):
     })
     monkeypatch.setattr(
         "app.backtest.cross_section_runner._resolve_universe",
-        lambda *_args: (
+        lambda *_args, **_kwargs: (
             [
                 {"symbol": "A", "name": "A"},
                 {"symbol": "B", "name": "B"},
@@ -296,7 +296,7 @@ def test_cross_section_runner_calls_strategy_decision_dates(monkeypatch):
     })
     monkeypatch.setattr(
         "app.backtest.cross_section_runner._resolve_universe",
-        lambda *_args: ([{"symbol": "A", "name": "A"}, {"symbol": "B", "name": "B"}], "test"),
+        lambda *_args, **_kwargs: ([{"symbol": "A", "name": "A"}, {"symbol": "B", "name": "B"}], "test"),
     )
     monkeypatch.setattr(
         "app.backtest.cross_section_runner._load_panel",
@@ -328,8 +328,8 @@ def test_unified_backtest_runner_routes_cross_section_to_shared_runner(monkeypat
         name="test",
         description="test",
         params_model=_Params,
-        select=lambda *_args: ([], []),
-        decision_dates=lambda *_args: [],
+        select=lambda *_args, **_kwargs: ([], []),
+        decision_dates=lambda *_args, **_kwargs: [],
     )
     sentinel = BacktestSharedResponse(strategy_id="cross_route", equity=[])
     monkeypatch.setattr(

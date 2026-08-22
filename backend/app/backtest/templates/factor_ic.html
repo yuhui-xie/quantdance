@@ -1,0 +1,194 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>因子 IC 分析报告 __TITLE__</title>
+<style>
+:root{--bg:#0e1117;--panel:#171b24;--line:#2b3240;--text:#e8edf5;--muted:#8f9bad;--blue:#55b6ff;--green:#55d187;--red:#ff7b72;--amber:#f5bd55}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px/1.5 "Microsoft YaHei","Segoe UI",sans-serif}
+header{border-bottom:1px solid var(--line);padding:22px max(24px,calc((100% - 1440px)/2))}
+h1{font-size:22px;margin:0 0 5px}.muted,.meta{color:var(--muted)}.wrap{max-width:1440px;margin:auto;padding:18px 24px 48px}
+.notice{background:#242114;border:1px solid #5f5124;color:#f5d982;border-radius:8px;padding:10px 13px;margin-bottom:14px}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-bottom:14px}
+.card,.panel{background:var(--panel);border:1px solid var(--line);border-radius:9px}.card{padding:12px 14px}.card label{display:block;color:var(--muted);font-size:12px}.card b{font-size:19px;font-variant-numeric:tabular-nums}
+.panel{padding:14px;margin-bottom:14px}.panel h2{font-size:16px;margin:0 0 11px}
+svg{display:block;width:100%;height:320px;background:#11151d;border:1px solid var(--line);border-radius:7px;touch-action:none}.grid{stroke:#252c38;stroke-width:1}.axis{fill:var(--muted);font-size:11px}.ref{stroke:#f5bd55;stroke-width:1;stroke-dasharray:6 4;opacity:.85}.ref-label{fill:#f5bd55;font-size:11px}
+.chart-tools{display:flex;justify-content:flex-end;align-items:center;gap:6px;margin:-4px 0 7px}.chart-tools .legend{display:inline-flex;flex-wrap:wrap;gap:4px 12px;margin-right:auto}.chart-tools .legend .lg{display:inline-flex;align-items:center;gap:4px;color:var(--muted);font-size:12px}.chart-tools .legend i{display:inline-block;border-radius:2px}.chart-tools .legend i.line{width:14px;height:3px}.chart-tools .hint{color:var(--muted);font-size:12px}.chart-tools button{background:#10141c;border:1px solid var(--line);color:var(--text);border-radius:5px;padding:3px 9px;cursor:pointer}.chart-tools button:hover{border-color:var(--blue)}
+.chart-tooltip{display:none;position:fixed;z-index:30;pointer-events:none;min-width:150px;padding:8px 10px;background:#090c12ed;border:1px solid #465267;border-radius:6px;box-shadow:0 5px 18px #0008;font-size:12px;font-variant-numeric:tabular-nums}.chart-tooltip b{display:block;margin-bottom:3px}.chart-tooltip div{display:flex;justify-content:space-between;gap:18px}
+.toolbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px}input,select{background:#10141c;border:1px solid var(--line);color:var(--text);padding:7px 10px;border-radius:6px}
+.scroll{max-height:560px;overflow:auto;border:1px solid var(--line);border-radius:7px}
+table{width:100%;border-collapse:collapse;font-size:12px;font-variant-numeric:tabular-nums}th,td{padding:7px 9px;border-bottom:1px solid var(--line);white-space:nowrap;text-align:right}
+th{position:sticky;top:0;background:#1c212c;color:var(--muted);cursor:pointer;z-index:1}th:nth-child(1),th:nth-child(2),td:nth-child(1),td:nth-child(2){text-align:left}
+tbody tr:hover{background:#202735}.pos{color:var(--green)}.neg{color:var(--red)}.warn{color:var(--amber)}
+.pill{padding:2px 6px;border-radius:10px;background:#273040;color:#cbd5e1}.empty{padding:18px;color:var(--muted)}footer{color:var(--muted);font-size:12px;margin-top:16px}
+@media(max-width:900px){.wrap{padding:12px}}
+</style>
+</head>
+<body>
+<header><h1>因子 IC 分析报告</h1><div class="meta" id="meta"></div></header>
+<main class="wrap">
+  <div class="notice">IC（Information Coefficient）：每个交易日对股票池横截面计算因子值 × 未来 h 期收益的秩相关系数（Spearman），汇总为均值 RankIC、RankICIR（均值/标准差）、t 值、IC&gt;0 占比与期数。IC 评价预测力，不做任何交易模拟。</div>
+  <section class="stats" id="stats"></section>
+  <section class="panel">
+    <h2>逐期 RankIC 序列</h2>
+    <div class="toolbar">
+      <select id="factorSelect"></select>
+      <select id="horizonSelect"></select>
+      <span class="muted" id="chartMeta"></span>
+    </div>
+    <svg id="icChart"></svg>
+  </section>
+  <section class="panel">
+    <h2>因子 IC 汇总</h2>
+    <div class="toolbar"><span class="muted" id="rowCount"></span></div>
+    <div class="scroll"><table>
+      <thead><tr>
+        <th data-key="factor">因子</th><th>来源</th><th data-key="horizon">持有期</th>
+        <th data-key="mean_ic">均值 RankIC</th><th data-key="icir">RankICIR</th><th data-key="t_stat">t 值</th>
+        <th data-key="ic_positive_ratio">IC&gt;0 占比</th><th data-key="n_dates">期数</th>
+      </tr></thead><tbody id="rows"></tbody>
+    </table></div>
+  </section>
+  <footer id="footer"></footer>
+</main>
+<div class="chart-tooltip" id="chartTooltip"></div>
+<script>
+const DATA=__DATA__;
+const $=id=>document.getElementById(id);
+const num=(v,d=4)=>v==null||!Number.isFinite(Number(v))?"-":Number(v).toFixed(d);
+const pct=v=>v==null||!Number.isFinite(Number(v))?"-":`${(Number(v)*100).toFixed(1)}%`;
+const cls=v=>Number(v)>0?"pos":Number(v)<0?"neg":"";
+const esc=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const SRC={screening:"选股技术",momentum:"动量/趋势",strategy:"策略信号"};
+const srcLabel=src=>SRC[src]||src||"-";
+const results=DATA.results||[];
+const flat=results.flatMap(f=>(f.horizons||[]).map(h=>({factor:f.factor,source:f.source,horizon:h.horizon,n:h.n_dates,mean:h.mean_ic,icir:h.icir,t:h.t_stat,pos:h.ic_positive_ratio,series:h.ic_series||[]})));
+
+$("meta").textContent=`${DATA.universe_note||"未注明股票池"} · ${DATA.count} 只 · ${DATA.start_date} ~ ${DATA.end_date} · 持有期 ${(DATA.horizons||[]).join("/")} · 横截面下限 ${DATA.min_cs}`;
+$("stats").innerHTML=[
+ ["标的数",DATA.count,""],["区间",`${DATA.start_date||"-"} ~ ${DATA.end_date||"-"}`,""],
+ ["因子数",results.length,""],["持有期",`${(DATA.horizons||[]).join("/")}`,""],
+ ["横截面下限",DATA.min_cs,""],["有效结果",flat.filter(r=>r.n>0).length,""]
+].map(x=>`<div class="card"><label>${x[0]}</label><b>${x[1]}</b></div>`).join("");
+$("rowCount").textContent=`${flat.length} 行`;
+$("footer").textContent=[...(DATA.warnings||[]),DATA.disclaimer].filter(Boolean).join(" · ");
+
+// ---- 图表（复用 backtest_universe.html 的交互线图实现）----
+function svgBase(svg){
+ const w=Math.max(500,svg.clientWidth||800),h=svg.clientHeight||320,p={l:52,r:18,t:18,b:30};
+ svg.setAttribute("viewBox",`0 0 ${w} ${h}`);svg.innerHTML="";
+ return {w,h,p,iw:w-p.l-p.r,ih:h-p.t-p.b};
+}
+const chartStates=new WeakMap(),activeCharts=new Set(),tooltip=$("chartTooltip");
+const DAY=86400000;
+function toTs(d){const s=String(d||"").trim(),m=/^(\d{4})-(\d{2})-(\d{2})/.exec(s);return m?Date.UTC(+m[1],+m[2]-1,+m[3]):NaN}
+function createGroup(){return{viewStartTs:null,viewEndTs:null,charts:[]}}
+function groupFullRange(g){let min=Infinity,max=-Infinity;g.charts.forEach(svg=>{const s=chartStates.get(svg);if(!s||!s.series.length)return;const a=toTs(s.series[0].date),b=toTs(s.series[s.series.length-1].date);if(a<min)min=a;if(b>max)max=b});return[isFinite(min)?min:-Infinity,isFinite(max)?max:Infinity]}
+function ensureGroupWindow(g){if(g.viewStartTs!=null&&g.viewEndTs!=null)return;const[flo,fhi]=groupFullRange(g);g.viewStartTs=flo;g.viewEndTs=fhi}
+function idxRangeFor(series,startTs,endTs){
+ const n=series.length;if(!n)return[0,0];
+ const loTs=startTs==null||!isFinite(startTs)?-Infinity:startTs,hiTs=endTs==null||!isFinite(endTs)?Infinity:endTs;
+ let a=0,b=n-1;while(a<b){const m=(a+b)>>1;if(toTs(series[m].date)<loTs)a=m+1;else b=m}
+ const lo=a;a=0;b=n-1;while(a<b){const m=(a+b+1)>>1;if(toTs(series[m].date)<=hiTs)a=m;else b=m-1}
+ return[lo,a<lo?lo:a];
+}
+function setGroupWindow(g,startTs,endTs){
+ ensureGroupWindow(g);const[flo,fhi]=groupFullRange(g);
+ let s=Math.max(flo,startTs),e=Math.min(fhi,endTs);if(e<s){const mid=(s+e)/2;s=mid;e=mid}
+ g.viewStartTs=s;g.viewEndTs=e;g.charts.forEach(c=>renderLineChart(c));
+}
+function zoomChart(svg,factor,anchor=.5){
+ const s=chartStates.get(svg);if(!s||s.series.length<3)return;const g=s.group;
+ ensureGroupWindow(g);const span=g.viewEndTs-g.viewStartTs;
+ const anchorTs=g.viewStartTs+span*Math.max(0,Math.min(1,anchor));
+ const[flo,fhi]=groupFullRange(g),total=fhi-flo;
+ const newSpan=Math.max(5*DAY,Math.min(total,span*factor));
+ let ns=anchorTs-newSpan*anchor,ne=ns+newSpan;
+ if(ns<flo){ne-=ns-flo;ns=flo}if(ne>fhi){ns-=ne-fhi;ne=fhi}
+ setGroupWindow(g,ns,ne);
+}
+function resetChart(svg){const s=chartStates.get(svg);if(!s)return;const g=s.group;g.viewStartTs=null;g.viewEndTs=null;g.charts.forEach(c=>renderLineChart(c))}
+function panChart(svg,dxPx,widthPx){
+ const s=chartStates.get(svg);if(!s||!s.drag)return;const g=s.group;
+ const span=s.drag.e0-s.drag.s0,shift=-dxPx/Math.max(widthPx,1)*span;
+ setGroupWindow(g,s.drag.s0+shift,s.drag.e0+shift);
+}
+function renderLineChart(svg){
+ const state=chartStates.get(svg),series=state.series,fields=state.fields,markers=state.markers,z=svgBase(svg);
+ state.z=z;
+ if(!series.length){svg.innerHTML='<text x="20" y="35" fill="#8f9bad">无可用序列</text>';return}
+ const [lo0,hi0]=idxRangeFor(series,state.group.viewStartTs,state.group.viewEndTs);
+ const lo=Math.max(0,Math.floor(lo0)),hi=Math.min(series.length-1,Math.ceil(hi0));
+ state.lo=lo;state.hi=hi;
+ const visible=series.slice(lo,hi+1),all=fields.flatMap(f=>visible.map(r=>Number(r[f.key])).filter(Number.isFinite));
+ if(!all.length){svg.innerHTML='<text x="20" y="35" fill="#8f9bad">无可用序列</text>';return}
+ let min=Math.min(...all),max=Math.max(...all);if(min===max){min-=.01;max+=.01}
+ const pad=(max-min)*.08;min-=pad;max+=pad;
+ const x=i=>z.p.l+(hi===lo?z.iw/2:(i-lo)*z.iw/(hi-lo)),y=v=>z.p.t+(max-v)*z.ih/(max-min);
+ state.x=x;state.y=y;
+ for(let i=0;i<5;i++){const yy=z.p.t+i*z.ih/4,val=max-i*(max-min)/4;svg.innerHTML+=`<line class="grid" x1="${z.p.l}" y1="${yy}" x2="${z.w-z.p.r}" y2="${yy}"/><text class="axis" x="4" y="${yy+4}">${num(val,2)}</text>`}
+ (state.refs||[]).forEach(r=>{const vy=y(Number(r.value));if(!Number.isFinite(vy))return;svg.innerHTML+=`<line class="ref" x1="${z.p.l}" y1="${vy}" x2="${z.w-z.p.r}" y2="${vy}"/><text class="ref-label" x="${z.w-z.p.r-4}" y="${vy-4}" text-anchor="end">${esc(r.label||"")}</text>`})
+ fields.forEach(f=>{const pts=[];for(let i=lo;i<=hi;i++){const v=Number(series[i][f.key]);if(Number.isFinite(v))pts.push(`${x(i)},${y(v)}`)}svg.innerHTML+=`<polyline fill="none" stroke="${f.color}" stroke-width="2" points="${pts.join(" ")}"/>`});
+ [lo,Math.round((lo+hi)/2),hi].forEach((i,j)=>svg.innerHTML+=`<text class="axis" text-anchor="${j===0?"start":j===2?"end":"middle"}" x="${x(i)}" y="${z.h-8}">${esc(series[i].date||"")}</text>`);
+ markers.forEach(m=>{let i=series.findIndex(r=>r.date>=m.date);if(i<lo||i>hi)return;const value=Number(series[i][fields[0].key]);if(Number.isFinite(value))svg.innerHTML+=`<circle cx="${x(i)}" cy="${y(value)}" r="4" fill="${m.side==="buy"?"#55d187":"#ff7b72"}"><title>${esc(m.date)} ${m.side==="buy"?"买入":"卖出"}</title></circle>`});
+}
+function pointerIndex(svg,e){
+ const s=chartStates.get(svg),rect=svg.getBoundingClientRect(),local=(e.clientX-rect.left)*s.z.w/rect.width;
+ const ratio=Math.max(0,Math.min(1,(local-s.z.p.l)/s.z.iw));return Math.max(0,Math.min(s.series.length-1,Math.round(s.lo+ratio*(s.hi-s.lo))));
+}
+function showPoint(svg,e){
+ const s=chartStates.get(svg);if(!s||!s.series.length||s.drag)return;const i=pointerIndex(svg,e),row=s.series[i],xx=s.x(i);
+ svg.querySelector(".hover-layer")?.remove();svg.insertAdjacentHTML("beforeend",`<g class="hover-layer"><line x1="${xx}" y1="${s.z.p.t}" x2="${xx}" y2="${s.z.h-s.z.p.b}" stroke="#8f9bad" stroke-dasharray="4 3"/>${s.fields.map(f=>{const v=Number(row[f.key]);return Number.isFinite(v)?`<circle cx="${xx}" cy="${s.y(v)}" r="4" fill="${f.color}" stroke="#fff"/>`:""}).join("")}</g>`);
+ tooltip.innerHTML=`<b>${esc(row.date||`第 ${i+1} 点`)}</b>${s.fields.map(f=>`<div><span style="color:${f.color}">${esc(f.label||f.key)}</span><strong>${f.format==="pct"?pct(row[f.key]):num(row[f.key])}</strong></div>`).join("")}`;
+ tooltip.style.display="block";const tw=tooltip.offsetWidth,th=tooltip.offsetHeight;tooltip.style.left=`${Math.min(innerWidth-tw-8,e.clientX+14)}px`;tooltip.style.top=`${Math.max(8,Math.min(innerHeight-th-8,e.clientY+14))}px`;
+}
+function installChartInteraction(svg){
+ if(svg.dataset.interactive)return;svg.dataset.interactive="1";
+ const s0=chartStates.get(svg),tools=document.createElement("div");tools.className="chart-tools";
+ const legend=(s0.fields||[]).map(f=>`<span class="lg"><i class="line" style="background:${f.color}"></i>${esc(f.label||f.key)}</span>`).join("");
+ tools.innerHTML=`<span class="legend">${legend}</span><span class="hint">滚轮缩放 · 拖拽平移 · 悬停查看</span><button data-z=".7">＋</button><button data-z="1.4">－</button><button data-reset>重置</button>`;svg.before(tools);
+ tools.querySelectorAll("[data-z]").forEach(b=>b.onclick=()=>zoomChart(svg,Number(b.dataset.z)));tools.querySelector("[data-reset]").onclick=()=>resetChart(svg);
+ svg.addEventListener("wheel",e=>{e.preventDefault();const r=svg.getBoundingClientRect();zoomChart(svg,e.deltaY>0?1.25:.8,(e.clientX-r.left)/r.width)},{passive:false});
+ svg.addEventListener("pointerdown",e=>{const s=chartStates.get(svg);ensureGroupWindow(s.group);s.drag={x:e.clientX,s0:s.group.viewStartTs,e0:s.group.viewEndTs};svg.setPointerCapture(e.pointerId)});
+ svg.addEventListener("pointermove",e=>{const s=chartStates.get(svg);if(!s.drag){showPoint(svg,e);return}const r=svg.getBoundingClientRect();panChart(svg,e.clientX-s.drag.x,r.width)});
+ const stop=()=>{const s=chartStates.get(svg);if(s)s.drag=null};svg.addEventListener("pointerup",stop);svg.addEventListener("pointercancel",stop);
+ svg.addEventListener("mouseleave",()=>{tooltip.style.display="none";svg.querySelector(".hover-layer")?.remove()});svg.addEventListener("dblclick",()=>resetChart(svg));
+}
+function lineChart(svg,series,fields,markers=[],opts={}){
+ const group=opts.group||createGroup();
+ chartStates.set(svg,{series,fields,markers,drag:null,bars:opts.bars||[],refs:opts.refs||[],candles:opts.candles||null,group});
+ activeCharts.add(svg);if(!group.charts.includes(svg))group.charts.push(svg);
+ installChartInteraction(svg);renderLineChart(svg);
+}
+// ---- 因子/持有期切换 ----
+const uniqueFactors=[...new Set(flat.map(r=>r.factor))];
+const horizons=[...new Set(flat.map(r=>r.horizon))].sort((a,b)=>a-b);
+$("factorSelect").innerHTML=uniqueFactors.map(f=>`<option value="${esc(f)}">${esc(f)}</option>`).join("");
+$("horizonSelect").innerHTML=horizons.map(h=>`<option value="${h}">持有期 ${h} 日</option>`).join("");
+const byFactor=f=>flat.find(r=>r.factor===f);
+function renderChart(){
+ const f=$("factorSelect").value,h=Number($("horizonSelect").value);
+ const row=flat.find(r=>r.factor===f&&r.horizon===h)||byFactor(f);
+ if(!row){$("icChart").innerHTML='<text x="20" y="35" fill="#8f9bad">无可用序列</text>';return}
+ activeCharts.delete($("icChart"));$("icChart").dataset.interactive="";
+ const chart=$("icChart").previousElementSibling;if(chart&&chart.classList&&chart.classList.contains("chart-tools"))chart.remove();
+ $("chartMeta").textContent=`${esc(f)} · 持有 ${h} 日 · ${row.n} 期 · 均值 RankIC ${num(row.mean)} · ICIR ${num(row.icir)} · t ${num(row.t)} · IC>0 ${pct(row.pos)}`;
+ lineChart($("icChart"),row.series||[],[{key:"ic",label:"RankIC",color:"#55b6ff"}],[],{refs:[{value:0,label:"0"}]});
+}
+$("factorSelect").onchange=renderChart;$("horizonSelect").onchange=renderChart;
+// ---- 汇总表（可排序）----
+let rows=flat.slice(),sortKey="mean_ic",sortDir=-1;
+function renderRows(){
+ const ordered=rows.slice().sort((a,b)=>{let x=a[sortKey],y=b[sortKey];if(x==null)x=sortDir>0?Infinity:-Infinity;if(y==null)y=sortDir>0?Infinity:-Infinity;return (x-y)*sortDir});
+ $("rows").innerHTML=ordered.map(r=>`<tr>
+  <td><b>${esc(r.factor)}</b></td><td><span class="pill">${esc(srcLabel(r.source))}</span></td><td>${r.horizon}</td>
+  <td class="${cls(r.mean)}">${num(r.mean)}</td><td class="${cls(r.icir)}">${num(r.icir)}</td><td class="${cls(r.t)}">${num(r.t)}</td>
+  <td class="${cls((r.pos||0)-0.5)}">${pct(r.pos)}</td><td>${r.n}</td></tr>`).join("");
+}
+document.querySelectorAll("th[data-key]").forEach(th=>th.onclick=()=>{if(sortKey===th.dataset.key)sortDir*=-1;else{sortKey=th.dataset.key;sortDir=-1}renderRows()});
+renderRows();renderChart();
+let resizeTimer;window.addEventListener("resize",()=>{clearTimeout(resizeTimer);resizeTimer=setTimeout(()=>activeCharts.forEach(renderLineChart),100)});
+</script>
+</body>
+</html>

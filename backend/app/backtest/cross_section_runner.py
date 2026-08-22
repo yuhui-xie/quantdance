@@ -19,6 +19,7 @@ from app.backtest.shared_engine import build_close_panel, run_shared_backtest
 from app.backtest_engine import run_from_signals
 from app.data_sources.em_fundamentals import load_fundamentals_panel
 from app.data_sources.financial_reports import load_financials_panel
+from app.fundamental_filter import apply_fundamental_filter
 from app.data_sources.market_data import (
     MarketDataError,
     fetch_a_share_daily,
@@ -67,6 +68,8 @@ def deprecated_decision_interval_warning(request: BacktestRequest) -> str | None
 def _resolve_universe(
     request: BacktestRequest,
     spec: CrossSectionStrategySpec,
+    *,
+    asof: str | None = None,
 ) -> tuple[list[dict[str, str]], str]:
     requested_universe = request.universe
     if "universe" not in request.model_fields_set:
@@ -96,7 +99,35 @@ def _resolve_universe(
         max_universe=request.max_universe,
         seed=request.seed,
         default_universe=spec.default_universe,
+        asof=asof,
     )
+
+
+def _apply_universe_fundamental_filter(
+    universe: list[dict[str, str]],
+    panel: dict[str, dict[str, pd.DataFrame]],
+    request: BacktestRequest,
+    *,
+    start: str | None,
+) -> tuple[list[dict[str, str]], str]:
+    """复用已载入的估值面板对股票池做基本面筛选，返回 (筛选后的 rows, 追加说明)。"""
+    if not request.fundamental_filter:
+        return universe, ""
+    asof = (request.fundamental_asof or start or "").strip()
+    if not asof:
+        asof = _latest_asof(panel, None)
+    kept, filter_warnings = apply_fundamental_filter(
+        universe,
+        request.fundamental_filter,
+        asof=asof,
+        panel=panel,
+    )
+    warnings = list(filter_warnings)
+    if kept:
+        warnings.append(
+            f"基本面筛选（{asof}）后剩 {len(kept)} 只。"
+        )
+    return kept, "；".join(warnings)
 
 
 def _load_panel(
@@ -197,14 +228,28 @@ def run_cross_section_screen(
     params = params_for_cross_section(spec, request)
     if spec.requires_symbols and not request.symbols:
         raise ValueError(f"{spec.id} 策略须通过 symbols 显式提供标的池")
-    universe, note = _resolve_universe(request, spec)
+    universe, note = _resolve_universe(
+        request,
+        spec,
+        asof=(request.fundamental_asof or request.start_date or "").strip() or None,
+    )
     symbols = [row["symbol"] for row in universe]
     names = {row["symbol"]: row.get("name") or "" for row in universe}
     panel = _load_panel(symbols, request, spec=spec)
+    filter_note = ""
+    if request.fundamental_filter:
+        universe, filter_note = _apply_universe_fundamental_filter(
+            universe, panel, request, start=request.start_date
+        )
+        symbols = [row["symbol"] for row in universe]
+        names = {row["symbol"]: row.get("name") or "" for row in universe}
     requested = (request.end_date or "").strip()[:10]
     asof = _latest_asof(panel, requested or None)
     _, details = spec.select(asof, CrossSectionContext(panel=panel, names=names), params)
     warnings = list(spec.warnings)
+    if filter_note:
+        note = f"{note}（{filter_note}）"
+        warnings.append(filter_note)
     if warn := deprecated_decision_interval_warning(request):
         warnings.append(warn)
     if requested and requested != asof:
@@ -240,12 +285,21 @@ def run_cross_section_backtest(
     if spec.requires_symbols and not request.symbols:
         raise ValueError(f"{spec.id} 策略须通过 symbols 显式提供标的池")
 
-    universe, note = _resolve_universe(request, spec)
+    universe, note = _resolve_universe(request, spec, asof=start or None)
     symbols = [row["symbol"] for row in universe]
     names = {row["symbol"]: row.get("name") or "" for row in universe}
     panel = _load_panel(symbols, request, spec=spec)
+    filter_note = ""
+    if request.fundamental_filter:
+        universe, filter_note = _apply_universe_fundamental_filter(
+            universe, panel, request, start=start
+        )
+        symbols = [row["symbol"] for row in universe]
+        names = {row["symbol"]: row.get("name") or "" for row in universe}
     clipped: dict[str, pd.DataFrame] = {}
     for symbol, payload in panel.items():
+        if symbol not in set(symbols):
+            continue
         value = payload["value"].copy()
         value = value[(value["date"] >= start) & (value["date"] <= end)]
         if len(value) >= 5:
@@ -297,6 +351,9 @@ def run_cross_section_backtest(
     )
     latest = decision_dates[-1]
     warnings = list(spec.warnings)
+    if filter_note:
+        note = f"{note}（{filter_note}）"
+        warnings.append(filter_note)
     if warn := deprecated_decision_interval_warning(request):
         warnings.append(warn)
     out = {
@@ -374,14 +431,23 @@ def run_cross_section_per_stock_backtest(
     if spec.requires_symbols and not request.symbols:
         raise ValueError(f"{spec.id} 策略须通过 symbols 显式提供标的池")
 
-    universe, note = _resolve_universe(request, spec)
+    universe, note = _resolve_universe(request, spec, asof=start or None)
     symbols = [row["symbol"] for row in universe]
     names = {row["symbol"]: row.get("name") or "" for row in universe}
     panel = _load_panel(symbols, request, spec=spec)
+    filter_note = ""
+    if request.fundamental_filter:
+        universe, filter_note = _apply_universe_fundamental_filter(
+            universe, panel, request, start=start
+        )
+        symbols = [row["symbol"] for row in universe]
+        names = {row["symbol"]: row.get("name") or "" for row in universe}
 
     # ---- 裁剪数据区间 ----
     clipped: dict[str, pd.DataFrame] = {}
     for symbol, payload in panel.items():
+        if symbol not in set(symbols):
+            continue
         value = payload["value"].copy()
         value = value[(value["date"] >= start) & (value["date"] <= end)]
         if len(value) >= 5:
@@ -524,6 +590,9 @@ def run_cross_section_per_stock_backtest(
     skipped = sum(run.status == "skipped" for run in runs)
     failed = sum(run.status == "failed" for run in runs)
     warnings: list[str] = list(spec.warnings)
+    if filter_note:
+        note = f"{note}（{filter_note}）"
+        warnings.append(filter_note)
     if warn := deprecated_decision_interval_warning(request):
         warnings.append(warn)
     if skipped:

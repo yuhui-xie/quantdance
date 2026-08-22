@@ -6,15 +6,19 @@
 - ``linreg``：最小二乘线性回归（斜率, R²）；
 - ``price_history``：取 asof 及之前的日线历史（保留存在的 OHLC 列），排序去重；
 - ``bias_momentum`` / ``slope_momentum`` / ``efficiency_momentum``：三因子动量；
-- ``simple_momentum``：简单区间动量 close/base - 1。
+- ``simple_momentum``：简单区间动量 close/base - 1；
+- ``*_momentum_factor``：动量标量的 DataFrame→Series 便捷包装，供 IC 分析复用
+  （末值 == 对应标量，见 :func:`simple_momentum_factor`）。
 """
 
 from __future__ import annotations
 
-from typing import Sequence
+from typing import Callable, Sequence
 
 import numpy as np
 import pandas as pd
+
+from app.factors.base import FactorSpec
 
 
 def linreg(x: np.ndarray, y: np.ndarray) -> tuple[float, float]:
@@ -122,3 +126,73 @@ def efficiency_momentum(
     volatility = float(np.abs(np.diff(log_p)).sum())
     efficiency_ratio = direction / volatility if volatility > 0 else 0.0
     return momentum * efficiency_ratio
+
+
+# ---------------------------------------------------------------------------
+# DataFrame → Series 因子 handler（供 IC 分析复用，末值 == 对应标量）
+# ---------------------------------------------------------------------------
+
+def _rolling_scalar_series(
+    df: pd.DataFrame,
+    *,
+    scalar: Callable,
+    window: int,
+    needs_ohlc: bool = False,
+) -> pd.Series:
+    """滚动包装器：对每个时间窗直接调用标量函数，得到整条因子序列。
+
+    IC 评价需要因子在每个时点 t 的值，而上文的动量标量只算末根 K 线（取最后窗口）。
+    此包装器按 t 逐一传入截至 t 的历史，复用该标量，保证「IC 因子 == 标量」且公式
+    权威仍在标量函数中。``needs_ohlc=True`` 时传入整段 DataFrame（efficiency 需要
+    open/high/low/close）。
+    """
+    out = pd.Series(np.nan, index=df.index)
+    for i in range(window - 1, len(df)):
+        if needs_ohlc:
+            piece = df.iloc[: i + 1]
+        else:
+            piece = df["close"].astype(float).to_numpy()[: i + 1]
+        v = scalar(piece)
+        if v is not None and np.isfinite(v):
+            out.iloc[i] = v
+    return out
+
+
+def simple_momentum_factor(df: pd.DataFrame) -> pd.Series:
+    """简单区间动量（lookback=20）的 IC 因子序列，末值 == simple_momentum(c, 20)。"""
+    return _rolling_scalar_series(
+        df, scalar=lambda c: simple_momentum(c, 20), window=21
+    )
+
+
+def bias_momentum_factor(df: pd.DataFrame) -> pd.Series:
+    """乖离动量（ma=20, momentum=5）的 IC 因子序列，末值 == bias_momentum(c, 20, 5)。"""
+    return _rolling_scalar_series(
+        df, scalar=lambda c: bias_momentum(c, 20, 5), window=25
+    )
+
+
+def slope_momentum_factor(df: pd.DataFrame) -> pd.Series:
+    """斜率动量（slope_days=5）的 IC 因子序列，末值 == slope_momentum(c, 5)。"""
+    return _rolling_scalar_series(
+        df, scalar=lambda c: slope_momentum(c, 5), window=5
+    )
+
+
+def efficiency_momentum_factor(df: pd.DataFrame) -> pd.Series:
+    """效率动量（efficiency_days=5）的 IC 因子序列，末值 == efficiency_momentum(h, 5)。"""
+    return _rolling_scalar_series(
+        df,
+        scalar=lambda h: efficiency_momentum(h, 5),
+        window=5,
+        needs_ohlc=True,
+    )
+
+
+# 本模块导出的因子注册（供 app/factors/registry.py 自动汇总）
+FACTORS: list[FactorSpec] = [
+    FactorSpec("simple_momentum", simple_momentum_factor, min_bars=21, source="momentum"),
+    FactorSpec("bias_momentum", bias_momentum_factor, min_bars=25, source="momentum"),
+    FactorSpec("slope_momentum", slope_momentum_factor, min_bars=5, source="momentum"),
+    FactorSpec("efficiency_momentum", efficiency_momentum_factor, min_bars=5, source="momentum"),
+]

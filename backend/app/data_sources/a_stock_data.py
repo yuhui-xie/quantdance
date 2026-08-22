@@ -16,12 +16,18 @@ from app.data_sources.mootdx_market_sdk import (
     MootdxQuote,
     MootdxStockInfo,
     MootdxTrade,
+    _KLINE_ADJUST,
 )
 from app.data_sources.tencent_finance_sdk import (
     TencentFinanceError,
     TencentFinanceSDK,
     ValuationData,
 )
+
+# K 线缓存格式版本：前复权实现或字段语义有破坏性变更时递增，使旧缓存整体作废重拉。
+# v1→v3：修正前复权（从 mootdx 自带的有断层的 adjust 改为本地按除权记录折算）。
+# 旧缓存（v1/v2）可能含除权日虚假断层或未折算的原始价，必须重建。
+_KLINE_CACHE_VERSION = 3
 
 
 class AStockDataError(Exception):
@@ -204,6 +210,12 @@ class AStockDataSDK:
         payload = self._read_cache("klines", period, f"{symbol}.json")
         if payload is None or (not allow_stale and not self._cache_is_fresh(payload)):
             return None
+        # 缓存须带当前格式版本；旧版本（含复权口径变更前带除权断层的数据）整体作废重拉。
+        if payload.get("version") != _KLINE_CACHE_VERSION:
+            return None
+        # 复权标记兜底校验（v1 曾出现"带 adjust 标记但仍是坏数据"的缓存）。
+        if payload.get("adjust") != _KLINE_ADJUST:
+            return None
         try:
             requested_count = int(payload.get("requested_count", 0))
         except (TypeError, ValueError):
@@ -235,6 +247,8 @@ class AStockDataSDK:
                 "symbol": symbol,
                 "period": period,
                 "requested_count": requested_count,
+                "version": _KLINE_CACHE_VERSION,
+                "adjust": _KLINE_ADJUST,
                 "cached_at": self._today(),
                 "rows": merged_rows,
             },

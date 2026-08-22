@@ -109,13 +109,14 @@ def test_backtest_request_can_define_output_options(tmp_path):
     )
     args = build_parser().parse_args(["backtest", "--request", str(request_path)])
 
-    output, as_json, report, report_top_k = _resolve_backtest_output_options(args)
+    output, as_json, report, report_top_k, report_price_top_k = _resolve_backtest_output_options(args)
 
     assert output is None
     assert as_json is True
     assert report is not None
     assert report.as_posix() == "out/example.html"
     assert report_top_k is None
+    assert report_price_top_k is None
 
 
 def test_backtest_universe_report_automatically_includes_indicators(

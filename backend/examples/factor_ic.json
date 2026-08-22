@@ -1,0 +1,10 @@
+{
+  "universe": "etf_core",
+  "max_universe": 500,
+  "seed": 42,
+  "start_date": "2023-01-01",
+  "end_date": "2026-12-31",
+  "horizons": [5, 10, 20],
+  "min_cs": 5,
+  "factors": ["llt_slope ", "adx", "chop", "vpt", "vpt_slope", "llt"]
+}

@@ -383,6 +383,165 @@ def fetch_index_universe(
     return out, note
 
 
+def _finalize_index_rows(
+    rows: list[dict[str, str]],
+    *,
+    index_name: str,
+    max_universe: int,
+    seed: int | None,
+    source_desc: str,
+    bias_warning: str,
+) -> tuple[list[dict[str, str]], str]:
+    """对成分股 rows 按 max_universe/seed 抽样去重，返回 (out, note)。
+
+    source_desc 描述来源（如"当前成分股"/"2024-06-14 时点成分股"），bias_warning
+    追加在 note 末尾；历史时点路径无幸存者偏差，bias_warning 传空串。
+    """
+    if max_universe < 1:
+        raise ValueError("max_universe 至少为 1")
+    total = len(rows)
+    if total == 0:
+        raise MarketDataError(f"{index_name}成分股解析后为空")
+    n_take = min(max_universe, total)
+    if total <= n_take:
+        return rows, f"{index_name}{source_desc}共 {total} 只，已全部纳入本次回测。{bias_warning}"
+    if seed is not None:
+        rng = random.Random(seed)
+        sampled = list(rows)
+        rng.shuffle(sampled)
+        return (
+            sampled[:n_take],
+            f"{index_name}{source_desc}共 {total} 只，已使用随机种子 {seed} 抽样 {n_take} 只。{bias_warning}",
+        )
+    out = sorted(rows, key=lambda x: x["symbol"])[:n_take]
+    return (
+        out,
+        f"{index_name}{source_desc}共 {total} 只，已按代码升序截取前 {n_take} 只。{bias_warning}",
+    )
+
+
+_CONSTITUTION_INDEX_MAP: dict[str, str] = {
+    "000300": "csi300",
+    "000905": "csi500",
+}
+
+
+def _attach_names_from_spot(
+    symbols: list[str],
+) -> tuple[dict[str, str], bool]:
+    """用 akshare 全市场快照补干净名称，返回 (symbol->name 映射, 是否成功)。
+
+    index_constitution 包内的 name 列乱码不可用，故用 akshare 的
+    stock_zh_a_spot_em（一次拉全市场代码->名称）补名。失败或缺码时 name 为空。
+    """
+    try:
+        import akshare as ak  # type: ignore[import-not-found]
+    except Exception:  # pragma: no cover - 依赖环境分支
+        return {}, False
+    try:
+        spot = ak.stock_zh_a_spot_em()
+    except Exception:  # pragma: no cover - 网络/源异常
+        return {}, False
+    code_col = _first_existing_column(spot, ("代码", "code", "证券代码"))
+    name_col = _first_existing_column(spot, ("名称", "name", "证券简称"))
+    if code_col is None or name_col is None:
+        return {}, False
+    name_map: dict[str, str] = {}
+    for _, r in spot.iterrows():
+        code = re.sub(r"\D", "", str(r.get(code_col, "")))[-6:]
+        if re.fullmatch(r"\d{6}", code):
+            name_map[code] = str(r.get(name_col, "")).strip()
+    return name_map, True
+
+
+def fetch_index_universe_at(
+    index_code: str,
+    asof: str | date | datetime,
+    *,
+    index_name: str,
+    max_universe: int = 300,
+    seed: int | None = None,
+) -> tuple[list[dict[str, str]], str]:
+    """拉取指数在某历史时点 asof 的成分股（index_constitution），避开幸存者偏差。
+
+    支持 csi300/csi500；其余指数或包不可用时回退 fetch_index_universe（当前成分，
+    仍有幸存者偏差，note 注明）。symbol 统一归一为裸 6 位码，名称用 akshare 补。
+    """
+    asof_s = str(asof)[:10]
+    key = _CONSTITUTION_INDEX_MAP.get(index_code)
+    if key is not None:
+        try:
+            import index_constitution as ic  # type: ignore[import-not-found]
+        except Exception:  # pragma: no cover - 依赖环境分支
+            ic = None
+        if ic is not None:
+            try:
+                df = ic.constituents_at(key, asof_s)
+                rows: list[dict[str, str]] = []
+                seen: set[str] = set()
+                for _, r in df.iterrows():
+                    code = re.sub(r"\D", "", str(r.get("symbol", "")))[-6:]
+                    if not re.fullmatch(r"\d{6}", code) or code in seen:
+                        continue
+                    seen.add(code)
+                    rows.append({"symbol": code, "name": ""})
+                if rows:
+                    name_map, _ = _attach_names_from_spot([x["symbol"] for x in rows])
+                    for row in rows:
+                        row["name"] = name_map.get(row["symbol"], "")
+                    # 历史时点成分股本身无幸存者偏差；名称补全失败不影响成分正确性
+                    return _finalize_index_rows(
+                        rows,
+                        index_name=index_name,
+                        max_universe=max_universe,
+                        seed=seed,
+                        source_desc=f"{asof_s} 时点成分股",
+                        bias_warning="",
+                    )
+            except Exception:  # pragma: no cover - 数据/解析异常
+                ic = None  # 落回 akshare 当前成分
+    rows, note = fetch_index_universe(
+        index_code, index_name=index_name, max_universe=max_universe, seed=seed
+    )
+    return rows, note
+
+
+def fetch_hs300_universe_at(
+    asof: str | date | datetime,
+    max_universe: int = 300,
+    *,
+    seed: int | None = None,
+) -> tuple[list[dict[str, str]], str]:
+    """拉取沪深300在历史时点 asof 的成分股。"""
+    return fetch_index_universe_at(
+        "000300", asof, index_name="沪深300", max_universe=max_universe, seed=seed
+    )
+
+
+def fetch_zz500_universe_at(
+    asof: str | date | datetime,
+    max_universe: int = 500,
+    *,
+    seed: int | None = None,
+) -> tuple[list[dict[str, str]], str]:
+    """拉取中证500在历史时点 asof 的成分股。"""
+    return fetch_index_universe_at(
+        "000905", asof, index_name="中证500", max_universe=max_universe, seed=seed
+    )
+
+
+def fetch_zz1000_universe_at(
+    asof: str | date | datetime,
+    max_universe: int = 1000,
+    *,
+    seed: int | None = None,
+) -> tuple[list[dict[str, str]], str]:
+    """中证1000在历史时点的成分股：index_constitution 未覆盖，回退 akshare 当前成分。"""
+    return fetch_index_universe_at(
+        "000852", asof, index_name="中证1000", max_universe=max_universe, seed=seed
+    )
+
+
 def fetch_hs300_universe(
     max_universe: int = 300,
     *,
@@ -467,6 +626,48 @@ def fetch_gz2000_universe(
     )
 
 
+def _parse_etf_df(
+    ak: Any,
+    func_name: str,
+    *,
+    func_args: tuple[str, ...] = (),
+    code_cols: tuple[str, ...],
+    name_cols: tuple[str, ...],
+    strip_prefix: bool = False,
+) -> list[dict[str, str]]:
+    """调用某个 akshare ETF 接口并解析为 [{"symbol","name"}]。
+
+    symbol 统一为 6 位数字代码；sina 的代码形如 "sz159998"，通过 strip_prefix 剥掉市场前缀。
+    接口缺失、返回空或解析后无有效代码时返回空列表（由调用方决定是否继续尝试下一数据源）。
+    """
+    func = getattr(ak, func_name, None)
+    if not callable(func):
+        return []
+    df = func(*func_args)
+    if not isinstance(df, pd.DataFrame) or df.empty:
+        return []
+
+    code_col = _first_existing_column(df, code_cols)
+    name_col = _first_existing_column(df, name_cols)
+    if code_col is None:
+        return []
+
+    rows: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for _, row in df.iterrows():
+        code = str(row.get(code_col, "")).strip()
+        if strip_prefix:
+            code = code[-6:]  # "sz159998" -> "159998"
+        if not re.fullmatch(r"\d{6}", code):
+            continue
+        if code in seen:
+            continue
+        seen.add(code)
+        name = str(row.get(name_col, "")).strip() if name_col is not None else ""
+        rows.append({"symbol": code, "name": name})
+    return rows
+
+
 def fetch_etf_universe(
     max_universe: int = 500,
     *,
@@ -486,36 +687,38 @@ def fetch_etf_universe(
     except Exception as e:  # pragma: no cover - 依赖环境分支
         raise MarketDataError(f"akshare 不可用，无法获取 ETF 列表: {e}") from e
 
-    func = getattr(ak, "fund_etf_spot_em", None)
-    if not callable(func):
-        raise MarketDataError("未找到可用的 akshare ETF 接口 fund_etf_spot_em")
-    try:
-        df = func()
-    except Exception as e:
-        raise MarketDataError(f"akshare ETF 列表获取失败: {e}") from e
-    if not isinstance(df, pd.DataFrame) or df.empty:
-        raise MarketDataError("akshare ETF 列表为空")
+    # 多数据源备用链：东财实时 → 同花顺 → 新浪分类。单个失败自动尝试下一个，
+    # 全部失败才抛 MarketDataError（东财 fund_etf_spot_em 常被风控/限流）。
+    # 每项为 (接口名, 调用位置参数, 代码列候选, 名称列候选, 代码是否带 sh/sz 前缀)。
+    providers: tuple[tuple[str, tuple[str, ...], tuple[str, ...], tuple[str, ...], bool], ...] = (
+        ("fund_etf_spot_em", (), ("代码", "code", "symbol"), ("名称", "name"), False),
+        ("fund_etf_spot_ths", (), ("基金代码", "代码", "code", "symbol"), ("基金简称", "基金名称", "名称", "name"), False),
+        ("fund_etf_category_sina", ("ETF基金",), ("代码", "code"), ("名称", "name"), True),
+    )
 
-    code_col = _first_existing_column(df, ("代码", "code", "symbol"))
-    name_col = _first_existing_column(df, ("名称", "name"))
-    if code_col is None:
-        raise MarketDataError("akshare ETF 列表缺少代码列")
-
+    errors: list[str] = []
     rows: list[dict[str, str]] = []
-    seen: set[str] = set()
-    for _, row in df.iterrows():
-        code = str(row.get(code_col, "")).strip()
-        if not re.fullmatch(r"\d{6}", code):
+    for func_name, func_args, code_cols, name_cols, strip_prefix in providers:
+        try:
+            parsed = _parse_etf_df(
+                ak,
+                func_name,
+                func_args=func_args,
+                code_cols=code_cols,
+                name_cols=name_cols,
+                strip_prefix=strip_prefix,
+            )
+        except Exception as e:  # 单个数据源失败，记录后继续尝试下一个
+            errors.append(f"{func_name}: {e}")
             continue
-        if code in seen:
-            continue
-        seen.add(code)
-        name = str(row.get(name_col, "")).strip() if name_col is not None else ""
-        rows.append({"symbol": code, "name": name})
+        if parsed:
+            rows = parsed
+            break
 
     total = len(rows)
     if total == 0:
-        raise MarketDataError("akshare ETF 列表解析后为空")
+        detail = "；".join(errors) if errors else "所有 akshare ETF 接口均不可用"
+        raise MarketDataError(f"akshare ETF 列表获取失败: {detail}")
 
     n_take = min(max_universe, total)
     if total <= n_take:

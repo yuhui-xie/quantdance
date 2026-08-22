@@ -13,6 +13,16 @@ from app.data_sources.market_data import (
     fetch_a_share_universe,
     fetch_a_share_valuation_snapshot,
 )
+from app.factors.screen_factors import (
+    amihud_illiquidity_factor,
+    ma_spread_factor,
+    price_vs_ma5_factor,
+    relative_volume_factor,
+    return_factor,
+    sma5_slope_factor,
+    volatility_factor,
+    volume_ratio_factor,
+)
 from app.schemas import ScreenFactorConfig, ScreenItem, ScreenRequest, ScreenResponse
 
 PresetId = Literal[
@@ -154,12 +164,12 @@ def compute_momentum_breakdown(df: pd.DataFrame) -> dict[str, float] | None:
     if len(df) < 61:
         return None
     close = df["close"].astype(float)
-    ret_20 = float(close.iloc[-1] / close.iloc[-21] - 1.0)
-    ret_60 = float(close.iloc[-1] / close.iloc[-61] - 1.0)
+    ret_20 = float(return_factor(df, 20).iloc[-1])
+    ret_60 = float(return_factor(df, 60).iloc[-1])
     daily = close.pct_change().dropna()
     if len(daily) < 20:
         return None
-    vol_20 = float(daily.iloc[-20:].std())
+    vol_20 = float(volatility_factor(df, 20).iloc[-1])
     if not np.isfinite(vol_20):
         vol_20 = 0.0
     return {"ret_20": ret_20, "ret_60": ret_60, "vol_20": vol_20}
@@ -169,24 +179,14 @@ def compute_volume_pulse_breakdown(df: pd.DataFrame) -> dict[str, float] | None:
     """量比（相对过去 20 日均量，不含当日）+ 相对短期均线位置。优先用成交额。"""
     if len(df) < 25:
         return None
-    close = df["close"].astype(float)
-    if "amount" in df.columns:
-        amount = pd.to_numeric(df["amount"], errors="coerce")
-        if amount.notna().any() and float(amount.fillna(0).abs().sum()) > 0:
-            activity = amount.astype(float)
-        else:
-            activity = df["volume"].astype(float)
-    else:
-        activity = df["volume"].astype(float)
-    # 过去 20 日均量，不含当日
-    vol_ma = float(activity.iloc[-21:-1].mean())
-    if vol_ma < 1e-12:
+    vol_ratio = float(volume_ratio_factor(df).iloc[-1])
+    if not np.isfinite(vol_ratio):
         return None
-    vol_ratio = float(activity.iloc[-1] / vol_ma)
+    close = df["close"].astype(float)
     sma5 = float(close.iloc[-5:].mean())
     if sma5 < 1e-12:
         return None
-    price_vs_ma5 = float(close.iloc[-1] / sma5 - 1.0)
+    price_vs_ma5 = float(price_vs_ma5_factor(df).iloc[-1])
     return {"vol_ratio": vol_ratio, "price_vs_ma5": price_vs_ma5}
 
 
@@ -195,17 +195,12 @@ def compute_ma_alignment_breakdown(df: pd.DataFrame) -> dict[str, float] | None:
     if len(df) < 25:
         return None
     close = df["close"].astype(float)
-    sma5 = close.rolling(5).mean()
-    sma20 = close.rolling(20).mean()
-    s5 = float(sma5.iloc[-1])
-    s20 = float(sma20.iloc[-1])
+    s20 = float(close.rolling(20).mean().iloc[-1])
     if s20 < 1e-12:
         return None
-    spread = (s5 - s20) / s20
-    s5_prev = float(sma5.iloc[-4]) if len(sma5) >= 4 else s5
-    denom = abs(s5_prev) if abs(s5_prev) > 1e-12 else 1.0
-    slope_sma5 = (s5 - s5_prev) / denom
-    return {"ma_spread": float(spread), "sma5_slope": float(slope_sma5)}
+    spread = float(ma_spread_factor(df).iloc[-1])
+    slope_sma5 = float(sma5_slope_factor(df).iloc[-1])
+    return {"ma_spread": spread, "sma5_slope": slope_sma5}
 
 
 def compute_low_volatility_breakdown(df: pd.DataFrame) -> dict[str, float] | None:
@@ -216,8 +211,8 @@ def compute_low_volatility_breakdown(df: pd.DataFrame) -> dict[str, float] | Non
     daily = close.pct_change().dropna()
     if len(daily) < 60:
         return None
-    vol_20 = float(daily.iloc[-20:].std())
-    vol_60 = float(daily.iloc[-60:].std())
+    vol_20 = float(volatility_factor(df, 20).iloc[-1])
+    vol_60 = float(volatility_factor(df, 60).iloc[-1])
     if not np.isfinite(vol_20):
         vol_20 = 0.0
     if not np.isfinite(vol_60):
@@ -229,9 +224,8 @@ def compute_short_reversal_breakdown(df: pd.DataFrame) -> dict[str, float] | Non
     """近 5/10 日收益：偏好更低近期收益（与动量预设相反，偏短期反转/超跌）。"""
     if len(df) < 12:
         return None
-    close = df["close"].astype(float)
-    ret_5 = float(close.iloc[-1] / close.iloc[-6] - 1.0)
-    ret_10 = float(close.iloc[-1] / close.iloc[-11] - 1.0)
+    ret_5 = float(return_factor(df, 5).iloc[-1])
+    ret_10 = float(return_factor(df, 10).iloc[-1])
     return {"ret_5": ret_5, "ret_10": ret_10}
 
 
@@ -239,16 +233,10 @@ def compute_liquidity_breakdown(df: pd.DataFrame) -> dict[str, float] | None:
     """相对成交量（今日量/20 日均量）与 Amihud 风格非流动性（|r|/成交量，越低越易成交）。"""
     if len(df) < 21:
         return None
-    close = df["close"].astype(float)
-    vol = df["volume"].astype(float)
-    vm = float(vol.iloc[-20:].mean())
-    if vm < 1e-12:
+    rel_vol = float(relative_volume_factor(df).iloc[-1])
+    if not np.isfinite(rel_vol):
         return None
-    rel_vol = float(vol.iloc[-1] / vm)
-    ret = close.pct_change()
-    r20 = ret.iloc[-20:]
-    v20 = vol.iloc[-20:]
-    illiq = float((r20.abs() / (v20 + 1e-6)).mean())
+    illiq = float(amihud_illiquidity_factor(df).iloc[-1])
     if not np.isfinite(illiq):
         illiq = 0.0
     return {"rel_vol": rel_vol, "amihud_illiq_20": illiq}

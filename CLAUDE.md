@@ -67,7 +67,7 @@ python -m app.script stock-search 贵州茅台
 - `app/data_sources/a_stock_data.py`：统一门面 `AStockDataSDK`，聚合 mootdx（K 线/快照/逐笔）+ 腾讯财经（估值/搜索）。日线回测与选股均经此。
 - `app/data_sources/market_data.py`：`fetch_a_share_daily`（返回 `DatetimeIndex` 索引的 OHLCV DataFrame，前复权）、`fetch_*_universe`（指数成分股，用 akshare）。**行情失败会直接抛 `MarketDataError`，不会回退到合成/其他源。**
 - `app/data_sources/em_fundamentals.py` / `financial_reports.py`：横截面策略的基本面面板与财报面板。
-- 缓存：K 线与股票池按日新鲜度缓存到 `backend/data/a_stock_data/`，可用环境变量 `QUANTDANCE_A_STOCK_DATA_CACHE`（`0` 关闭）与 `QUANTDANCE_A_STOCK_DATA_CACHE_DIR` 控制。
+- 缓存：K 线与股票池按日新鲜度缓存到 `backend/data/a_stock_data/`，可用环境变量 `QUANTDANCE_A_STOCK_DATA_CACHE`（`0` 关闭）与 `QUANTDANCE_A_STOCK_DATA_CACHE_DIR` 控制。K 线缓存带 `version`/`adjust` 标记，前复权实现有破坏性变更时递增 `_KLINE_CACHE_VERSION` 以整体重建（见 `docs/data-adjustment.md`）。
 
 ### 股票池与选股
 

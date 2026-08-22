@@ -189,7 +189,7 @@ def test_run_limit_up_pullback_backtest_mocked(monkeypatch):
 
     monkeypatch.setattr(
         "app.backtest.cross_section_runner._resolve_universe",
-        lambda _req, default_universe=None: (
+        lambda _req, default_universe=None, **_kwargs: (
             [{"symbol": s, "name": "测试"} for s in panel],
             "mock",
         ),
@@ -223,7 +223,7 @@ def test_screen_future_date_falls_back_to_latest_data(monkeypatch):
 
     monkeypatch.setattr(
         "app.backtest.cross_section_runner._resolve_universe",
-        lambda _req, default_universe=None: (
+        lambda _req, default_universe=None, **_kwargs: (
             [{"symbol": "000001", "name": "测试"}],
             "mock",
         ),

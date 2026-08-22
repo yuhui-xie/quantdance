@@ -16,6 +16,7 @@ from app.backtest.cross_section_runner import (
     run_cross_section_screen,
 )
 from app.data_sources.market_data import fetch_a_share_daily
+from app.fundamental_filter import apply_fundamental_filter
 from app.schemas import (
     BacktestRequest,
     BacktestSymbolRun,
@@ -157,7 +158,23 @@ def run_backtest_universe_request(
         universe=body.universe,
         max_universe=body.max_universe,
         seed=body.seed,
+        asof=(body.fundamental_asof or body.start_date or "").strip() or None,
     )
+    filter_warnings: list[str] = []
+    if body.fundamental_filter:
+        asof = (body.fundamental_asof or body.start_date or "").strip()
+        if not asof:
+            raise ValueError("使用 fundamental_filter 时须提供 start_date 或 fundamental_asof")
+        universe, filter_warnings = apply_fundamental_filter(
+            universe,
+            body.fundamental_filter,
+            asof=asof,
+            use_cache=body.use_cache,
+            force_refresh=body.force_refresh,
+            max_workers=body.max_workers,
+        )
+        if universe:
+            note = f"{note}（基本面筛选后剩 {len(universe)} 只）"
     if not universe:
         raise ValueError("股票池为空，无法回测")
 
@@ -210,7 +227,7 @@ def run_backtest_universe_request(
 
     skipped = sum(run.status == "skipped" for run in runs)
     failed = sum(run.status == "failed" for run in runs)
-    warnings: list[str] = []
+    warnings: list[str] = list(filter_warnings)
     if skipped:
         warnings.append(f"{skipped} 只股票因行情为空或 K 线不足被跳过。")
     if failed:

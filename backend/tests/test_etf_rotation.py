@@ -75,7 +75,7 @@ def test_run_etf_rotation_backtest_with_market_data(monkeypatch):
     monkeypatch.setattr("app.backtest.cross_section_runner.fetch_a_share_daily", fake_daily)
     monkeypatch.setattr(
         "app.backtest.cross_section_runner._resolve_universe",
-        lambda _req, default_universe=None: (
+        lambda _req, default_universe=None, **_kwargs: (
             [{"symbol": symbol, "name": symbol} for symbol in symbols],
             "mock ETF pool",
         ),

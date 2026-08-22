@@ -74,7 +74,7 @@ python -m app.script backtest --mode universe --universe hs300 \
 | `strategy_id` | 横截面策略 id（见 `backtest --list-strategies`） |
 | `mode` | `universe` 共享资金回测；`screen` 仅做截面选股 |
 | `data_source` | 行情源，目前仅支持 `a_stock_data` |
-| `universe` | `symbols` 为空时的股票池：`all_a`（全A）/ `hs300` / `zz500` / `zz399101`（中小综指）/ `zz1000`（中证1000）/ `gz2000`（国证2000）/ `star50`（科创50）/ `star_board`（科创板全板块）/ `etf`（场内 ETF） |
+| `universe` | `symbols` 为空时的股票池：`all_a`（全A）/ `hs300` / `zz500` / `zz399101`（中小综指）/ `zz1000`（中证1000）/ `gz2000`（国证2000）/ `star50`（科创50）/ `star_board`（科创板全板块）/ `etf`（场内 ETF）。也支持 `backend/config/*_pool.json` 里的预设池，用文件名前缀即可，如 `etf_core`（读 `config/etf_core_pool.json`），或显式 `config:etf_core` |
 | `symbols` | 显式股票列表；非空时覆盖 `universe` |
 | `max_universe` | 股票池上限（组合请求 1~10000）；超出时截取或按 `seed` 抽样；全 A 约设 `6000` |
 | `seed` | 抽样随机种子，便于复现 |
@@ -92,7 +92,36 @@ python -m app.script backtest --mode universe --universe hs300 \
 | `force_refresh` | 是否强制重新拉取并覆盖缓存 |
 | `max_workers` | 并行拉取估值/财报的线程数 |
 | `strategy_params` | 该横截面策略专属参数，见对应策略文档；决策频率由 `decision_frequency`（`daily`/`weekly`/`monthly`）+ `decision_every_n`（步长）统一控制，`daily` 下 `decision_warmup` 控制冷启动，`prosperity_resonance` 另用 `hysteresis_rank_threshold` 防抖 |
-| `output_options.*` | `output` / `plot` / `json`；另支持 `report`（交互 HTML，含调仓买卖与区间收益；未写时若有 `plot` 则自动派生同名 `.html`）。`report_top_k`（正整数，universe 模式）限制 HTML 内嵌的逐票明细图数量：仅前 N 名保留可点击的净值/K 线/指标图，排行榜仍保留全部标的指标；省略或 0 表示全部。`report_top_k` 越小，报告生成越快、HTML 越小（500 只全量内嵌需序列化数百万个点，是大池子报告慢的主因） |
+| `output_options.*` | `output` / `plot` / `json`；另支持 `report`（交互 HTML，含调仓买卖与区间收益；未写时若有 `plot` 则自动派生同名 `.html`）。`report_top_k`（正整数，universe 模式）限制 HTML 内嵌的逐票明细图数量：仅前 N 名保留可点击的净值/K 线/指标图，排行榜仍保留全部标的指标；省略或 0 表示全部。`report_top_k` 越小，报告生成越快、HTML 越小（500 只全量内嵌需序列化数百万个点，是大池子报告慢的主因）。`report_price_top_k`（正整数）限制从行情缓存补拉 K 线的股票数：省略或 0=全部（默认），正数=仅前 N 名；补拉越多需访问数据源越久，建议大池子按需调小 |
+
+#### 基本面过滤股票池（`fundamental_filter`）
+
+对时序 `mode=universe` 与横截面回测/选股均生效：解析出股票池后、运行前，
+用**估值字段**在单一 as-of 时点过滤掉不满足条件的股票。字段与参数：
+
+| 字段 | 含义 |
+| --- | --- |
+| `fundamental_filter` | 规则列表，**全部规则须同时满足**。每条规则：`field` 取估值字段，`min`/`max` 为含边界的上下限（可只填一个） |
+| `fundamental_asof` | 基本面评估时点 `YYYY-MM-DD`；默认取 `start_date`（回测开始时点当时可知的最新估值），`screen` 无起日时取面板最新日期 |
+
+可用的 `field`：`pe_ttm`、`pb`、`ps_ttm`、`peg`、`market_cap`、`float_market_cap`、
+`close`、`dividend_yield`（股息率）。缺数据（NaN）的股票按不满足处理，会被剔除，
+并计入结果 `warnings`。
+
+示例（只让 pe_ttm 在 0~40 之间的 hs300 参与回测）：
+
+```json
+{
+  "mode": "universe",
+  "strategy_id": "ma_crossover",
+  "universe": "hs300",
+  "start_date": "2024-01-01",
+  "end_date": "2024-12-31",
+  "fundamental_filter": [
+    { "field": "pe_ttm", "min": 0, "max": 40 }
+  ]
+}
+```
 
 各策略文档的「示例请求参数」一节会对照其 example 文件逐字段说明（含
 `strategy_params`）。决策频率由 `decision_frequency` 统一控制，取 `daily` /
@@ -143,6 +172,8 @@ weekly/monthly 均锚定日历周期而非回测起始日，回测结果不随�
 | `volume_ma_pulse` | 量比放量/缩量脉冲 | 量价触发 | [volume-ma-pulse-strategy.md](./volume-ma-pulse-strategy.md) |
 | `bullish_alignment` | 多头排列 | 趋势跟随 | [bullish-alignment-strategy.md](./bullish-alignment-strategy.md) |
 | `first_limit_up` | 首板超短线（次日开盘进） | 首板事件 + 次日进场 + 5日离场 | [first-limit-up-strategy.md](./first-limit-up-strategy.md) |
+| `my_strategy` | 我的策略（LLT 斜率动量） | 趋势跟随 + 震荡过滤 + 可选 VPT 量价过滤 | [my-strategy.md](./my-strategy.md) |
+| `limit_up_pullback_lowbuy` | 涨停回调低吸 | 涨停回调 + 缩量十字星 + 放量收阳买点 | [limit-up-pullback-lowbuy-strategy.md](./limit-up-pullback-lowbuy-strategy.md) |
 
 ### 横截面共享资金策略（`backtest` 子命令）
 

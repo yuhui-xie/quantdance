@@ -48,12 +48,13 @@ def render_backtest_html(
     *,
     load_prices: bool = True,
     top_k: int | None = None,
-    price_top_k: int = 20,
+    price_top_k: int | None = None,
 ) -> Path:
     """按结果结构渲染独立资金 universe、共享资金横截面或单票报告。
 
     ``top_k``（universe 模式）限制嵌入 HTML 的逐票明细图数量：仅前 N 名保留
     可点击的净值/K 线/指标图，排行榜仍保留全部标的的指标；``None``/``0`` 表示全部。
+    ``price_top_k`` 限制补拉 K 线行情的股票数：``None``/``0``=全部，正数=仅前 N 名。
     """
     if "aggregate" in out and "runs" in out:
         return render_backtest_universe_html(
@@ -98,7 +99,7 @@ def render_backtest_universe_html(
     dest: Path,
     *,
     top_k: int | None = None,
-    price_top_k: int = 20,
+    price_top_k: int | None = None,
     load_prices: bool = True,
 ) -> Path:
     """生成自包含批量回测 HTML，返回实际写入路径。"""
@@ -132,7 +133,7 @@ def render_backtest_universe_html_from_json(
     dest: Path | None = None,
     *,
     top_k: int | None = None,
-    price_top_k: int = 20,
+    price_top_k: int | None = None,
     load_prices: bool = True,
 ) -> Path:
     """从已有批量回测 JSON 生成 HTML。"""

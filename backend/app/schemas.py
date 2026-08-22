@@ -7,6 +7,24 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field, model_validator
 
 
+class FundamentalFilterRule(BaseModel):
+    """股票池的基本面筛选规则：对某个估值字段设定下界/上界（含）。"""
+
+    field: Literal[
+        "pe_ttm", "pb", "ps_ttm", "peg", "market_cap", "float_market_cap", "close", "dividend_yield"
+    ]
+    min: float | None = Field(None, description="下界（含），null 表示不限")
+    max: float | None = Field(None, description="上界（含），null 表示不限")
+
+    @model_validator(mode="after")
+    def check_bound(self) -> FundamentalFilterRule:
+        if self.min is None and self.max is None:
+            raise ValueError("fundamental_filter 规则须至少设置 min 或 max 之一")
+        if self.min is not None and self.max is not None and self.min > self.max:
+            raise ValueError("fundamental_filter 的 min 不应大于 max")
+        return self
+
+
 class BacktestRequest(BaseModel):
     mode: Literal["single", "universe", "screen", "per_stock"] = "single"
     data_source: Literal["a_stock_data"] = "a_stock_data"
@@ -31,6 +49,14 @@ class BacktestRequest(BaseModel):
         description="universe 模式且 symbols 为空时使用的股票池",
     )
     symbols: list[str] = Field(default_factory=list, description="universe 模式的自定义股票池")
+    fundamental_filter: list[FundamentalFilterRule] | None = Field(
+        None,
+        description="用估值字段在股票池上做基本面筛选，全部规则须同时满足",
+    )
+    fundamental_asof: str | None = Field(
+        None,
+        description="基本面评估时点 YYYY-MM-DD；默认取 start_date",
+    )
     max_universe: int = Field(80, ge=1, le=10000)
     seed: int | None = Field(None, description="股票池超上限时的可复现抽样种子")
     max_workers: int = Field(8, ge=1, le=32)

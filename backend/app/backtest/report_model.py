@@ -449,10 +449,10 @@ def build_backtest_universe_report_model(
     out: dict[str, Any],
     *,
     top_k: int | None = None,
-    price_top_k: int = 20,
+    price_top_k: int | None = None,
     load_prices: bool = True,
 ) -> dict[str, Any]:
-    """派生详细报告；默认保留全部明细，仅限制自动补载行情的数量。"""
+    """派生详细报告；默认保留全部明细，默认给全部标的补载行情。"""
     if str(out.get("mode") or "") != "universe":
         raise ValueError("批量回测报告仅支持 mode='universe'")
 
@@ -478,28 +478,35 @@ def build_backtest_universe_report_model(
 
     details = _build_all_details(detail_runs, initial_cash, slope_threshold=slope_threshold)
 
+    # price_top_k：None 或 0=全部；正数=仅前 N 名补拉行情
+    price_targets = (
+        detail_runs if price_top_k is None or price_top_k <= 0 else detail_runs[: price_top_k]
+    )
     price_symbols = [
-        str(run.get("symbol") or "")
-        for run in detail_runs[: max(0, price_top_k)]
-        if str(run.get("symbol") or "")
+        str(run.get("symbol") or "") for run in price_targets if str(run.get("symbol") or "")
     ]
     if load_prices and price_symbols:
         def load_one(symbol: str) -> tuple[str, list[list[Any]], bool]:
             detail = details[symbol]
-            if detail["prices"]:
-                return symbol, detail["prices"], bool(detail["has_ohlc"])
+            if detail["prices"] and detail["has_ohlc"]:
+                return symbol, detail["prices"], True
             equity = detail["equity"]
             start = equity[0]["date"] if equity else ""
             end = equity[-1]["date"] if equity else ""
             trade_dates = [trade["date"] for trade in detail["trades"] if trade["date"]]
-            prices, has_ohlc = _load_symbol_bars(
+            fetched, has_ohlc = _load_symbol_bars(
                 symbol,
                 start,
                 end,
                 fetch_missing=True,
                 cover_dates=trade_dates,
             )
-            return symbol, prices, has_ohlc
+            if has_ohlc:
+                return symbol, fetched, True
+            # 补拉失败时回退到已有序列（可能是回测自带的收盘价）
+            if detail["prices"]:
+                return symbol, detail["prices"], False
+            return symbol, fetched, False
 
         with ThreadPoolExecutor(max_workers=min(8, len(price_symbols))) as pool:
             futures = [pool.submit(load_one, symbol) for symbol in price_symbols]
@@ -527,7 +534,9 @@ def build_backtest_universe_report_model(
         "ranked_index": ranked_index,
         "details": details,
         "detail_limit": len(details),
-        "price_detail_limit": min(len(details), max(0, price_top_k)),
+        "price_detail_limit": (
+            len(details) if price_top_k is None or price_top_k <= 0 else min(len(details), price_top_k)
+        ),
         "distribution": {
             "returns": returns,
             "positive": sum(value > 0 for value in returns),

@@ -10,7 +10,7 @@
 header{border-bottom:1px solid var(--line);padding:22px max(24px,calc((100% - 1440px)/2))}
 h1{font-size:22px;margin:0 0 5px}.muted,.meta{color:var(--muted)}.wrap{max-width:1440px;margin:auto;padding:18px 24px 48px}
 .notice{background:#242114;border:1px solid #5f5124;color:#f5d982;border-radius:8px;padding:10px 13px;margin-bottom:14px}
-.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(145px,1fr));gap:10px;margin-bottom:14px}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-bottom:14px}
 .card,.panel{background:var(--panel);border:1px solid var(--line);border-radius:9px}.card{padding:12px 14px}.card label{display:block;color:var(--muted);font-size:12px}.card b{font-size:19px;font-variant-numeric:tabular-nums}
 .panel{padding:14px;margin-bottom:14px}.panel h2{font-size:16px;margin:0 0 11px}.charts{display:grid;grid-template-columns:2fr 1fr;gap:14px}
 svg{display:block;width:100%;height:300px;background:#11151d;border:1px solid var(--line);border-radius:7px;touch-action:none}.grid{stroke:#252c38;stroke-width:1}.zero{stroke:#465267;stroke-width:1;stroke-dasharray:3 3}.axis{fill:var(--muted);font-size:11px}.ref{stroke:#f5bd55;stroke-width:1;stroke-dasharray:6 4;opacity:.85}.ref-label{fill:#f5bd55;font-size:11px}
@@ -27,7 +27,7 @@ tbody tr[data-symbol]{cursor:pointer}tbody tr[data-symbol]:hover{background:#202
 .modal{width:min(1600px,100%);max-height:94vh;overflow:auto;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:18px}
 .modal-head{display:flex;justify-content:space-between;gap:15px}.modal-head h2{margin:0;font-size:20px}.close{background:transparent;color:var(--text);border:1px solid var(--line);border-radius:6px;padding:6px 13px;cursor:pointer}
 .mini-stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:9px;margin:12px 0}.mini-stats div{background:#11151d;padding:12px;border-radius:6px}.mini-stats small{display:block;color:var(--muted)}.mini-stats b{font-size:19px;font-variant-numeric:tabular-nums}
-.detail-charts{display:grid;grid-template-columns:1fr;gap:14px}.detail-charts svg{height:420px}.indicator-section{margin-top:14px}.indicator-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:14px}.indicator-grid h4{margin:0 0 7px;color:var(--muted)}.indicator-grid svg{height:320px}.tables{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:14px}.tables .scroll{max-height:340px}.tables th,.tables td{font-size:13px}
+.detail-charts{display:grid;grid-template-columns:1fr;gap:14px}.detail-charts svg{height:420px}.indicator-section{margin-top:14px}.indicator-grid{display:grid;grid-template-columns:1fr;gap:14px}.indicator-grid h4{margin:0 0 7px;color:var(--muted)}.indicator-grid svg{height:320px}.tables{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:14px}.tables .scroll{max-height:340px}.tables th,.tables td{font-size:13px}
 .empty{padding:18px;color:var(--muted)}footer{color:var(--muted);font-size:12px;margin-top:16px}
 @media(max-width:900px){.charts,.detail-charts,.indicator-grid,.tables{grid-template-columns:1fr}.wrap{padding:12px}.modal-mask{padding:8px}}
 </style>
@@ -204,7 +204,7 @@ function installChartInteraction(svg){
 }
 function lineChart(svg,series,fields,markers=[],opts={}){
  const group=opts.group||createGroup();
- chartStates.set(svg,{series,fields,markers,drag:null,bars:opts.bars||[],refs:opts.refs||[],group});
+ chartStates.set(svg,{series,fields,markers,drag:null,bars:opts.bars||[],refs:opts.refs||[],candles:opts.candles||null,group});
  activeCharts.add(svg);if(!group.charts.includes(svg))group.charts.push(svg);
  installChartInteraction(svg);renderLineChart(svg);
 }

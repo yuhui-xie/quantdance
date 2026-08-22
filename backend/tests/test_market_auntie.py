@@ -102,7 +102,7 @@ def test_run_market_auntie_portfolio_with_mocks(monkeypatch):
 
     monkeypatch.setattr(
         "app.backtest.cross_section_runner._resolve_universe",
-        lambda _req, default_universe=None: (
+        lambda _req, default_universe=None, **_kwargs: (
             [{"symbol": s, "name": "测试"} for s in panel],
             "mock universe",
         ),
@@ -141,7 +141,7 @@ def test_screen_mode(monkeypatch):
     }
     monkeypatch.setattr(
         "app.backtest.cross_section_runner._resolve_universe",
-        lambda _req, default_universe=None: ([{"symbol": "000001", "name": "测试"}], "mock"),
+        lambda _req, default_universe=None, **_kwargs: ([{"symbol": "000001", "name": "测试"}], "mock"),
     )
     monkeypatch.setattr(
         "app.backtest.cross_section_runner.load_fundamentals_panel",
