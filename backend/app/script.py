@@ -794,7 +794,7 @@ def _build_backtest_cmd(sub: argparse._SubParsersAction[argparse.ArgumentParser]
     p.add_argument("--symbol")
     p.add_argument(
         "--universe",
-        choices=("all_a", "hs300", "zz500", "zz399101", "zz1000", "gz2000", "star50", "star_board", "etf"),
+        help="内置预设（all_a/hs300/zz500/zz399101/zz1000/gz2000/star50/star_board/etf）或 config/*_pool.json 文件名前缀（如 etf_core）",
     )
     p.add_argument("--symbols", nargs="+", help="批量回测时直接指定股票池")
     p.add_argument("--max-universe", type=int, dest="max_universe")
@@ -940,10 +940,7 @@ def _build_factor_ic_cmd(sub: argparse._SubParsersAction[argparse.ArgumentParser
     p.add_argument("--request", type=Path, metavar="FILE.json", help="请求 JSON（可含股票池与全部分析参数）")
     p.add_argument(
         "--universe",
-        choices=(
-            "all_a", "hs300", "zz500", "zz399101", "zz1000", "gz2000",
-            "star50", "star_board", "etf",
-        ),
+        help="内置预设（all_a/hs300/zz500/zz399101/zz1000/gz2000/star50/star_board/etf）或 config/*_pool.json 文件名前缀（如 etf_core）",
     )
     p.add_argument("--symbols", nargs="+", help="直接指定股票池（与 --universe 二选一）")
     p.add_argument("--max-universe", type=int, dest="max_universe")

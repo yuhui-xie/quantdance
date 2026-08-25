@@ -23,14 +23,13 @@ class FactorSpec:
     - ``name``：因子 id（CLI / JSON 用）。
     - ``fn``：DataFrame → 因子时间序列（索引对齐 df，含 NaN 暖机）。
     - ``min_bars``：暖机所需最少 K 线，用于裁剪与统计有效性。
-    - ``source``：来源标签（screening 选股 / momentum 动量 / strategy 策略），决定 CLI 分组。
 
-    各因子模块导出本模块自己的 ``FACTORS: list[FactorSpec]``，由
-    ``app/factors/registry.py`` 自动汇总；注册表 / 最小 K 线 / 来源分组均由汇总结果派生，
-    保证各处不脱节。
+    来源标签（screening / momentum / strategy）不由本条目携带，由
+    ``app/factors/registry.py`` 按所属模块自动推断（见其 ``_MODULE_SOURCE``）。
+    各因子模块导出本模块自己的 ``FACTORS: list[FactorSpec]``，由 registry 自动汇总；
+    注册表 / 最小 K 线 / 来源分组均由汇总结果派生，保证各处不脱节。
     """
 
     name: str
     fn: FactorFn
     min_bars: int = 1
-    source: str = "screening"

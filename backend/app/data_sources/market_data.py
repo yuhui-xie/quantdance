@@ -740,6 +740,68 @@ def fetch_etf_universe(
     return out, note
 
 
+def filter_etf_symbols_at(
+    symbols: list[dict[str, str]],
+    asof: str | date | datetime,
+) -> tuple[list[dict[str, str]], list[str]]:
+    """从给定 ETF 代码列表过滤出 asof 时点已存在的子集（K 线覆盖判定）。
+
+    **首根 K 线 ≤ asof 视为当时已上市**（ETF 退市极少，此近似稳健）。判定用
+    ``fetch_a_share_daily``（走 a_stock_data 按日缓存），拉足够多的 K 线以覆盖
+    到 asof；单只无 K 线（数据覆盖缺口）跳过。``symbols`` 每项为
+    {"symbol","name"}（config 池或全市场列表皆可）。
+
+    返回 (已存在的子集, 被跳过的代码列表)。供 ``fetch_etf_universe_at`` 与
+    config ETF 池的 as-of 预筛复用。
+    """
+    asof_s = str(asof)[:10]
+    existing: list[dict[str, str]] = []
+    skipped: list[str] = []
+    for row in symbols:
+        code = row["symbol"]
+        try:
+            df = fetch_a_share_daily(code, limit=2000)
+        except MarketDataError:
+            skipped.append(code)
+            continue
+        if df.empty:
+            skipped.append(code)
+            continue
+        if pd.Timestamp(df.index.min()) <= pd.Timestamp(asof_s):
+            existing.append(row)
+        else:
+            skipped.append(code)
+    return existing, skipped
+
+
+def fetch_etf_universe_at(
+    asof: str | date | datetime,
+    max_universe: int = 500,
+    *,
+    seed: int | None = None,
+) -> tuple[list[dict[str, str]], str]:
+    """拉取 asof 时点存在的全市场 ETF 池，避开幸存者偏差。
+
+    复用当前全量 ETF 列表（``fetch_etf_universe``，多源备用链），再按
+    ``filter_etf_symbols_at`` 的 K 线覆盖判定其在 asof 时点是否已上市。
+    该预筛能避免对尚未上市的 ETF 白白加载面板。
+
+    返回 (已存在的 ETF 列表, note)，每项 {"symbol","name"}。
+    """
+    asof_s = str(asof)[:10]
+    rows, note = fetch_etf_universe(max_universe, seed=seed)
+    existing, skipped = filter_etf_symbols_at(rows, asof_s)
+    if not existing:
+        raise MarketDataError(
+            f"{asof_s} 时点无可用 ETF：当前 {len(rows)} 只均无 ≤{asof_s} 的 K 线"
+        )
+    skip_note = f"，{len(skipped)} 只 K 线首根晚于 {asof_s} 或无线跳过" if skipped else ""
+    return existing, (
+        f"akshare 当前 ETF 共 {len(rows)} 只，{asof_s} 时点按 K 线覆盖判定已存在 "
+        f"{len(existing)} 只{skip_note}。"
+    )
+
+
 def fetch_a_share_valuation_snapshot(symbol: str) -> dict[str, float] | None:
     """
     通过 a_stock_data 拉取个股最新估值截面（PE TTM、PB 等）。

@@ -110,20 +110,21 @@ DataFrame，供需要 open/high/low/close 的因子用）。
 **注册采用插件式自动注册**（与 `app/strategies` 同思路）：各因子模块导出自己的
 `FACTORS: list[FactorSpec]`，`app/factors/registry.py` 用 `pkgutil` 扫描 `app.factors`、
 自动汇总（重复 name 会抛错）。`FactorSpec` 定义在 `app/factors/base.py`（公共类型，无子模块
-依赖，避免循环导入）。
+依赖，避免循环导入），只含 `name / fn / min_bars`——**来源标签不写在条目里**，由 registry
+按所属模块自动推断（`screen_factors` → screening、`momentum` → momentum、其余 → strategy）。
 
 新增一个因子只需两步，其余查找结构自动派生：
 
 1. 在所属因子模块（`app/factors/*.py`）写 `*_factor(df) -> pd.Series` handler；
 2. 在该模块末尾的 `FACTORS` 列表加一行（`FactorSpec` 从 `app.factors.base` import）：
    ```python
-   FactorSpec("my_factor", my_factor_fn, min_bars=暖机K线, source="screening|momentum|strategy")
+   FactorSpec("my_factor", my_factor_fn, min_bars=暖机K线)
    ```
 
 `FACTOR_REGISTRY` / `FACTOR_MIN_BARS` / 来源分组（`SCREENING/MOMENTUM/STRATEGY_FACTORS`）与
 `factor_source()` 均由 `app/factors/registry.py` 从汇总结果派生，新增因子时无需另行维护。
-`source` 决定 `--list-factors` 的分组展示，三选一：`screening`（选股技术）/ `momentum`
-（动量趋势）/ `strategy`（策略信号）。
+`source` 只决定 `--list-factors` 的分组展示，不影响 IC 计算，三选一：`screening`（选股技术）
+/ `momentum`（动量趋势）/ `strategy`（策略信号）。
 
 ## 4. CLI 用法
 

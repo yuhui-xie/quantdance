@@ -178,8 +178,8 @@ def chop_factor(df: pd.DataFrame, period: int = 14) -> pd.Series:
     )
 
 
-# 本模块导出的因子注册（供 app/factors/registry.py 自动汇总）
+# 本模块导出的因子注册（供 app/factors/registry.py 自动汇总，来源默认 strategy）
 FACTORS: list[FactorSpec] = [
-    FactorSpec("adx", adx_factor, min_bars=27, source="strategy"),
-    FactorSpec("chop", chop_factor, min_bars=15, source="strategy"),
+    FactorSpec("adx", adx_factor, min_bars=27),
+    FactorSpec("chop", chop_factor, min_bars=15),
 ]

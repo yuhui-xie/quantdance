@@ -2,9 +2,26 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
+
+# 内置 universe 预设；config/*_pool.json 里的池子以文件名前缀动态识别（如 etf_core）。
+# etf_dynamic / etf_asof 为 etf 的别名，带 asof 时按 K 线覆盖重构「当时已存在」的动态池。
+_KNOWN_UNIVERSES = frozenset(
+    {"all_a", "hs300", "zz500", "zz399101", "zz1000", "gz2000", "star50", "star_board",
+     "etf", "etf_dynamic", "etf_asof"}
+)
+_CONFIG_DIR = Path(__file__).resolve().parents[1] / "config"
+
+
+def _is_valid_universe(value: str) -> bool:
+    if value in _KNOWN_UNIVERSES:
+        return True
+    if value.startswith("config:"):
+        return (_CONFIG_DIR / f"{value.split(':', 1)[1]}_pool.json").exists()
+    return (_CONFIG_DIR / f"{value}_pool.json").exists()
 
 
 class FundamentalFilterRule(BaseModel):
@@ -42,11 +59,9 @@ class BacktestRequest(BaseModel):
     )
     bars: int = Field(500, ge=50, le=5000)
     symbol: str | None = Field(None, description="A 股 6 位代码或带 SH/SZ 后缀")
-    universe: Literal[
-        "all_a", "hs300", "zz500", "zz399101", "zz1000", "gz2000", "star50", "star_board", "etf"
-    ] = Field(
+    universe: str = Field(
         "all_a",
-        description="universe 模式且 symbols 为空时使用的股票池",
+        description="universe 模式且 symbols 为空时使用的股票池（内置预设或 config/*_pool.json 文件名前缀）",
     )
     symbols: list[str] = Field(default_factory=list, description="universe 模式的自定义股票池")
     fundamental_filter: list[FundamentalFilterRule] | None = Field(
@@ -126,6 +141,10 @@ class BacktestRequest(BaseModel):
 
     @model_validator(mode="after")
     def check_backtest_request(self) -> BacktestRequest:
+        if not _is_valid_universe(self.universe):
+            raise ValueError(
+                f"未知 universe: {self.universe!r}（内置预设或 config/*_pool.json 文件名前缀）"
+            )
         start = (self.start_date or "").strip()
         end = (self.end_date or "").strip()
         if self.mode == "screen":

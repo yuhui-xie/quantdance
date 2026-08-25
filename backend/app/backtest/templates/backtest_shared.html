@@ -162,6 +162,26 @@ th, td {
 }
 th { color: var(--muted); font-weight: 500; position: sticky; top: 0; background: var(--panel); }
 .scroll { max-height: 260px; overflow: auto; border: 1px solid var(--border); border-radius: 6px; }
+tr.sel-row td { background: #243040; }
+tr.sel-row td:first-child { color: var(--buy); font-weight: 600; }
+.heat-wrap { overflow: auto; max-height: 440px; }
+table.heat { font-size: 11px; }
+table.heat th { position: sticky; top: 0; }
+table.heat td { cursor: pointer; text-align: right; white-space: nowrap; }
+table.heat td.heat-sym { text-align: left; position: sticky; left: 0; background: var(--panel); font-weight: 500; }
+table.heat td.heat-sel {
+  box-shadow: inset 0 0 0 2px #ffffff, inset 0 0 0 3px rgba(79,195,247,.55);
+}
+.heat-legend { display: flex; gap: 12px; align-items: center; font-size: 12px; color: var(--muted); margin-top: 8px; flex-wrap: wrap; }
+.heat-legend .grad { width: 160px; height: 10px; border-radius: 3px;
+  background: linear-gradient(to right, rgba(79,195,247,.12), rgba(79,195,247,.62)); }
+.heat-legend .sw { width: 12px; height: 12px; border-radius: 2px; background: transparent;
+  box-shadow: inset 0 0 0 2px #ffffff, inset 0 0 0 3px rgba(79,195,247,.55); }
+.heat-toolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
+.heat-toolbar select {
+  background: var(--bg); border: 1px solid var(--border); color: var(--text);
+  border-radius: 6px; padding: 5px 8px; font-size: 13px;
+}
 .side-buy { color: var(--buy); }
 .side-sell { color: var(--sell); }
 .pos { color: var(--buy); }
@@ -292,6 +312,26 @@ a.sym-link:hover { color: #81d4fa; border-bottom-color: #81d4fa; }
     </div>
   </div>
   <div class="panel">
+    <h2>指标对比（调仓日 × 标的）</h2>
+    <div class="heat-toolbar">
+      <label style="font-size:13px;color:var(--muted)">指标：</label>
+      <select id="heatField"></select>
+      <span class="note" style="margin:0">行=标的，列=调仓日；颜色深浅代表该日候选中的相对强弱，蓝框=该日入选持仓。点击格子联动左侧调仓详情。</span>
+    </div>
+    <div class="heat-wrap">
+      <table class="heat">
+        <thead id="heatHead"></thead>
+        <tbody id="heatBody"></tbody>
+      </table>
+    </div>
+    <div class="heat-legend">
+      <span>相对强弱（列内归一化）</span>
+      <span class="grad"></span>
+      <span>弱</span><span>强</span>
+      <span style="margin-left:16px"><span class="sw" style="display:inline-block"></span> 入选持仓</span>
+    </div>
+  </div>
+  <div class="panel">
     <h2>个股列表（点击查看买卖点）</h2>
     <div class="filters">
       <input id="filterSymList" placeholder="筛选代码/名称…" />
@@ -367,6 +407,13 @@ a.sym-link:hover { color: #81d4fa; border-bottom-color: #81d4fa; }
         </table></div>
       </div>
     </div>
+    <h2 style="margin-top:14px">指标详情（历次决策日）</h2>
+    <div class="scroll">
+      <table>
+        <thead id="symbolIndicatorHead"></thead>
+        <tbody id="symbolIndicatorBody"></tbody>
+      </table>
+    </div>
   </div>
 </div>
 <script>
@@ -395,6 +442,27 @@ function symLink(symbol, name) {
   const s = symbol || "";
   const label = s || "-";
   return `<a href="#" class="sym-link" data-symbol="${s}" title="查看买卖点">${label}</a>`;
+}
+
+// ---- 通用指标基座：选股 detail 里除元字段外的数值字段自动成为报告列 / 热力图字段 ----
+const SELECTION_META = new Set(["symbol", "name", "asof", "close", "float_market_cap", "rank_market_cap", "rank", "selected"]);
+const PREFERRED_INDICATOR_ORDER = ["score", "llt_slope", "llt_r2", "vpt_slope", "pct_change"];
+const FIELD_LABELS = {
+  score: "综合得分", llt_slope: "LLT斜率", llt_r2: "LLT R²", vpt_slope: "VPT斜率",
+  pct_change: "当日涨跌%", close: "收盘价", rank: "排名", float_market_cap: "流通市值",
+};
+
+function fieldLabel(f) { return FIELD_LABELS[f] || f; }
+
+// 收集 selection 各行的非元指标字段（去重），按优先序 + 其余字母序排列
+function indicatorFields(selection) {
+  const fields = new Set();
+  (selection || []).forEach(r => {
+    Object.keys(r).forEach(k => { if (!SELECTION_META.has(k)) fields.add(k); });
+  });
+  const ordered = PREFERRED_INDICATOR_ORDER.filter(k => fields.has(k));
+  const rest = [...fields].filter(k => !PREFERRED_INDICATOR_ORDER.includes(k)).sort();
+  return ordered.concat(rest);
 }
 
 function renderStats() {
@@ -668,10 +736,16 @@ function selectPeriod(index) {
     `<tr><td class="side-buy">买入</td><td>${symLink(t.symbol)}</td><td>${t.name || ""}</td>
      <td>${num(t.price, 3)}</td><td>${num(t.shares, 0)}</td><td>${num(t.notional, 0)}</td></tr>`
   ).join("");
-  const selRows = (p.selection || []).map(s =>
-    `<tr><td>${symLink(s.symbol)}</td><td>${s.name || ""}</td><td>${num(s.close, 2)}</td>
-     <td>${num(s.float_market_cap || s.rank_market_cap, 0)}</td></tr>`
-  ).join("");
+  const selItems = p.selection || [];
+  const selIndFields = indicatorFields(selItems);
+  const selHead = `<th>选</th><th>排名</th><th>代码</th><th>名称</th><th>收盘价</th>` +
+    selIndFields.map(f => `<th>${fieldLabel(f)}</th>`).join("");
+  const selRows = selItems.map(s => {
+    const cells = selIndFields.map(f => `<td>${num(s[f], 4)}</td>`).join("");
+    const cls = s.selected ? ' class="sel-row"' : "";
+    return `<tr${cls}><td>${s.selected ? "✓" : ""}</td><td>${num(s.rank, 0)}</td>
+      <td>${symLink(s.symbol)}</td><td>${s.name || ""}</td><td>${num(s.close, 2)}</td>${cells}</tr>`;
+  }).join("");
   box.innerHTML = `
     <h2>调仓详情 · ${p.date}</h2>
     <div class="row">持有区间至 <b>${p.next_date || "-"}</b>
@@ -697,10 +771,10 @@ function selectPeriod(index) {
         </table></div>
       </div>
     </div>
-    <h2 style="margin-top:12px">目标持仓（选股）</h2>
+    <h2 style="margin-top:12px">目标持仓（选股）· 全部候选（✓=入选持仓）</h2>
     <div class="scroll"><table>
-      <thead><tr><th>代码</th><th>名称</th><th>收盘价</th><th>流通市值</th></tr></thead>
-      <tbody>${selRows || '<tr><td colspan="4" class="empty">无</td></tr>'}</tbody>
+      <thead><tr>${selHead || '<th>代码</th><th>名称</th>'}</tr></thead>
+      <tbody>${selRows || '<tr><td colspan="3" class="empty">无</td></tr>'}</tbody>
     </table></div>
   `;
   const active = document.querySelector(`.period-item[data-index="${index}"]`);
@@ -1029,6 +1103,34 @@ function renderSymbolChart(info) {
   bindSymbolChartInteractions();
 }
 
+// ---- 个股指标详情：历次决策日该股的指标明细（score/LLT斜率/LLT R²/VPT斜率/涨跌等）----
+function renderSymbolIndicators(symbol) {
+  const inds = (DATA.symbol_indicators || {})[symbol] || [];
+  const head = document.getElementById("symbolIndicatorHead");
+  const body = document.getElementById("symbolIndicatorBody");
+  if (!inds.length) {
+    head.innerHTML = "";
+    body.innerHTML = '<tr><td class="empty">该股未出现在选股候选，无指标数据</td></tr>';
+    return;
+  }
+  // 动态指标列复用 indicatorFields（排除元字段），前置 日期/排名/收盘价，末列标注入选
+  const indFields = indicatorFields(inds);
+  head.innerHTML =
+    `<tr><th>决策日</th><th>排名</th><th>收盘价</th>` +
+    indFields.map(f => `<th>${fieldLabel(f)}</th>`).join("") +
+    `<th>入选</th></tr>`;
+  body.innerHTML = inds.map(r => {
+    const cells = indFields.map(f => `<td>${num(r[f], 4)}</td>`).join("");
+    return `<tr>
+      <td>${r.date}</td>
+      <td>${num(r.rank, 0)}</td>
+      <td>${num(r.close, 2)}</td>
+      ${cells}
+      <td>${r.selected ? "✓" : ""}</td>
+    </tr>`;
+  }).join("");
+}
+
 function openSymbol(symbol) {
   const info = (DATA.by_symbol || {})[symbol];
   const modal = document.getElementById("symbolModal");
@@ -1048,6 +1150,7 @@ function openSymbol(symbol) {
         ? ` · 仅收盘价 ${(info.prices || []).length} 根（无OHLC缓存）`
         : " · 无本地日线，按成交价示意"));
   renderSymbolChart(info);
+  renderSymbolIndicators(symbol);
   document.getElementById("symbolTradeBody").innerHTML = (info.trades || []).map(t => `
     <tr>
       <td>${t.date}</td>
@@ -1071,6 +1174,64 @@ function closeSymbolModal() {
   document.getElementById("symbolModal").classList.remove("open");
 }
 
+// ---- 指标热力图：调仓日 × 标的，按列内相对强弱着色，蓝框=入选持仓 ----
+function renderHeatmap() {
+  const field = document.getElementById("heatField").value;
+  const periods = DATA.periods || [];
+  const dates = periods.map(p => p.date);
+  const symMap = {};
+  periods.forEach(p => (p.selection || []).forEach(s => {
+    if (s.symbol && !symMap[s.symbol]) symMap[s.symbol] = s.name || "";
+  }));
+  const symbols = Object.keys(symMap).sort();
+
+  // date -> symbol -> {v, selected}；同时算每列 min/max 用于归一化着色
+  const byDate = {};
+  const dateMin = {}, dateMax = {};
+  dates.forEach(d => { byDate[d] = {}; dateMin[d] = null; dateMax[d] = null; });
+  periods.forEach(p => {
+    let mn = Infinity, mx = -Infinity;
+    (p.selection || []).forEach(s => {
+      byDate[p.date][s.symbol] = { v: s[field], selected: s.selected };
+      const v = s[field];
+      if (v != null && Number.isFinite(v)) { if (v < mn) mn = v; if (v > mx) mx = v; }
+    });
+    if (mn !== Infinity) { dateMin[p.date] = mn; dateMax[p.date] = mx; }
+  });
+
+  function cellStyle(v, d) {
+    const mn = dateMin[d], mx = dateMax[d];
+    if (v == null || mn == null || mx == null || mx === mn) return "";
+    const t = Math.max(0, Math.min(1, (v - mn) / (mx - mn)));
+    return `background:rgba(79,195,247,${(0.12 + t * 0.5).toFixed(3)});color:${t > 0.62 ? "#08131a" : "#e8eaed"}`;
+  }
+
+  document.getElementById("heatHead").innerHTML =
+    `<tr><th>标的</th>` + dates.map(d => `<th>${d}</th>`).join("") + `</tr>`;
+  document.getElementById("heatBody").innerHTML = symbols.map(s =>
+    `<tr><td class="heat-sym">${s} ${symMap[s]}</td>` + dates.map(d => {
+      const c = byDate[d] && byDate[d][s];
+      const v = c ? c.v : undefined;
+      const txt = (v == null || !Number.isFinite(v)) ? "-" : num(v, 4);
+      const cls = c && c.selected ? ' class="heat-sel"' : "";
+      return `<td data-date="${d}"${cls} style="${cellStyle(v, d)}">${txt}</td>`;
+    }).join("") + `</tr>`
+  ).join("") || `<tr><td class="empty">无选股指标数据</td></tr>`;
+
+  document.querySelectorAll("#heatBody td[data-date]").forEach(td => {
+    td.addEventListener("click", () => selectPeriodByDate(td.getAttribute("data-date")));
+  });
+}
+
+function initHeatmap() {
+  const fields = indicatorFields((DATA.periods || []).flatMap(p => p.selection || []));
+  const select = document.getElementById("heatField");
+  select.innerHTML = fields.map(f => `<option value="${f}">${fieldLabel(f)}</option>`).join("");
+  if (fields.length) select.value = fields[0];
+  else select.innerHTML = '<option value="">（无指标）</option>';
+  select.addEventListener("change", renderHeatmap);
+}
+
 function boot() {
   document.getElementById("strategyId").textContent = DATA.strategy_id || "-";
   const eq = DATA.equity || [];
@@ -1089,6 +1250,8 @@ function boot() {
   renderSymbolList();
   renderTrades();
   renderTrips();
+  initHeatmap();
+  renderHeatmap();
   if ((DATA.periods || []).length) selectPeriod(0);
   document.getElementById("filterDate").addEventListener("input", renderTrades);
   document.getElementById("filterSymbol").addEventListener("input", renderTrades);

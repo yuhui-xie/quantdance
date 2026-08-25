@@ -1,0 +1,162 @@
+# ETF 动量轮动策略说明
+
+本文档描述横截面共享资金策略 `etf_rotation`：**在 ETF 池中选择 LLT 拟合趋势（斜率×R²）最强的标的，按周期（默认每自然月首个交易日）调仓，等权持有 top-N**。策略默认在 `config/etf_core_pool.json` 精选 ETF 池上轮动，用 LLT 趋势线做低延迟平滑后回归评分，并可选叠加 VPT 量价趋势做资金流入方向确认。
+
+实现代码：`backend/app/strategies/cross_section/etf_rotation.py`
+横截面执行：`backend/app/backtest/cross_section_runner.py`，共享资金引擎：`backend/app/backtest/shared_engine.py`
+
+> 相关策略：`etf_rotation_3factor` 用乖离/斜率/效率三个动量因子做加权评分（见 [etf-rotation-3factor-strategy.md](./etf-rotation-3factor-strategy.md)）。本策略更简单：单因子 LLT 拟合趋势 + 可选量价过滤。
+
+## 1. 策略概述
+
+```
+┌───────────────────────────────────────────────┐
+│        候选 ETF 池（默认 etf_core 精选池）     │
+│   宽基/科技/医药/消费/金融/周期/黄金/债券/海外 │
+└──────────────┬────────────────────────────────┘
+               │ 每只 ETF（调仓日 asof 时点）
+               ▼
+┌───────────────────────────────────────────────┐
+│  1. 可交易过滤  非停牌 / 非涨跌停（asof_tradeable_row）│
+│  2. LLT 平滑：llt(close, llt_period)          │
+│  3. 拟合：llt_slope_fit(trend, llt_window)     │
+│     → 斜率 × R²，要求 R² ≥ min_r2、得分 > min_score│
+│  4. 可选量价：VPT 回归斜率 > 0（volume_confirm）│
+└──────────────┬────────────────────────────────┘
+               │ 按得分（斜率×R²）降序排名
+               ▼
+┌───────────────────────────────────────────────┐
+│        取 top_n 只，等权持有                  │
+│        无候选通过过滤 → 持有现金               │
+└───────────────────────────────────────────────┘
+```
+
+决策日默认由 `DecisionFrequencyParams` 调度：`decision_frequency=monthly`（默认，每自然月首个交易日）、`weekly`、`biweekly`（每双周）、`daily` 可选。`top_n` 默认 1，即每月只持有得分最高的 1 只 ETF。
+
+## 2. 参数说明
+
+全部参数通过 `strategy_params` 传入（Pydantic 校验）。除下列字段外，还继承 `DecisionFrequencyParams` 的 `decision_frequency` / `decision_every_n` / `decision_anchor` / `decision_warmup`（本策略 `decision_anchor` 默认 `start`，即每自然月首个交易日调仓）。
+
+| 参数 | 默认 | 说明 |
+| --- | --- | --- |
+| `top_n` | `1` | 持有得分最高的 ETF 数量（1–10） |
+| `llt_period` | `20` | LLT 平滑周期 |
+| `llt_window` | `20` | LLT 拟合窗口：对最近该根 K 线的 LLT 趋势线做最小二乘回归取斜率 |
+| `min_r2` | `0.0` | 拟合质量（R²）门槛：低于此值视为无可靠趋势，不纳入候选；`0` 关闭 |
+| `min_score` | `0.0` | 最低综合得分（斜率×R²）；`0` 表示只持有上升趋势（得分>0） |
+| `volume_confirm` | `False` | 是否启用量能确认（见 §3） |
+| `volume_days` | `20` | 量能确认的 VPT 斜率回看交易日数 |
+| `rotate_threshold` | `0.9` | 轮动惰性阈值：当前持仓得分不低于新候选得分×该阈值时保持持仓、不调仓（见 §3.1）；`0` 关闭惰性、纯按得分轮动 |
+| `exclude_limit` / `exclude_suspended` | `True` | 调仓日排除涨跌停 / 停牌标的 |
+| `limit_pct_threshold` | `9.5` | 判定涨跌停的涨跌幅阈值（%） |
+
+### 综合得分公式
+
+```
+得分 = LLT 拟合斜率 × R²
+```
+
+- **LLT 趋势线**：对价格做低延迟平滑（`llt(close, llt_period)`），再按首值归一化以消除价格水平差异，使斜率跨标的可比。
+- **斜率**：对最近 `llt_window` 根 K 线的 LLT 趋势线做最小二乘线性回归（`llt_slope_fit`），斜率 > 0 表示上升趋势。
+- **R²**：拟合质量，越接近 1 趋势越贴近一条直线、斜率越可信；接近 0 表示窗口内涨跌混乱、斜率不可信。
+- 得分 = 斜率 × R² 天然按拟合质量加权：趋势强但拟合差的标的得分被压低。`min_r2` 提供显式的质量硬门槛，`min_score` 提供得分下界（默认 `0` → 只留上升趋势）。
+
+## 3. 可选量价确认（`volume_confirm=True`）
+
+纯 LLT 趋势选股容易选中无量能配合、随后回落的价格反弹。开启后，策略额外要求：
+
+```
+VPT 量价趋势（最近 volume_days 日）回归斜率 > 0
+```
+
+- **VPT（Volume Price Trend）** 来自 `app/factors/volume_flow.py`：逐日累积 `volume × 价格变化率`，正斜率表示资金净流入。
+- VPT 是逐日累积的量纲量，跨 ETF 比较绝对值无意义，因此**只取符号做方向过滤**（资金流入方向），**不参与排序**——排名仍完全由 LLT 得分（斜率×R²）决定。
+- 默认关闭（`False`），此时忽略成交量列，`volume_days` 被忽略。
+
+### 3.1 轮动惰性（`rotate_threshold`）
+
+为避免在得分相近的标的间来回切换、降低调仓频率，策略引入惰性机制。策略在
+`ctx.cache` 中记录上一调仓日持有的标的（跨决策日保留）。在每次调仓日，对仍
+可作为候选的当前持仓，用它在**当前决策日**的 LLT 得分，对比新入选标的的
+**当前**得分：
+
+```
+当前持仓·当前得分 ≥ 新候选·当前得分 × rotate_threshold  → 保留持仓，不调仓
+当前持仓·当前得分 < 新候选·当前得分 × rotate_threshold  → 轮动到明显更优的新候选
+```
+
+即：仅当新候选在**当前时刻**明显更优（得分超过当前持仓的 `1/rotate_threshold`，
+默认约 11%）时才调仓。`top_n=1` 时即为：下一只候选会与上一只持仓的当前得分
+比较，未明显占优则继续持有上一只。
+
+取值约定：
+
+- `1.0`（或以上）：关闭惰性，纯按得分轮动（等价于不使用该功能）。
+- `0.9`：默认档，新候选需明显更优才轮动。
+- 越接近 `0` 惰性越强；`0` 时当前得分≥0 即保留，几乎永不调仓。
+
+> 惰性比较针对仍通过可交易过滤、得分>0 的当前持仓，且基准是当前决策日的得分；
+> 若当前持仓当前时刻已跌出候选（如转跌、停牌、涨跌停），会照常轮动，不会死守下跌标的。
+
+### 3.2 每日止损（`stop_loss_pct`，强烈建议开启）
+
+`monthly`（甚至 weekly）调仓意味着**两次调仓之间最长暴露整段下跌而无法离场**。
+动量策略在月初买进一只强势科技/半导体 ETF 后、若随后急跌，会一路吃到下一次
+调仓。为此共享资金引擎提供**请求级**的每日止损（`stop_loss_pct`，顶层字段，
+非 `strategy_params`）：在**非决策日**逐日检查持仓，收盘价跌破**平均成本**的
+`1 - stop_loss_pct` 即立即卖出（`reason=stop_loss`）。
+
+回测实证（`etf_core` 池，2023-01 ~ 2026-08，`top_n=1/3`）：
+
+| top_n | stop_loss | 总收益 | 最大回撤 | Sharpe |
+|---|---|---|---|---|
+| 1 | 无 | 186.7% | 36.9% | 1.09 |
+| 1 | **0.10** | **228.6%** | **22.3%** | **1.37** |
+| 3 | 无 | 131.1% | 28.0% | 1.04 |
+| 3 | **0.10** | **137.8%** | **17.9%** | **1.19** |
+
+在 0.08~0.12 区间内，开启止损均显著**降低最大回撤**（约砍半）并**提升 Sharpe**，
+总收益通常也不降反升（截断了单月急跌标的的大幅亏损，如某通信 ETF 曾在一个月内
+-32%）。示例请求已默认设 `stop_loss_pct: 0.10`。注意该值在单窗口内存在最优峰值，
+实际选择应在 0.08~0.12 之间按可接受回撤做权衡，不宜过小（易被正常波动扫出）或
+过大（失去保护意义）。
+
+> 止损触发后，若该标的在下一调仓日得分仍为正仍可能被重新买入；但急跌过后其 LLT
+> 斜率多半转负、不再作为候选，故不会立即追回。止损卖出不计入策略选股逻辑，只在
+> 撮合层兜底。
+
+## 4. 使用示例
+
+通用配置见 `backend/examples/cross_section/backtest_shared_etf_rotation.json`，直接 `universe: etf_core`（48 只精选 ETF），无需手写 symbols；`decision_frequency: monthly` + `decision_anchor: start` 每月首个交易日调仓。`volume_confirm` / `volume_days` 不在 CLI 的通用透传键白名单（`top_n`、`limit_pct_threshold` 等）里，需通过该请求文件（或其它 `--request FILE.json`）的 `strategy_params` 传入；改为 `true` 即开启量价确认：
+
+```bash
+cd backend
+.venv/Scripts/python.exe -m app.script backtest \
+  --request examples/cross_section/backtest_shared_etf_rotation.json --json
+```
+
+不提供 `symbols` / `universe` 时，策略回退到默认池 `etf_core`（即运行于同样的精选池）。如需自定义池，用 `universe` 指向其它预设或 `config:*_pool.json`，或用 `symbols` 显式列出代码。
+
+> 说明：策略不自动识别或维护历史 ETF 池，默认使用 `etf_core` 精选池。所有指标仅使用调仓日及之前的收盘价，不使用未来数据。
+
+## 5. 报告中的指标对比
+
+共享资金交互报告（`backtest --report` / `output_options.report`，`.html`）针对本策略提供两类指标观察：
+
+- **选股表**：每个调仓日展示**全部候选**（不止 top-N），含排名、收盘价与
+  `score` / `llt_slope` / `llt_r2` / `vpt_slope` 各指标列；`✓` 与高亮标出当次入选持仓
+  （top-N），落选/候补标的也可见，便于横向比较差距。
+- **指标热力图（调仓日 × 标的）**：行 = 标的，列 = 调仓日；下拉切换指标字段，
+  单元格按"该日候选内相对强弱"着色，蓝框 = 该日入选持仓，点击格子联动左侧调仓详情，
+  可一眼观察得分/斜率/R² 排名随时间的演化。
+
+这是**通用基座**：报告模型会把策略 `select` 返回的每个候选 detail 中除元字段外的
+数值字段自动透传进报告并被动态渲染。**新增指标只需在 `select_etf_rotation` 的候选
+detail 字典里加一个字段**（如 `"my_score": value`），无需改动报告模型或 HTML 模板。
+注意：逐候选 detail 中应避免塞入常量参数（如 `llt_period`），它们属请求配置而非逐标的指标。
+
+## 6. 局限
+
+- LLT 拟合趋势是趋势跟随信号，震荡/熊市里可能频繁在弱势标的间切换或持有现金。
+- `volume_confirm` 只做方向过滤，不能替代 LLT 得分排名；如需多因子加权评分，参考 `etf_rotation_3factor`。
+- 候选池过小（如只有 1–2 只）时，排名与过滤的意义有限。

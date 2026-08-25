@@ -74,7 +74,7 @@ python -m app.script backtest --mode universe --universe hs300 \
 | `strategy_id` | 横截面策略 id（见 `backtest --list-strategies`） |
 | `mode` | `universe` 共享资金回测；`screen` 仅做截面选股 |
 | `data_source` | 行情源，目前仅支持 `a_stock_data` |
-| `universe` | `symbols` 为空时的股票池：`all_a`（全A）/ `hs300` / `zz500` / `zz399101`（中小综指）/ `zz1000`（中证1000）/ `gz2000`（国证2000）/ `star50`（科创50）/ `star_board`（科创板全板块）/ `etf`（场内 ETF）。也支持 `backend/config/*_pool.json` 里的预设池，用文件名前缀即可，如 `etf_core`（读 `config/etf_core_pool.json`），或显式 `config:etf_core` |
+| `universe` | `symbols` 为空时的股票池：`all_a`（全A）/ `hs300` / `zz500` / `zz399101`（中小综指）/ `zz1000`（中证1000）/ `gz2000`（国证2000）/ `star50`（科创50）/ `star_board`（科创板全板块）/ `etf`（场内 ETF）。`etf_dynamic` / `etf_asof` 为 `etf` 的别名：带 `start_date` 时按 K 线覆盖重构「当时已存在」的动态池（避开幸存者偏差，见 `etf-filter-strategy.md`）。也支持 `backend/config/*_pool.json` 里的预设池，用文件名前缀即可，如 `etf_core`（读 `config/etf_core_pool.json`），或显式 `config:etf_core`；config 池同样在带 asof 时按存在性过滤 |
 | `symbols` | 显式股票列表；非空时覆盖 `universe` |
 | `max_universe` | 股票池上限（组合请求 1~10000）；超出时截取或按 `seed` 抽样；全 A 约设 `6000` |
 | `seed` | 抽样随机种子，便于复现 |
@@ -91,7 +91,7 @@ python -m app.script backtest --mode universe --universe hs300 \
 | `use_cache` | 是否使用本地基本面/财报缓存 |
 | `force_refresh` | 是否强制重新拉取并覆盖缓存 |
 | `max_workers` | 并行拉取估值/财报的线程数 |
-| `strategy_params` | 该横截面策略专属参数，见对应策略文档；决策频率由 `decision_frequency`（`daily`/`weekly`/`monthly`）+ `decision_every_n`（步长）统一控制，`daily` 下 `decision_warmup` 控制冷启动，`prosperity_resonance` 另用 `hysteresis_rank_threshold` 防抖 |
+| `strategy_params` | 该横截面策略专属参数，见对应策略文档；决策频率由 `decision_frequency`（`daily`/`weekly`/`biweekly`/`monthly`）+ `decision_every_n`（步长）统一控制，`decision_anchor`（`start`/`end`）控制 monthly 锚在月初/月末，`daily` 下 `decision_warmup` 控制冷启动，`prosperity_resonance` 另用 `hysteresis_rank_threshold` 防抖 |
 | `output_options.*` | `output` / `plot` / `json`；另支持 `report`（交互 HTML，含调仓买卖与区间收益；未写时若有 `plot` 则自动派生同名 `.html`）。`report_top_k`（正整数，universe 模式）限制 HTML 内嵌的逐票明细图数量：仅前 N 名保留可点击的净值/K 线/指标图，排行榜仍保留全部标的指标；省略或 0 表示全部。`report_top_k` 越小，报告生成越快、HTML 越小（500 只全量内嵌需序列化数百万个点，是大池子报告慢的主因）。`report_price_top_k`（正整数）限制从行情缓存补拉 K 线的股票数：省略或 0=全部（默认），正数=仅前 N 名；补拉越多需访问数据源越久，建议大池子按需调小 |
 
 #### 基本面过滤股票池（`fundamental_filter`）
@@ -125,17 +125,30 @@ python -m app.script backtest --mode universe --universe hs300 \
 
 各策略文档的「示例请求参数」一节会对照其 example 文件逐字段说明（含
 `strategy_params`）。决策频率由 `decision_frequency` 统一控制，取 `daily` /
-`weekly` / `monthly` 之一，默认见各策略（周期策略默认 `monthly`，
+`weekly` / `biweekly` / `monthly` 之一，默认见各策略（周期策略默认 `monthly`，
 `prosperity_resonance` 默认 `daily`）：
 
-- `monthly` 在**自然月月末**锚定决策日（`decision_every_n=3` 即季末）；
+- `monthly` 在**自然月**锚定决策日，锚点由 `decision_anchor` 控制（默认 `end`
+  取月末，`start` 取每月首个交易日；`etf_rotation` 默认 `start`，其余周期策略
+  默认 `end`）。`decision_every_n=3` 即季末/季初；
 - `weekly` 在 **ISO 周周末**锚定决策日（`decision_every_n=2` 即双周）；
+- `biweekly` 每 **2 个 ISO 周**（固定双周）的周末锚定决策日，等价于
+  `weekly` + `decision_every_n=2`，忽略 `decision_every_n`；
 - `daily` 每个交易日都是决策日，`decision_warmup`（默认 20）跳过前 N 根
   冷启动期，保证 MA/LLT 等指标有足够历史。
 
-weekly/monthly 均锚定日历周期而非回测起始日，回测结果不随起始日相位漂移。
+weekly/biweekly/monthly 均锚定日历周期而非回测起始日，回测结果不随起始日相位漂移。
+（`decision_anchor` 仅 `monthly` 生效。）
 共享资金引擎只执行策略返回的决策日，并不强制定时调仓。换仓执行方式由
 `rebalance_mode` 决定（默认 `full` 全清重建，可设 `incremental` 只交易差异）。
+
+**报告中的指标对比（通用基座）**：共享资金交互报告（`backtest --report`）的选股表会展示
+每个调仓日的**全部候选**（不止 `top_n`）及其指标列，并高亮当次入选持仓；另有
+"指标对比（调仓日 × 标的）"热力图，可切换指标字段观察排名随时间的演化。
+这些指标来自策略 `select` 返回的候选 detail：报告模型 `shared_report_model.py` 会把其中
+除元字段（`symbol/name/asof/close/float_market_cap/rank_market_cap/rank/selected`）外的
+数值字段**自动透传**并动态渲染，因此**新增指标只需在策略候选 detail 里加一个字段**，
+无需改动报告模型或 HTML 模板。注意逐候选 detail 中勿塞入常量参数（属请求配置而非逐标的指标）。
 
 #### 系统化仓位管理（可选）
 
@@ -189,8 +202,9 @@ weekly/monthly 均锚定日历周期而非回测起始日，回测结果不随�
 | `small_cap_zz399101` | 中小综指微盘 | 399101 最小流通市值 TopN | [small-cap-zz399101-strategy.md](./small-cap-zz399101-strategy.md) |
 | `limit_up_pullback` | 涨停回落埋伏 | 涨停事件 + 低位整理 | [limit-up-pullback-strategy.md](./limit-up-pullback-strategy.md) |
 | `order_inflection` | 订单开工拐点 | 合同负债→毛利→现金流→存货五步法 | [order-inflection-strategy.md](./order-inflection-strategy.md) |
-| `etf_rotation` | ETF 动量轮动 | 趋势向上且中期动量最强的 ETF | — |
+| `etf_rotation` | ETF 动量轮动 | LLT 拟合趋势（斜率×R²）最强，可选 VPT 量价确认，惰性调仓降低轮动频率 | [etf-rotation-strategy.md](./etf-rotation-strategy.md) |
 | `etf_rotation_3factor` | 三因子ETF轮动 | 乖离+斜率+效率三因子加权评分，1.5×阈值防抖 | [etf-rotation-3factor-strategy.md](./etf-rotation-3factor-strategy.md) |
+| `etf_filter` | ETF 动态池筛选 | 从历史时点存在的 ETF 池按流动性筛一批，可选行业均衡 | [etf-filter-strategy.md](./etf-filter-strategy.md) |
 | `cyclical_rotation` | 顺周期行业轮动 | 商品信号驱动的有色/能源/农业轮动 | [cyclical-rotation-strategy.md](./cyclical-rotation-strategy.md) |
 | `prosperity_resonance` | 景气共振 | PEG + 趋势确认 + 回调入场三重共振 | [prosperity-resonance-strategy.md](./prosperity-resonance-strategy.md) |
 | `new_stock_ice_reversal` | 次新情绪冰点反转 | 次新跌停潮冰点 → 次日反转次新篮 | [new-stock-ice-reversal-strategy.md](./new-stock-ice-reversal-strategy.md) |

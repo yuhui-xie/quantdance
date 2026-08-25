@@ -27,6 +27,15 @@ def _nf(x: Any) -> float | None:
     return v
 
 
+# 选股 detail 行中的元字段：单独处理，不作为通用指标透传。其余数值字段
+# （如 score / llt_slope / llt_r2 / vpt_slope 及未来任意新指标）自动透传到报告模型，
+# 由 HTML 动态渲染，无需在此逐一硬编码。
+_SELECTION_META = frozenset(
+    {"symbol", "name", "asof", "close", "float_market_cap", "rank_market_cap",
+     "rank", "selected"}
+)
+
+
 def _symbol_name_map(rebalances: list[dict[str, Any]]) -> dict[str, str]:
     names: dict[str, str] = {}
     for rb in rebalances:
@@ -453,20 +462,30 @@ def build_backtest_shared_report_model(
         buys = [t for t in day_trades if t["side"] == "buy"]
         sells = [t for t in day_trades if t["side"] == "sell"]
         targets = [str(s) for s in (rb.get("targets") or [])]
+        target_set = set(targets)
         selection = []
         for item in rb.get("selection") or []:
             if not isinstance(item, dict):
                 continue
             sym = str(item.get("symbol") or "").strip()
-            selection.append(
-                {
-                    "symbol": sym,
-                    "name": str(item.get("name") or names.get(sym, "")),
-                    "close": _nf(item.get("close")),
-                    "float_market_cap": _nf(item.get("float_market_cap")),
-                    "rank_market_cap": _nf(item.get("rank_market_cap")),
-                }
-            )
+            row: dict[str, Any] = {
+                "symbol": sym,
+                "name": str(item.get("name") or names.get(sym, "")),
+                "close": _nf(item.get("close")),
+                "float_market_cap": _nf(item.get("float_market_cap")),
+                "rank_market_cap": _nf(item.get("rank_market_cap")),
+                "rank": item.get("rank"),
+                "selected": sym in target_set,
+            }
+            # 通用指标透传：除元字段外的数值字段（score/llt_slope 等）自动带入报告，
+            # 供 HTML 动态渲染列与热力图；非数值/空值自动剔除。
+            for key, value in item.items():
+                if key in _SELECTION_META:
+                    continue
+                norm = _nf(value)
+                if norm is not None:
+                    row[key] = norm
+            selection.append(row)
 
         periods.append(
             {
@@ -486,6 +505,19 @@ def build_backtest_shared_report_model(
                 "sell_count": len(sells),
             }
         )
+
+    # 按股票聚合历次决策日的指标（symbol → [{date, ...指标字段}]），供个股详情弹窗展示。
+    # 行内已含 symbol/name/close/rank/score/llt_slope 等通用字段，date 取自所属调仓日。
+    symbol_indicators: dict[str, list[dict[str, Any]]] = {}
+    for period in periods:
+        day = period["date"]
+        for sel in period["selection"]:
+            sym = sel.get("symbol")
+            if not sym:
+                continue
+            row = dict(sel)
+            row["date"] = day
+            symbol_indicators.setdefault(sym, []).append(row)
 
     equity_series = [
         {"date": _norm_date(r.get("date")), "equity": _nf(r.get("equity")) or 0.0}
@@ -578,6 +610,7 @@ def build_backtest_shared_report_model(
         "round_trips": round_trips,
         "by_symbol": by_symbol,
         "symbol_index": symbol_index,
+        "symbol_indicators": symbol_indicators,
         "rebalance_dates": rb_dates,
         "buy_dates": buy_dates,
         "sell_dates": sell_dates,

@@ -14,6 +14,7 @@ from app.strategies.cross_section.decision import (
     decision_dates_by_frequency,
     decision_daily,
     month_end_trading_days,
+    month_start_trading_days,
     periodic_decision_dates,
 )
 

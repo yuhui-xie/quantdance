@@ -6,7 +6,7 @@ import json
 
 import pytest
 
-from app.data_sources.a_stock_data import AStockDataError, AStockDataSDK
+from app.data_sources.a_stock_data import AStockDataError, AStockDataSDK, _KLINE_CACHE_VERSION
 from app.data_sources.mootdx_market_sdk import MootdxMarketError, MootdxMarketSDK
 from app.data_sources.tencent_finance_sdk import TencentFinanceError
 
@@ -159,6 +159,86 @@ def test_forward_adjust_smoothes_ex_right_gap(monkeypatch):
     assert closes[2] == pytest.approx(closes[1], rel=1e-2)
 
 
+def test_forward_adjust_smoothes_etf_split_category11(monkeypatch):
+    """ETF 份额折算（category==11，suogu=4 即 1 拆 4）应被前复权吸收，拆分日无断层。"""
+    import pandas as pd
+
+    raw = [
+        {"datetime": "2026-05-21 15:00", "open": 2.88, "high": 2.90, "low": 2.74, "close": 2.748, "volume": 779360, "amount": 1.0},
+        {"datetime": "2026-05-22 15:00", "open": 0.69, "high": 0.707, "low": 0.687, "close": 0.705, "volume": 2242500, "amount": 1.0},
+        {"datetime": "2026-05-25 15:00", "open": 0.706, "high": 0.733, "low": 0.702, "close": 0.732, "volume": 2750998, "amount": 1.0},
+    ]
+    # 拆分日 category==11、suogu=4；分红送转字段全 0。模拟 _get_xdxr_info 解析后的返回。
+    xdxr = pd.DataFrame(
+        {"fenhong": [0.0, 0.0, 0.0], "peigu": [0.0, 0.0, 0.0], "peigujia": [0.0, 0.0, 0.0],
+         "songzhuangu": [0.0, 30.0, 0.0]},  # 10*(4-1)=30，等价 1 拆 4
+        index=pd.to_datetime(["2026-05-21", "2026-05-22", "2026-05-25"]),
+    )
+    sdk = MootdxMarketSDK(client=_FakeMootdxClient())  # type: ignore[arg-type]
+    monkeypatch.setattr(sdk, "_get_xdxr_info", lambda symbol: xdxr)
+
+    adjusted = sdk._forward_adjust_bars("512930", raw)  # type: ignore[arg-type]
+
+    closes = [b["close"] for b in adjusted]
+    # 拆分日收盘应与前一日连续，而非原始的 2.748→0.705 跳水（-74%）。
+    # 拆分日另有真实行情波动（本例约 +2.6%），用 10% 容差排除断层即可。
+    assert closes[1] == pytest.approx(closes[0], rel=0.1)
+    assert closes[2] == pytest.approx(closes[1], rel=0.1)
+
+
+def _fake_xdxr(monkeypatch, records):  # records: list[(date, category, suogu)]
+    import pandas as pd
+    from mootdx import utils as mootdx_utils
+
+    rows, idx = [], []
+    for d, cat, suogu in records:
+        rows.append(
+            {
+                "year": int(d[:4]), "month": int(d[5:7]), "day": int(d[8:10]),
+                "category": cat, "suogu": suogu,
+                "fenhong": None, "peigu": None, "peigujia": None, "songzhuangu": None,
+            }
+        )
+        idx.append(d)
+    df = pd.DataFrame(rows, index=pd.to_datetime(idx))
+    monkeypatch.setattr(mootdx_utils.adjust, "get_xdxr", lambda code: df)
+    return MootdxMarketSDK(client=_FakeMootdxClient())  # type: ignore[arg-type]
+
+
+def test_get_xdxr_info_converts_category11_suogu(monkeypatch):
+    """category==11 的 ETF 份额折算应被折算为等价送转：拆细(>1)为正、合并(<1)为负。"""
+    sdk = _fake_xdxr(monkeypatch, [("2026-05-22", 11, 4.0), ("2024-08-12", 11, 0.358063)])
+
+    info = sdk._get_xdxr_info("512930")  # type: ignore[arg-type]
+
+    assert list(info.columns) == ["fenhong", "peigu", "peigujia", "songzhuangu"]
+    # 1 拆 4 → songzhuangu=10*(4-1)=30（价格 ÷4）
+    assert info.loc["2026-05-22", "songzhuangu"] == pytest.approx(30.0)
+    # 合并（1→0.358 份）→ songzhuangu=10*(0.358-1)≈-6.42（价格 ×1/0.358）
+    assert info.loc["2024-08-12", "songzhuangu"] == pytest.approx((0.358063 - 1) * 10)
+
+
+def test_forward_adjust_smoothes_etf_consolidation(monkeypatch):
+    """ETF 份额合并（category==11、suogu=0.358）应被前复权吸收，合并日无 +170% 断层。"""
+    raw = [
+        {"datetime": "2024-08-09 15:00", "open": 0.431, "high": 0.451, "low": 0.430, "close": 0.441, "volume": 6948178, "amount": 1.0},
+        {"datetime": "2024-08-12 15:00", "open": 1.225, "high": 1.228, "low": 1.188, "close": 1.191, "volume": 1239270, "amount": 1.0},
+        {"datetime": "2024-08-13 15:00", "open": 1.189, "high": 1.192, "low": 1.176, "close": 1.188, "volume": 997975, "amount": 1.0},
+    ]
+    # 合并日 category==11、suogu=0.358063；换算 songzhuangu=10*(0.358-1)≈-6.42。
+    sdk = _fake_xdxr(monkeypatch, [("2024-08-12", 11, 0.358063)])
+    info = sdk._get_xdxr_info("512200")  # type: ignore[arg-type]
+    monkeypatch.setattr(sdk, "_get_xdxr_info", lambda symbol: info)
+
+    adjusted = sdk._forward_adjust_bars("512200", raw)  # type: ignore[arg-type]
+
+    closes = [b["close"] for b in adjusted]
+    # 合并日收盘应与前一日连续，而非原始的 0.441→1.191（+170%）。
+    # 合并日另有真实行情波动（本例约 -3%），用 10% 容差排除断层即可。
+    assert closes[1] == pytest.approx(closes[0], rel=0.1)
+    assert closes[2] == pytest.approx(closes[1], rel=0.1)
+
+
 def test_a_stock_data_rebuilds_cache_without_adjust_marker(tmp_path):
     """旧的不复权缓存（无 adjust 标记）必须作废重拉，避免复权/不复权混合。"""
     class _CountingMootdx(MootdxMarketSDK):
@@ -189,7 +269,7 @@ def test_a_stock_data_rebuilds_cache_without_adjust_marker(tmp_path):
     assert mootdx.calls == 1
     assert rows[-1]["close"] == pytest.approx(1825.0)
     payload = json.loads(cache_file.read_text(encoding="utf-8"))
-    assert payload.get("version") == 3
+    assert payload.get("version") == _KLINE_CACHE_VERSION
     assert payload.get("adjust") == "qfq"
 
 

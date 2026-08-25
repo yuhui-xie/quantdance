@@ -469,7 +469,13 @@ class MootdxMarketSDK:
         return self._forward_adjust_bars(norm.symbol, raw_bars)
 
     def _get_xdxr_info(self, symbol: str) -> pd.DataFrame | None:
-        """获取除权除息记录（category==1：分红/送转），列为 fenhong/peigu/peigujia/songzhuangu。
+        """获取除权除息记录，列为 fenhong/peigu/peigujia/songzhuangu。
+
+        category==1 为分红/送转；category==11 为 ETF 份额折算（拆细/合并），字段 suogu
+        为份额比例（1 份变 suogu 份，价格 ×1/suogu）：suogu>1 即拆细（价格下调，如 512930
+        的 4.0），suogu<1 即合并（价格上调，如 512200 的 0.358）。折算数学上等价于送转股，
+        这里把 suogu 折算为 songzhuangu=10*(suogu-1)，使其与分红送转共用同一条前复权公式，
+        否则 ETF 折算日在行情里留下虚假断层。
 
         数据来自 TDX 本地服务器（与原始 K 线同一来源），带 24h 缓存。
         """
@@ -482,11 +488,17 @@ class MootdxMarketSDK:
             return None
         if xdxr is None or getattr(xdxr, "empty", True) or "category" not in getattr(xdxr, "columns", ()):
             return None
-        info = xdxr[xdxr["category"] == 1]
-        cols = [c for c in ("fenhong", "peigu", "peigujia", "songzhuangu") if c in info.columns]
+        info = xdxr[xdxr["category"].isin((1, 11))].copy()
+        cols = [c for c in ("category", "fenhong", "peigu", "peigujia", "songzhuangu", "suogu") if c in info.columns]
         if not cols:
             return None
         info = info[cols].apply(pd.to_numeric, errors="coerce").fillna(0.0)
+        # ETF 份额折算：1 份变 suogu 份、价格 ×1/suogu；等价于每 10 份送 (suogu-1)*10 份，
+        # songzhuangu 可为负（合并时 suogu<1）。仅跳过无有效比例的记录（suogu<=0 会导致除零）。
+        conversion = info["category"] == 11
+        info.loc[conversion & (info["suogu"] > 0), "songzhuangu"] = (info["suogu"] - 1) * 10
+        info.loc[conversion, ["fenhong", "peigu", "peigujia"]] = 0.0
+        info = info.drop(columns=[c for c in ("category", "suogu") if c in info.columns])
         info.index = pd.to_datetime(info.index).normalize()
         info = info[~info.index.duplicated(keep="last")]
         return info

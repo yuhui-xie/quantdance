@@ -189,10 +189,10 @@ def efficiency_momentum_factor(df: pd.DataFrame) -> pd.Series:
     )
 
 
-# 本模块导出的因子注册（供 app/factors/registry.py 自动汇总）
+# 本模块导出的因子注册（供 app/factors/registry.py 自动汇总，来源推断为 momentum）
 FACTORS: list[FactorSpec] = [
-    FactorSpec("simple_momentum", simple_momentum_factor, min_bars=21, source="momentum"),
-    FactorSpec("bias_momentum", bias_momentum_factor, min_bars=25, source="momentum"),
-    FactorSpec("slope_momentum", slope_momentum_factor, min_bars=5, source="momentum"),
-    FactorSpec("efficiency_momentum", efficiency_momentum_factor, min_bars=5, source="momentum"),
+    FactorSpec("simple_momentum", simple_momentum_factor, min_bars=21),
+    FactorSpec("bias_momentum", bias_momentum_factor, min_bars=25),
+    FactorSpec("slope_momentum", slope_momentum_factor, min_bars=5),
+    FactorSpec("efficiency_momentum", efficiency_momentum_factor, min_bars=5),
 ]

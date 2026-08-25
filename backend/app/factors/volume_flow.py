@@ -109,8 +109,8 @@ def vpt_slope_factor(df: pd.DataFrame) -> pd.Series:
     return pd.Series(llt_slope(vpt(close, _volume_arr(df)), lookback=1), index=df.index)
 
 
-# 本模块导出的因子注册（供 app/factors/registry.py 自动汇总）
+# 本模块导出的因子注册（供 app/factors/registry.py 自动汇总，来源默认 strategy）
 FACTORS: list[FactorSpec] = [
-    FactorSpec("vpt", vpt_factor, min_bars=2, source="strategy"),
-    FactorSpec("vpt_slope", vpt_slope_factor, min_bars=2, source="strategy"),
+    FactorSpec("vpt", vpt_factor, min_bars=2),
+    FactorSpec("vpt_slope", vpt_slope_factor, min_bars=2),
 ]

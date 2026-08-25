@@ -1,0 +1,33 @@
+{
+  "strategy_id": "etf_filter",
+  "mode": "screen",
+  "data_source": "a_stock_data",
+  "universe": "etf",
+  "start_date": "2026-08-21",
+  "end_date": "2026-08-21",
+  "initial_cash": 100000,
+  "commission": 0.0003,
+  "min_commission": 5.0,
+  "slippage": 0.001,
+  "lot_size": 100,
+  "use_cache": true,
+  "force_refresh": false,
+  "max_workers": 6,
+  "max_universe": 300,
+  "strategy_params": {
+    "decision_frequency": "monthly",
+    "top_n": 20,
+    "liquidity_days": 20,
+    "min_amount": 50000000,
+    "momentum_days": 60,
+    "min_momentum": 0.0,
+    "per_industry_top_k": 2,
+    "exclude_limit": true,
+    "exclude_suspended": true,
+    "limit_pct_threshold": 9.5
+  },
+  "output_options": {
+    "output": "out/backtest_shared_etf_filter.json",
+    "json": true
+  }
+}

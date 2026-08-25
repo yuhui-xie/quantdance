@@ -164,6 +164,59 @@ def test_build_backtest_shared_report_model_periods_and_pnl():
     assert {s["symbol"] for s in model["symbol_index"]} == {"000001", "000002", "000003"}
 
 
+def test_report_model_passes_through_indicator_fields():
+    """通用指标基座：选股 detail 的非元数值字段自动透传进报告，selected 依据 targets。"""
+    out = _mini_out()
+    out["rebalances"][0]["selection"].append(
+        {"symbol": "000099", "name": "候补", "close": 5.0, "score": 3.0, "llt_slope": 0.1, "rank": 3}
+    )
+    for rb in out["rebalances"]:
+        for item in rb["selection"]:
+            item.setdefault("score", 1.0)
+            item.setdefault("llt_slope", 0.2)
+            item.setdefault("rank", 1)
+    model = build_backtest_shared_report_model(out, load_prices=False)
+    p0 = model["periods"][0]
+    rows = {r["symbol"]: r for r in p0["selection"]}
+    assert len(rows) == 3
+    # 指标字段通用透传（非元数值字段自动进入报告）
+    assert rows["000001"]["score"] == 1.0
+    assert rows["000001"]["llt_slope"] == 0.2
+    assert rows["000099"]["score"] == 3.0
+    assert rows["000099"]["rank"] == 3
+    # selected 依据该调仓日 targets
+    assert rows["000001"]["selected"] is True
+    assert rows["000099"]["selected"] is False
+
+
+def test_report_model_symbol_indicators_timeline():
+    """个股指标详情：按 symbol 聚合历次决策日的指标，date 取所属调仓日。"""
+    out = _mini_out()
+    for rb in out["rebalances"]:
+        for item in rb["selection"]:
+            item.setdefault("score", 1.0)
+            item.setdefault("llt_slope", 0.2)
+            item.setdefault("llt_r2", 0.8)
+            item.setdefault("rank", 1)
+    model = build_backtest_shared_report_model(out, load_prices=False)
+    inds = model["symbol_indicators"]
+    # 000002 出现在两个决策日，按时间先后聚合
+    assert [r["date"] for r in inds["000002"]] == ["2020-01-02", "2020-01-31"]
+    # 每行保留指标字段与 close / rank / selected
+    row = inds["000002"][0]
+    assert row["score"] == 1.0
+    assert row["llt_slope"] == 0.2
+    assert row["llt_r2"] == 0.8
+    assert row["close"] == 20.0
+    assert row["rank"] == 1
+    assert row["selected"] is True
+    # 000001 仅一个决策日；symbol_indicators 不含成交但未入候选的代码
+    assert len(inds["000001"]) == 1
+    assert "000003" in inds  # 000003 第二决策日入候选
+    # 报告输出不破坏原有字段
+    assert "symbol_indicators" in model
+
+
 def test_render_backtest_shared_html(tmp_path: Path):
     dest = tmp_path / "report.html"
     path = render_backtest_shared_html(_mini_out(), dest, load_prices=False)
@@ -185,6 +238,9 @@ def test_render_backtest_shared_html(tmp_path: Path):
     assert "zoomAroundTrades" in text
     assert "has_ohlc" in text
     assert "早于价格序列" in text
+    assert "symbol_indicators" in text
+    assert "renderSymbolIndicators" in text
+    assert "指标详情（历次决策日）" in text
 
 
 def test_bars_cover_trade_dates_rejects_late_cache():

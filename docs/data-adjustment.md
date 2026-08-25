@@ -2,6 +2,8 @@
 
 记录本项目行情数据的前复权口径、曾出现的数据缺陷、修复方案与维护约定。
 
+> ETF 份额折算断层的专项排查与检查脚本见 [etf-data-issues.md](etf-data-issues.md)。
+
 ## 结论
 
 本项目日线行情（`app/data_sources/market_data.py` 的 `fetch_a_share_daily`）统一返回**前复权（qfq）**价格，
@@ -51,6 +53,12 @@ adj      = (preclose.next / close).fillna(1)[::-1].cumprod()   # 最新一根因
 - 宝信软件 600845：2024-06-11 收 **32.90** → 06-12 收 **32.88**，断层消除，序列连续；
 - 全历史 4999 根中 **0 处** >12% 隔夜跳变，最大单日波动 +10.05%（符合 ±10% 限制）。
 
+### ETF 份额折算断层（已修复）
+
+- **现象**：ETF 512930 在 2026-05-22 出现约 **-74%** 隔夜跳水（2.748 → 0.705）；ETF 512200 在 2024-08-12 出现约 **+170%** 隔夜跳涨（0.441 → 1.191）。均远超涨跌停限制，明显非真实行情，根因是这两个 ETF 当日做了**份额折算**（拆细/合并）。
+- **根因**：TDX 除权记录里，普通股票分红送转是 `category==1`，而 ETF 份额折算/拆分是 `category==11`（字段 `suogu`=份额比例，1 份变 suogu 份、价格 ×1/suogu）。`_get_xdxr_info` 原先只取 `category==1`，漏掉了 `category==11`，导致前复权未折算、在折算日留下断层。
+- **修复**：`_get_xdxr_info` 改为同时纳入 `category==11`，并把 `suogu` 折算为等价的送转股 `songzhuangu=10*(suogu-1)`（1 拆 4 等价于每 10 份送 30 份，数学上与送转共用同一条前复权公式）。注意 `suogu` 双向有效：>1 为拆细（价格下调，如 512930 的 4.0）、<1 为合并（价格上调，如 512200 的 0.358，songzhuangu 为负）；仅跳过 `suogu<=0` 的无有效比例记录。由于该改动改变前复权口径，`_KLINE_CACHE_VERSION` 已递增（v3→v4→v5，v5 补齐合并方向）使旧缓存整体重建。
+
 ## 缓存失效约定
 
 K 线缓存（`backend/data/a_stock_data/klines/`）带格式版本 `version` 字段与复权标记 `adjust`：
@@ -74,4 +82,6 @@ K 线缓存（`backend/data/a_stock_data/klines/`）带格式版本 `version` �
 - `app/data_sources/mootdx_market_sdk.py`：`_forward_adjust_bars` / `_get_xdxr_info` / `get_klines`
 - `app/data_sources/a_stock_data.py`：`_KLINE_CACHE_VERSION` / 缓存读写
 - `tests/test_a_stock_data_sdk.py`：`test_mootdx_adapter_klines_fetches_raw_then_forward_adjusts`、
-  `test_forward_adjust_smoothes_ex_right_gap`、`test_a_stock_data_rebuilds_cache_without_adjust_marker`
+  `test_forward_adjust_smoothes_ex_right_gap`、`test_get_xdxr_info_converts_category11_suogu`、
+  `test_forward_adjust_smoothes_etf_split_category11`、`test_forward_adjust_smoothes_etf_consolidation`、
+  `test_a_stock_data_rebuilds_cache_without_adjust_marker`

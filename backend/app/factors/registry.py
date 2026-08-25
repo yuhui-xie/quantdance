@@ -26,13 +26,24 @@ def _plugin_module_names() -> list[str]:
     return sorted(out)
 
 
-def _load_factors() -> list[FactorSpec]:
+# 来源按所属模块推断：screen_factors → screening，momentum → momentum，其余默认 strategy
+_MODULE_SOURCE: dict[str, str] = {
+    "screen_factors": "screening",
+    "momentum": "momentum",
+}
+
+
+def _load_factors() -> tuple[list[FactorSpec], dict[str, str]]:
+    """返回 (FACTORS, 因子名 → 来源标签)。"""
     specs: list[FactorSpec] = []
+    name_source: dict[str, str] = {}
     seen: dict[str, str] = {}
     for module_name in _plugin_module_names():
         m = importlib.import_module(module_name)
         if not hasattr(m, "FACTORS"):
             continue
+        leaf = module_name.rsplit(".", 1)[-1]
+        source = _MODULE_SOURCE.get(leaf, "strategy")
         for spec in m.FACTORS:
             if not isinstance(spec, FactorSpec):
                 raise TypeError(
@@ -44,17 +55,18 @@ def _load_factors() -> list[FactorSpec]:
                 )
             seen[spec.name] = module_name
             specs.append(spec)
-    return specs
+            name_source[spec.name] = source
+    return specs, name_source
 
 
-FACTORS: list[FactorSpec] = _load_factors()
+FACTORS, _FACTOR_SOURCE = _load_factors()
 
 # 由 FACTORS 派生的查找结构
 FACTOR_REGISTRY: dict[str, FactorFn] = {s.name: s.fn for s in FACTORS}
 FACTOR_MIN_BARS: dict[str, int] = {s.name: s.min_bars for s in FACTORS}
 
 _SOURCE_GROUPS: dict[str, frozenset[str]] = {
-    src: frozenset(s.name for s in FACTORS if s.source == src)
+    src: frozenset(n for n, s in _FACTOR_SOURCE.items() if s == src)
     for src in ("screening", "momentum", "strategy")
 }
 SCREENING_FACTORS: frozenset[str] = _SOURCE_GROUPS["screening"]
@@ -64,7 +76,4 @@ STRATEGY_FACTORS: frozenset[str] = _SOURCE_GROUPS["strategy"]
 
 def factor_source(name: str) -> str:
     """因子来源标签：screening（选股技术） / momentum（动量趋势） / strategy（策略信号）。"""
-    for src, names in _SOURCE_GROUPS.items():
-        if name in names:
-            return src
-    return "screening"
+    return _FACTOR_SOURCE.get(name, "screening")

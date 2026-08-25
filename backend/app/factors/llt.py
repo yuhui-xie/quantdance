@@ -172,8 +172,8 @@ def llt_slope_factor(df: pd.DataFrame, period: int = 20, lookback: int = 1) -> p
     )
 
 
-# 本模块导出的因子注册（供 app/factors/registry.py 自动汇总）
+# 本模块导出的因子注册（供 app/factors/registry.py 自动汇总，来源默认 strategy）
 FACTORS: list[FactorSpec] = [
-    FactorSpec("llt", llt_factor, min_bars=21, source="strategy"),
-    FactorSpec("llt_slope", llt_slope_factor, min_bars=21, source="strategy"),
+    FactorSpec("llt", llt_factor, min_bars=21),
+    FactorSpec("llt_slope", llt_slope_factor, min_bars=21),
 ]

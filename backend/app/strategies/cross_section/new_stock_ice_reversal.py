@@ -49,8 +49,8 @@ class NewStockIceReversalParams(DecisionFrequencyParams):
     """次新情绪冰点反转策略参数。"""
 
     # ── 决策节奏 ──
-    decision_frequency: Literal["daily", "weekly", "monthly"] = Field(
-        "daily", description="决策频率：daily=每日 | weekly=每周末 | monthly=每自然月末"
+    decision_frequency: Literal["daily", "weekly", "biweekly", "monthly"] = Field(
+        "daily", description="决策频率：daily=每日 | weekly=每周末 | biweekly=每双周 | monthly=每自然月末"
     )
     decision_every_n: int = Field(1, ge=1, description="决策步长；daily 忽略")
     decision_warmup: int = Field(

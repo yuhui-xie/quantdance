@@ -26,8 +26,11 @@ from app.data_sources.tencent_finance_sdk import (
 
 # K 线缓存格式版本：前复权实现或字段语义有破坏性变更时递增，使旧缓存整体作废重拉。
 # v1→v3：修正前复权（从 mootdx 自带的有断层的 adjust 改为本地按除权记录折算）。
-# 旧缓存（v1/v2）可能含除权日虚假断层或未折算的原始价，必须重建。
-_KLINE_CACHE_VERSION = 3
+# v3→v4：前复权新增处理 ETF 份额折算/拆分（category==11，suogu 折算为送转），
+# 旧缓存可能含 ETF 拆分日的虚假价格断层，必须重建。
+# v4→v5：折算同时覆盖拆细（suogu>1）与合并（suogu<1），去掉 suogu>1 限制，
+# 旧缓存可能漏掉 ETF 合并（缩股）日的虚假价格断层，必须重建。
+_KLINE_CACHE_VERSION = 5
 
 
 class AStockDataError(Exception):
