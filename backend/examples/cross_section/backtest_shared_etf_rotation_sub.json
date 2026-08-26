@@ -2,8 +2,8 @@
   "strategy_id": "etf_rotation",
   "mode": "universe",
   "data_source": "a_stock_data",
-  "universe": "etf_core",
-  "start_date": "2020-01-01",
+  "universe": "etf_core_sub",
+  "start_date": "2023-01-01",
   "end_date": "2026-08-31",
   "initial_cash": 100000,
   "commission": 0.0003,
@@ -31,8 +31,8 @@
     "limit_pct_threshold": 9.5
   },
   "output_options": {
-    "output": "out/backtest_shared_etf_rotation.json",
-    "report": "out/backtest_shared_etf_rotation.html",
+    "output": "out/backtest_shared_etf_rotation_sub.json",
+    "report": "out/backtest_shared_etf_rotation_sub.html",
     "json": true
   }
 }

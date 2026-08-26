@@ -14,16 +14,19 @@ from typing import Any
 warnings.filterwarnings("ignore", message=r"pkg_resources is deprecated as an API.*")
 warnings.simplefilter("ignore", ResourceWarning)
 
+import pandas as pd
+
+from app.backtest.cross_section_runner import run_cross_section_screen
 from app.backtest_runner import run_backtest_request
 from app.data_sources.tencent_finance_sdk import TencentFinanceSDK
-from app.data_sources.market_data import MarketDataError
+from app.data_sources.market_data import MarketDataError, fetch_a_share_daily
 from app.ic_analysis import FACTOR_REGISTRY, compute_factor_ic, factor_source
 from app.schemas import (
     BacktestRequest,
     ScreenRequest,
 )
 from app.stock_screening import run_screen, screen_presets_catalog
-from app.strategies.registry import ALL_STRATEGIES
+from app.strategies.registry import ALL_STRATEGIES, get_cross_section_strategy
 from app.universe import resolve_universe_rows
 
 
@@ -375,6 +378,10 @@ def _resolve_backtest_body(args: argparse.Namespace) -> BacktestRequest:
         cli_map["take_profit_arm_pct"] = args.take_profit_arm_pct
     if getattr(args, "take_profit_exit_pct", None) is not None:
         cli_map["take_profit_exit_pct"] = args.take_profit_exit_pct
+    if getattr(args, "stop_loss_tier_pct", None) is not None:
+        cli_map["stop_loss_tier_pct"] = args.stop_loss_tier_pct
+    if getattr(args, "stop_loss_tier_sell_fraction", None) is not None:
+        cli_map["stop_loss_tier_sell_fraction"] = args.stop_loss_tier_sell_fraction
     if args.take_profit_pct is not None:
         strategy_params["take_profit_pct"] = args.take_profit_pct
     for key in (
@@ -491,6 +498,177 @@ def _cmd_screen(args: argparse.Namespace) -> int:
     _write_json(out, output=args.output, as_json=args.json)
     if not args.json and args.output is None:
         print("执行成功（使用 --json 查看完整结果）")
+    return 0
+
+
+def _cmd_pick(args: argparse.Namespace) -> int:
+    """横截面策略按指定日期直接挑出标的（如 ETF），默认 JSON 落盘。
+
+    复用 ``run_cross_section_screen``：以 ``--asof`` 作为截面日，解析当时已存在的
+    股票池、加载行情面板、调用策略 ``select()``，把完整排序候选（含 selected 标记）
+    与选中结果落成 JSON，方便脚本消费。
+    """
+    spec = get_cross_section_strategy(args.strategy_id)
+    if spec is None:
+        raise ValueError(
+            f"未知横截面策略: {args.strategy_id}（用 backtest --list-strategies 查看）"
+        )
+    asof = (args.asof or "").strip()
+    if not asof:
+        raise ValueError("请提供 --asof 截面日期（YYYY-MM-DD）")
+
+    strategy_params: dict[str, Any] = {}
+    if args.params:
+        raw = json.loads(args.params)
+        if not isinstance(raw, dict):
+            raise ValueError("--params 需为 JSON 对象")
+        strategy_params.update(raw)
+    if args.top_n is not None and "top_n" in spec.params_model.model_fields:
+        strategy_params["top_n"] = args.top_n
+
+    body: dict[str, Any] = {
+        "mode": "screen",
+        "strategy_id": spec.id,
+        "start_date": asof,
+        "end_date": asof,
+        "strategy_params": strategy_params,
+        "max_universe": args.max_universe or 500,
+        "max_workers": args.max_workers or 8,
+        "use_cache": not args.no_cache,
+        "force_refresh": args.force_refresh,
+    }
+    if args.universe:
+        body["universe"] = args.universe
+    if args.symbols:
+        body["symbols"] = args.symbols
+    if args.seed is not None:
+        body["seed"] = args.seed
+
+    request = BacktestRequest.model_validate(body)
+    out = run_cross_section_screen(request, spec)
+    if hasattr(out, "model_dump"):
+        out = out.model_dump(mode="json")
+
+    output = args.output or Path("out") / f"pick_{spec.id}_{asof}.json"
+    _write_json(out, output=output, as_json=args.json)
+
+    if not args.json:
+        picked = [h for h in out.get("holdings", []) if h.get("selected")]
+        print(f"策略 {spec.id} | 截面 {out.get('asof')} | {out.get('universe_note')}")
+        if picked:
+            print(
+                "选中: " + " | ".join(
+                    f"{h['symbol']} {h.get('name') or ''}" for h in picked
+                )
+            )
+        print(f"JSON 已落盘: {output.resolve()}")
+    return 0
+
+
+def _cmd_correlation(args: argparse.Namespace) -> int:
+    """计算股票池（如 etf_core）内标的日收益率的两两 Pearson 相关矩阵。
+
+    用法：``python -m app.script correlation --universe etf_core``
+    默认取全体标的的共同历史窗口（对齐后 dropna）；可用 ``--start/--end`` 限定。
+    输出：控制台打印紧凑矩阵 + 最相关/最独立配对，完整矩阵可 JSON 落盘。
+    """
+    rows, note = resolve_universe_rows(
+        symbols=args.symbols,
+        universe=args.universe,
+        max_universe=args.max_universe or 500,
+        seed=args.seed,
+        default_universe="all_a",
+    )
+    if not rows:
+        raise ValueError("未解析到任何标的（请提供 --universe 或 --symbols）")
+    if args.no_cache:
+        os.environ["QUANTDANCE_A_STOCK_DATA_CACHE"] = "0"
+
+    closes: dict[str, pd.Series] = {}
+    names: dict[str, str] = {}
+    skipped: list[str] = []
+    for r in rows:
+        sym = r["symbol"]
+        try:
+            df = fetch_a_share_daily(
+                sym, start=args.start_date, end=args.end_date, limit=5000
+            )
+        except MarketDataError:
+            skipped.append(sym)
+            continue
+        if df is None or df.empty or "close" not in df.columns:
+            skipped.append(sym)
+            continue
+        closes[sym] = df["close"].astype(float)
+        names[sym] = r.get("name") or ""
+    if len(closes) < 2:
+        raise ValueError(f"有效标的仅 {len(closes)} 只，无法计算相关性")
+    if skipped:
+        print(f"跳过无行情标的: {', '.join(skipped)}", file=sys.stderr)
+
+    panel = pd.DataFrame(closes).dropna()
+    if panel.shape[1] < 2:
+        raise ValueError("共同窗口内有效标的不足 2 只")
+    ret = panel.pct_change().dropna()
+    corr = ret.corr()
+
+    syms = list(panel.columns)
+    pairs = [
+        (syms[i], syms[j], float(corr.iloc[i, j]))
+        for i in range(len(syms))
+        for j in range(i + 1, len(syms))
+    ]
+    pairs.sort(key=lambda t: -t[2])
+    avg_corr = sum(p[2] for p in pairs) / len(pairs)
+    top_n = args.top_pairs or 5
+
+    result: dict[str, Any] = {
+        "method": "日收益率 Pearson 相关",
+        "window": {
+            "start": str(panel.index[0].date()),
+            "end": str(panel.index[-1].date()),
+            "bars": int(len(ret)),
+            "symbols": len(syms),
+        },
+        "universe_note": note,
+        "symbols": [{"symbol": s, "name": names.get(s, "")} for s in syms],
+        "average_correlation": round(avg_corr, 4),
+        "correlation": {
+            a: {b: round(float(corr.loc[a, b]), 4) for b in syms} for a in syms
+        },
+        "most_correlated": [
+            {"a": a, "b": b, "corr": round(c, 4)} for a, b, c in pairs[:top_n]
+        ],
+        "least_correlated": [
+            {"a": a, "b": b, "corr": round(c, 4)}
+            for a, b, c in sorted(pairs, key=lambda t: t[2])[:top_n]
+        ],
+    }
+    output = args.output or Path("out") / "correlation.json"
+    _write_json(result, output=output, as_json=args.json)
+
+    def tag(s: str) -> str:
+        n = names.get(s, "")
+        return f"{s[-3:]}{n[:2]}"
+
+    print(f"股票池: {note}")
+    print(
+        f"窗口: {panel.index[0].date()} ~ {panel.index[-1].date()} | "
+        f"{len(ret)} 个交易日 | {len(syms)} 只 | 平均相关 {avg_corr:.2f}"
+    )
+    hdr = "        " + "  ".join(f"{tag(s):>6}" for s in syms)
+    print(hdr)
+    for a in syms:
+        row = "  ".join(f"{corr.loc[a, b]:6.2f}" for b in syms)
+        print(f"{tag(a):<7} {row}")
+    print("\n最相关（组合噪声最大）:")
+    for a, b, c in pairs[:top_n]:
+        print(f"  {a} {names.get(a)}  ×  {b} {names.get(b)}  = {c:.2f}")
+    print("\n最独立（分散价值最高）:")
+    for a, b, c in sorted(pairs, key=lambda t: t[2])[:top_n]:
+        print(f"  {a} {names.get(a)}  ×  {b} {names.get(b)}  = {c:.2f}")
+    if not args.json:
+        print(f"完整矩阵已落盘: {output.resolve()}")
     return 0
 
 
@@ -861,6 +1039,18 @@ def _build_backtest_cmd(sub: argparse._SubParsersAction[argparse.ArgumentParser]
         dest="stop_loss_pct",
         help="通用止损：相对本次买入价的跌幅（如 0.1=跌10%%）",
     )
+    p.add_argument(
+        "--stop-loss-tier-pct",
+        type=float,
+        dest="stop_loss_tier_pct",
+        help="分批止损步长：每跌破该比例卖出一档（如 0.1=每跌10%%），覆盖 --stop-loss-pct",
+    )
+    p.add_argument(
+        "--stop-loss-tier-fraction",
+        type=float,
+        dest="stop_loss_tier_sell_fraction",
+        help="分批止损每档卖出占建仓比例（如 0.34≈1/3）",
+    )
     p.add_argument("--take-profit-pct", type=float, dest="take_profit_pct")
     p.add_argument("--take-profit-arm-pct", type=float, dest="take_profit_arm_pct")
     p.add_argument("--take-profit-exit-pct", type=float, dest="take_profit_exit_pct")
@@ -906,6 +1096,62 @@ def _build_screen_cmd(sub: argparse._SubParsersAction[argparse.ArgumentParser]) 
     p.add_argument("--bars", type=int)
     p.add_argument("--seed", type=int)
     p.add_argument("--random-seed", action="store_true")
+
+
+def _build_pick_cmd(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+    p = sub.add_parser(
+        "pick",
+        help="横截面策略按指定日期直接挑出标的（如 ETF），默认 JSON 落盘",
+    )
+    p.set_defaults(handler=_cmd_pick)
+    p.add_argument(
+        "--strategy",
+        "-s",
+        dest="strategy_id",
+        required=True,
+        help="横截面策略 id，如 etf_rotation / etf_filter",
+    )
+    p.add_argument("--asof", help="截面日期 YYYY-MM-DD（必填）")
+    p.add_argument(
+        "--universe",
+        help="股票池：内置预设（etf / etf_asof / etf_core 等）或 config/*_pool.json 前缀",
+    )
+    p.add_argument("--symbols", nargs="+", help="直接指定标的代码（与 --universe 二选一）")
+    p.add_argument("--max-universe", type=int, dest="max_universe", help="股票池数量上限（默认 500）")
+    p.add_argument("--seed", type=int, help="股票池超上限时的可复现抽样种子")
+    p.add_argument("--max-workers", type=int, dest="max_workers", help="并行线程数（默认 8）")
+    p.add_argument("--top-n", type=int, dest="top_n", help="选中数量（覆盖策略默认）")
+    p.add_argument("--params", help="策略专属参数 JSON，如 '{\"min_r2\":0.5}'")
+    p.add_argument("--no-cache", action="store_true", dest="no_cache")
+    p.add_argument("--force-refresh", action="store_true", dest="force_refresh")
+    p.add_argument("--json", action="store_true", help="同时把完整 JSON 打印到 stdout")
+    p.add_argument(
+        "--output",
+        type=Path,
+        metavar="FILE.json",
+        help="JSON 落盘路径（默认 out/pick_<strategy>_<asof>.json）",
+    )
+
+
+def _build_correlation_cmd(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+    p = sub.add_parser(
+        "correlation",
+        help="计算股票池内标的日收益率两两相关性（Pearson 相关矩阵）",
+    )
+    p.set_defaults(handler=_cmd_correlation)
+    p.add_argument(
+        "--universe",
+        help="股票池：内置预设（all_a/hs300/zz500/etf/etf_core 等）或 config/*_pool.json 前缀",
+    )
+    p.add_argument("--symbols", nargs="+", help="直接指定标的代码（与 --universe 二选一）")
+    p.add_argument("--max-universe", type=int, dest="max_universe", help="股票池数量上限（默认 500）")
+    p.add_argument("--seed", type=int, help="股票池超上限时的可复现抽样种子")
+    p.add_argument("--start-date", dest="start_date", help="起始日期 YYYY-MM-DD（默认取共同历史起点）")
+    p.add_argument("--end-date", dest="end_date", help="结束日期 YYYY-MM-DD（默认取共同历史终点）")
+    p.add_argument("--top-pairs", type=int, dest="top_pairs", default=5, help="最相关/最独立配对数量（默认 5）")
+    p.add_argument("--no-cache", action="store_true", dest="no_cache")
+    p.add_argument("--json", action="store_true", help="同时把完整 JSON 打印到 stdout")
+    p.add_argument("--output", type=Path, metavar="FILE.json", help="JSON 落盘路径（默认 out/correlation.json）")
 
 
 def _build_stock_search_cmd(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
@@ -988,6 +1234,8 @@ def build_parser() -> argparse.ArgumentParser:
     sub = p.add_subparsers(dest="command", required=True)
     _build_backtest_cmd(sub)
     _build_screen_cmd(sub)
+    _build_pick_cmd(sub)
+    _build_correlation_cmd(sub)
     _build_stock_search_cmd(sub)
     _build_chip_dist_cmd(sub)
     _build_factor_ic_cmd(sub)

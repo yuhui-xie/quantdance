@@ -256,6 +256,35 @@ def test_backtest_universe_summary_prints_ranking(capsys):
     assert "600000" in printed
 
 
+def test_correlation_command_computes_matrix(tmp_path, monkeypatch):
+    import pandas as pd
+    import app.script as script_module
+
+    idx = pd.bdate_range("2024-01-02", periods=60)
+
+    def fake_fetch(symbol, *, start=None, end=None, limit=None, data_source="a_stock_data"):
+        return pd.DataFrame({"close": pd.Series(list(range(60)), index=idx, dtype=float)})
+
+    monkeypatch.setattr(script_module, "fetch_a_share_daily", fake_fetch)
+    args = build_parser().parse_args(
+        [
+            "correlation",
+            "--symbols",
+            "600000",
+            "000001",
+            "--output",
+            str(tmp_path / "corr.json"),
+        ]
+    )
+
+    assert script_module._cmd_correlation(args) == 0
+
+    out = json.loads((tmp_path / "corr.json").read_text(encoding="utf-8"))
+    assert len(out["symbols"]) == 2
+    assert out["correlation"]["600000"]["000001"] > 0.99
+    assert out["most_correlated"][0]["corr"] > 0.99
+
+
 def test_stock_search_command_accepts_keyword_and_limit():
     args = build_parser().parse_args(["stock-search", "贵州茅台", "--limit", "3", "--json"])
     assert args.keyword == "贵州茅台"
@@ -292,3 +321,65 @@ def test_backtest_cross_section_cli_fields_are_unified():
     assert body.min_commission == 0
     assert body.slippage == 0
     assert body.strategy_params["top_n"] == 1
+
+
+def test_pick_command_writes_json_and_prints_selection(tmp_path, monkeypatch, capsys):
+    """pick 子命令：按日期跑横截面 select，把结果落盘并打印选中清单。"""
+    import app.script as script_module
+
+    captured = {}
+
+    def fake_run_screen(request, spec):
+        captured["body"] = request.model_dump(mode="json")
+        captured["spec_id"] = spec.id
+        return {
+            "mode": "screen",
+            "strategy_id": spec.id,
+            "asof": "2024-05-06",
+            "universe_note": "测试股票池",
+            "holdings": [
+                {
+                    "symbol": "510300",
+                    "name": "沪深300ETF",
+                    "score": 0.01,
+                    "rank": 1,
+                    "selected": True,
+                },
+                {
+                    "symbol": "510500",
+                    "name": "中证500ETF",
+                    "score": 0.008,
+                    "rank": 2,
+                    "selected": False,
+                },
+            ],
+        }
+
+    monkeypatch.setattr(script_module, "_write_json", lambda *a, **k: None)
+    monkeypatch.setattr(script_module, "run_cross_section_screen", fake_run_screen)
+
+    args = build_parser().parse_args(
+        [
+            "pick",
+            "--strategy",
+            "etf_rotation",
+            "--asof",
+            "2024-05-06",
+            "--universe",
+            "etf_asof",
+            "--top-n",
+            "3",
+            "--output",
+            str(tmp_path / "pick.json"),
+        ]
+    )
+
+    assert script_module._cmd_pick(args) == 0
+    assert captured["body"]["start_date"] == "2024-05-06"
+    assert captured["body"]["end_date"] == "2024-05-06"
+    assert captured["body"]["universe"] == "etf_asof"
+    assert captured["body"]["strategy_params"]["top_n"] == 3
+    assert captured["spec_id"] == "etf_rotation"
+    printed = capsys.readouterr().out
+    assert "截面 2024-05-06" in printed
+    assert "510300 沪深300ETF" in printed

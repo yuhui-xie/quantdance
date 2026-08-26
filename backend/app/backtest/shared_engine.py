@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Mapping, Sequence
+from typing import Any, Literal, Mapping, Sequence
 
 import numpy as np
 import pandas as pd
 
 from app.backtest_engine import metrics_from_equity
+from app.backtest.risk_control import ExitAction, RiskControl
 from app.position_management import PositionManagementPolicy, PositionManager
 
 
@@ -46,6 +47,10 @@ def build_close_panel(
     if not frames:
         raise ValueError("收盘价面板为空")
     panel = pd.DataFrame(frames).sort_index()
+    # 交易日历取所有标的的并集。某些标在日历尾部（如部分数据源的当日/停牌日）
+    # 没有对应 K 线，需沿时间向前填充最后收盘价，否则该日持仓会被按 NaN→0 估值，
+    # 造成组合净值在最后一个未完全覆盖的交易日被错误清零。
+    panel = panel.ffill()
     return panel[~panel.index.isna()]
 
 
@@ -67,6 +72,9 @@ def run_shared_backtest(
     take_profit_arm_pct: float | None = None,
     take_profit_exit_pct: float | None = None,
     stop_loss_pct: float | None = None,
+    stop_loss_tier_pct: float | None = None,
+    stop_loss_tier_sell_fraction: float | None = None,
+    stop_loss_tier_anchor: Literal["cost", "peak"] = "peak",
     position_policy: PositionManagementPolicy | None = None,
     rebalance_mode: str = "full",
 ) -> SharedBacktestResult:
@@ -75,19 +83,15 @@ def run_shared_backtest(
         raise ValueError("close_panel 为空")
     if initial_cash <= 0:
         raise ValueError("initial_cash 必须为正")
-    arm, exit_level = take_profit_arm_pct, take_profit_exit_pct
-    if (arm is None) ^ (exit_level is None):
-        raise ValueError("take_profit_arm_pct 与 take_profit_exit_pct 须同时设置或同时为空")
-    if arm is not None and exit_level is not None:
-        if arm <= 0 or exit_level < 0:
-            raise ValueError("take_profit_arm_pct 须 > 0，take_profit_exit_pct 须 >= 0")
-        if exit_level > 0 and exit_level >= arm:
-            raise ValueError("take_profit_exit_pct 必须小于 take_profit_arm_pct")
-    if stop_loss_pct is not None and stop_loss_pct <= 0:
-        raise ValueError("stop_loss_pct 须 > 0")
-    if position_policy is not None and (
-        stop_loss_pct is not None or arm is not None or exit_level is not None
-    ):
+    risk = RiskControl(
+        take_profit_arm_pct=take_profit_arm_pct,
+        take_profit_exit_pct=take_profit_exit_pct,
+        stop_loss_pct=stop_loss_pct,
+        stop_loss_tier_pct=stop_loss_tier_pct,
+        stop_loss_tier_sell_fraction=stop_loss_tier_sell_fraction,
+        stop_loss_tier_anchor=stop_loss_tier_anchor,
+    )
+    if position_policy is not None and risk.active():
         raise ValueError("position_policy 不能与旧版止损止盈参数同时使用")
 
     calendar = [str(day)[:10] for day in close_panel.index]
@@ -103,7 +107,6 @@ def run_shared_backtest(
     cash = float(initial_cash)
     positions: dict[str, int] = {}
     average_cost: dict[str, float] = {}
-    armed: set[str] = set()
     manager = PositionManager(position_policy, initial_cash) if position_policy else None
     trades: list[dict[str, Any]] = []
     holdings: list[dict[str, Any]] = []
@@ -137,9 +140,47 @@ def run_shared_backtest(
         })
         positions[symbol] = 0
         average_cost.pop(symbol, None)
-        armed.discard(symbol)
+        risk.on_close(symbol)
         if manager:
             manager.record_sell(symbol)
+
+    def sell_fraction(day: str, symbol: str, fraction: float, reason: str) -> None:
+        """分批止损：按建仓基准的 fraction 比例卖出一档仓位，不足一手则清仓。"""
+        nonlocal cash
+        shares = positions.get(symbol, 0)
+        price = close_panel.loc[day].get(symbol)
+        if shares <= 0 or price is None or not np.isfinite(float(price)) or float(price) <= 0:
+            return
+        price = float(price)
+        entry = risk.entry_shares(symbol) or float(shares)
+        target = int(entry * fraction)
+        if lot_size > 0:
+            target = (target // lot_size) * lot_size
+        shares_to_sell = max(target, 0)
+        if shares_to_sell <= 0:
+            shares_to_sell = shares  # 不足一手 -> 清仓
+        shares_to_sell = min(shares_to_sell, shares)
+        notional = shares_to_sell * price
+        cost = abs(notional) * max(slippage, 0.0)
+        fee = abs(notional) * max(commission, 0.0)
+        if min_commission > 0:
+            fee = max(fee, min_commission)
+        cost += fee
+        cash += notional - cost
+        basis = average_cost.get(symbol, price)
+        realized = shares_to_sell * (price - basis) - cost
+        realized_pnls.append(float(realized))
+        trades.append({
+            "date": day, "symbol": symbol, "side": "sell", "price": price,
+            "shares": float(shares_to_sell), "cash_after": float(cash),
+            "cost": float(cost), "pnl": float(realized), "reason": reason,
+        })
+        positions[symbol] = shares - shares_to_sell
+        if positions[symbol] <= 0:
+            average_cost.pop(symbol, None)
+            risk.on_close(symbol)
+            if manager:
+                manager.record_sell(symbol)
 
     def buy(day: str, symbol: str, budget: float, reason: str = "rebalance") -> bool:
         nonlocal cash
@@ -167,7 +208,12 @@ def run_shared_backtest(
             previous_cost * previous_shares + execution_price * shares
         ) / new_shares
         positions[symbol] = new_shares
-        armed.discard(symbol)
+        if previous_shares == 0:
+            # 新开仓：记录分批减仓的基准、追踪峰值并复位档位/止盈标记
+            risk.on_entry(symbol, float(new_shares), execution_price)
+        else:
+            # 加仓：仅复位移动止盈的已触发标记
+            risk.reset_armed(symbol)
         if manager:
             manager.record_buy(symbol, execution_price, is_add=reason == "pyramid_add")
         trades.append({
@@ -243,18 +289,16 @@ def run_shared_backtest(
                         or not np.isfinite(float(price)) or float(price) <= 0
                     ):
                         continue
-                    price = float(price)
-                    if stop_loss_pct is not None and price <= cost * (1.0 - stop_loss_pct):
-                        sell(day, symbol, "stop_loss")
+                    # 出场决策统一交由 RiskControl：分批减仓 > 单一止损 > 移动止盈。
+                    action: ExitAction | None = risk.evaluate(
+                        symbol, float(price), float(cost)
+                    )
+                    if action is None:
                         continue
-                    if arm is not None and exit_level is not None:
-                        if exit_level == 0 and price >= cost * (1.0 + arm):
-                            sell(day, symbol, "take_profit")
-                        elif exit_level > 0:
-                            if symbol not in armed and price >= cost * (1.0 + arm):
-                                armed.add(symbol)
-                            if symbol in armed and price <= cost * (1.0 + exit_level):
-                                sell(day, symbol, "take_profit")
+                    if action.kind == "fraction":
+                        sell_fraction(day, symbol, action.fraction, action.reason)
+                    else:
+                        sell(day, symbol, action.reason)
                 positions = {s: n for s, n in positions.items() if n > 0}
             else:
                 if target_changed:

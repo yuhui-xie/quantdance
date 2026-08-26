@@ -346,6 +346,9 @@ def run_cross_section_backtest(
         take_profit_arm_pct=getattr(request, "take_profit_arm_pct", None),
         take_profit_exit_pct=getattr(request, "take_profit_exit_pct", None),
         stop_loss_pct=request.stop_loss_pct,
+        stop_loss_tier_pct=request.stop_loss_tier_pct,
+        stop_loss_tier_sell_fraction=request.stop_loss_tier_sell_fraction,
+        stop_loss_tier_anchor=request.stop_loss_tier_anchor,
         position_policy=policy,
         rebalance_mode=getattr(request, "rebalance_mode", "full"),
     )

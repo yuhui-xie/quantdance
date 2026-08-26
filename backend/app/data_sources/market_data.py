@@ -720,24 +720,36 @@ def fetch_etf_universe(
         detail = "；".join(errors) if errors else "所有 akshare ETF 接口均不可用"
         raise MarketDataError(f"akshare ETF 列表获取失败: {detail}")
 
+    return _cap_etf_rows(rows, max_universe, seed)
+
+
+def _cap_etf_rows(
+    rows: list[dict[str, str]],
+    max_universe: int,
+    seed: int | None,
+    *,
+    note_count: str = "akshare 场内 ETF",
+) -> tuple[list[dict[str, str]], str]:
+    """按 max_universe 对已拉取的 ETF 行做数量封顶（含可复现抽样），返回 (out, note)。
+
+    仅做数量封顶，不负责数据获取；``rows`` 需已按调用方口径取好（全量列表或
+    as-of 子集均可）。``note_count`` 控制 note 里的计数主语（如 ``akshare 场内 ETF``
+    或 ``2020-01-01 时点已存在``）。
+    """
+    total = len(rows)
     n_take = min(max_universe, total)
     if total <= n_take:
-        note = f"akshare 场内 ETF 共 {total} 只，已全部纳入本次回测。"
-        return rows, note
-
+        return rows, f"{note_count} 共 {total} 只，已全部纳入本次回测。"
     if seed is not None:
         rng = random.Random(seed)
         sampled = list(rows)
         rng.shuffle(sampled)
-        out = sampled[:n_take]
-        note = (
-            f"akshare 场内 ETF 共 {total} 只，已使用随机种子 {seed} 抽样 {n_take} 只（可复现）。"
+        return sampled[:n_take], (
+            f"{note_count} 共 {total} 只，已使用随机种子 {seed} 抽样 {n_take} 只（可复现）。"
         )
-        return out, note
-
-    out = sorted(rows, key=lambda x: x["symbol"])[:n_take]
-    note = f"akshare 场内 ETF 共 {total} 只，已按代码升序截取前 {n_take} 只。"
-    return out, note
+    return sorted(rows, key=lambda x: x["symbol"])[:n_take], (
+        f"{note_count} 共 {total} 只，已按代码升序截取前 {n_take} 只。"
+    )
 
 
 def filter_etf_symbols_at(
@@ -782,23 +794,29 @@ def fetch_etf_universe_at(
 ) -> tuple[list[dict[str, str]], str]:
     """拉取 asof 时点存在的全市场 ETF 池，避开幸存者偏差。
 
-    复用当前全量 ETF 列表（``fetch_etf_universe``，多源备用链），再按
-    ``filter_etf_symbols_at`` 的 K 线覆盖判定其在 asof 时点是否已上市。
-    该预筛能避免对尚未上市的 ETF 白白加载面板。
+    先取当前全量 ETF 列表（``fetch_etf_universe``，多源备用链），再按
+    ``filter_etf_symbols_at`` 的 K 线覆盖判定其在 asof 时点是否已上市，
+    **最后**才用 ``max_universe`` 做数量封顶。先 as-of 过滤再截断，可避免
+    先按 max_universe 截断导致老 ETF 落在截断窗口之外被误丢。
 
     返回 (已存在的 ETF 列表, note)，每项 {"symbol","name"}。
     """
     asof_s = str(asof)[:10]
-    rows, note = fetch_etf_universe(max_universe, seed=seed)
-    existing, skipped = filter_etf_symbols_at(rows, asof_s)
+    # 先取全量（传一个足够大的上限，让 fetch_etf_universe 返回完整列表），
+    # 不在此处提前用 max_universe 截断。
+    full_rows, _ = fetch_etf_universe(10_000, seed=None)
+    existing, skipped = filter_etf_symbols_at(full_rows, asof_s)
     if not existing:
         raise MarketDataError(
-            f"{asof_s} 时点无可用 ETF：当前 {len(rows)} 只均无 ≤{asof_s} 的 K 线"
+            f"{asof_s} 时点无可用 ETF：当前 {len(full_rows)} 只均无 ≤{asof_s} 的 K 线"
         )
+    existing, cap_note = _cap_etf_rows(
+        existing, max_universe, seed,
+        note_count=f"{asof_s} 时点已存在",
+    )
     skip_note = f"，{len(skipped)} 只 K 线首根晚于 {asof_s} 或无线跳过" if skipped else ""
     return existing, (
-        f"akshare 当前 ETF 共 {len(rows)} 只，{asof_s} 时点按 K 线覆盖判定已存在 "
-        f"{len(existing)} 只{skip_note}。"
+        f"akshare 当前 ETF 共 {len(full_rows)} 只{skip_note}。{cap_note}"
     )
 
 

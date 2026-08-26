@@ -79,6 +79,22 @@ class BacktestRequest(BaseModel):
     force_refresh: bool = False
     take_profit_arm_pct: float | None = Field(None, gt=0, le=5)
     take_profit_exit_pct: float | None = Field(None, ge=0, le=5)
+    stop_loss_tier_pct: float | None = Field(
+        None,
+        gt=0,
+        le=0.8,
+        description="分批止损步长：每跌破该比例（默认 0.1=每 10%）卖出一档仓位，覆盖 stop_loss_pct",
+    )
+    stop_loss_tier_sell_fraction: float | None = Field(
+        None,
+        gt=0,
+        le=1,
+        description="每档卖出占建仓基准的比例（如 1/3），累计卖满 1 档后清仓",
+    )
+    stop_loss_tier_anchor: Literal["cost", "peak"] = Field(
+        "peak",
+        description="分批止损触发基准：peak=相对持仓最高价回落（默认，能保护利润）| cost=相对平均成本",
+    )
     position_management: "PositionManagementConfig | None" = None
     rebalance_mode: Literal["full", "incremental"] = Field(
         "full",
@@ -163,8 +179,15 @@ class BacktestRequest(BaseModel):
             raise ValueError("take_profit_arm_pct 与 take_profit_exit_pct 须同时设置或同时为空")
         if arm is not None and exit_level is not None and exit_level > 0 and exit_level >= arm:
             raise ValueError("take_profit_exit_pct 必须小于 take_profit_arm_pct")
+        if (self.stop_loss_tier_pct is None) ^ (self.stop_loss_tier_sell_fraction is None):
+            raise ValueError(
+                "stop_loss_tier_pct 与 stop_loss_tier_sell_fraction 须同时设置或同时为空"
+            )
         if self.position_management is not None and (
-            self.stop_loss_pct is not None or arm is not None or exit_level is not None
+            self.stop_loss_pct is not None
+            or self.stop_loss_tier_pct is not None
+            or arm is not None
+            or exit_level is not None
         ):
             raise ValueError("position_management 不能与旧版止损止盈字段同时设置")
         return self
