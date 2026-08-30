@@ -10,61 +10,22 @@ from pathlib import Path
 _CONFIG_DIR = Path(__file__).resolve().parents[1] / "config"
 
 
-def _attach_config_pool_names(symbols: list[str]) -> dict[str, str]:
-    """用 akshare 场内 ETF 列表补 config 池（如 etf_core）的名称。
-
-    与 fetch_etf_universe 的数据源链一致：东财实时 → 同花顺。仅用于纯 ETF 池
-    （config 池当前只有 ETF）。失败或缺码时对应 name 留空，不影响成分正确性。
-    """
-    name_map: dict[str, str] = {}
-    try:
-        import akshare as ak  # type: ignore[import-not-found]
-    except Exception:  # pragma: no cover - 依赖环境分支
-        return name_map
-    providers = (
-        ("fund_etf_spot_em", (), ("代码", "code", "symbol"), ("名称", "name"), False),
-        ("fund_etf_spot_ths", (), ("基金代码", "代码", "code", "symbol"), ("基金简称", "基金名称", "名称", "name"), False),
-    )
-    for func_name, func_args, code_cols, name_cols, strip_prefix in providers:
-        try:
-            parsed = _parse_etf_df(
-                ak,
-                func_name,
-                func_args=func_args,
-                code_cols=code_cols,
-                name_cols=name_cols,
-                strip_prefix=strip_prefix,
-            )
-        except Exception:  # pragma: no cover - 网络/源异常，继续尝试下一个
-            continue
-        if parsed:
-            for r in parsed:
-                if r["name"]:
-                    name_map[r["symbol"]] = r["name"]
-            break
-    return name_map
-
-
 def _load_config_pool(pool_name: str) -> tuple[list[dict[str, str]], str]:
     """从 backend/config 读取预设股票池 JSON（如 etf_core_pool.json）。
 
-    返回 (rows, note)。文件不存在或格式不符时抛 ValueError。
+    协议：JSON 顶层含 ``names``（dict：代码→名称，键序即股票池顺序）与可选
+    ``description``。``names`` 为唯一来源：代码即其键、名称即其值。文件不存在
+    或缺少非空 ``names`` 时抛 ValueError。
     """
     path = _CONFIG_DIR / f"{pool_name}_pool.json"
     if not path.exists():
         raise ValueError(f"config 股票池文件不存在: {path}")
     with path.open(encoding="utf-8") as fh:
         payload = json.load(fh)
-    symbols = payload.get("symbols")
-    if not isinstance(symbols, list) or not symbols:
-        raise ValueError(f"config 股票池 {path} 缺少非空 symbols 列表")
-    # 优先用 JSON 里的静态 names 映射（离线可靠），缺名代码再走 akshare 补。
-    static_names = payload.get("names") or {}
-    missing = [c for c in symbols if not static_names.get(c)]
-    name_map = dict(static_names)
-    if missing:
-        name_map.update(_attach_config_pool_names(missing))
-    rows = [{"symbol": code, "name": name_map.get(code, "")} for code in symbols]
+    names = payload.get("names") or {}
+    if not isinstance(names, dict) or not names:
+        raise ValueError(f"config 股票池 {path} 缺少非空 names 映射（代码→名称）")
+    rows = [{"symbol": code, "name": name} for code, name in names.items()]
     desc = payload.get("description", "")
     return rows, f"使用 config 股票池 {pool_name}（{len(rows)} 只）。{desc}".strip()
 
@@ -73,6 +34,8 @@ def _maybe_asof_filter_config(
     rows: list[dict[str, str]],
     note: str,
     asof_s: str | None,
+    *,
+    asof_filter_config: bool = True,
 ) -> tuple[list[dict[str, str]], str]:
     """config ETF 池在带 asof 时按 K 线覆盖过滤出"当时已存在"的子集。
 
@@ -80,8 +43,14 @@ def _maybe_asof_filter_config(
     使 ETF_CONFIG（如 ``etf_core``）也能走动态 as-of 池、避开幸存者偏差。只对
     纯 K 线存在的判定，普通股票 config 池同样安全（只剔除未上市/退市标的）。
     无 asof 时原样返回。
+
+    ``asof_filter_config=False`` 时不做过滤、返回完整池：用于**多时点回测**——
+    回测从 start_date 起步，若按 start_date 过滤会永久剔除之后才上市的标的。
+    此时完整池由策略 select() 在每个决策日按可用 K 线根数自然门槛（首根 K 线
+    晚于决策日 → asof_fundamental_row 返回 None）逐步纳入，避免幸存者偏差也
+    避免误删新上市标的。单时点选股（pick/screen）应保持默认 True。
     """
-    if not asof_s or not rows:
+    if not asof_s or not rows or not asof_filter_config:
         return rows, note
     existing, skipped = filter_etf_symbols_at(rows, asof_s)
     if not existing:
@@ -103,7 +72,6 @@ from app.data_sources.market_data import (
     fetch_hs300_universe_at,
     fetch_star50_universe,
     fetch_star_board_universe,
-    _parse_etf_df,
     fetch_zz1000_universe,
     fetch_zz1000_universe_at,
     fetch_zz399101_universe,
@@ -121,11 +89,17 @@ def resolve_universe_rows(
     seed: int | None,
     default_universe: str = "all_a",
     asof: str | date | None = None,
+    asof_filter_config: bool = True,
 ) -> tuple[list[dict[str, str]], str]:
     """解析自定义代码或预设指数股票池，并统一代码格式、去重。
 
     asof 非空且命中中证指数时，用 index_constitution 拉取该历史时点的成分股
     （避开幸存者偏差）；否则回退当前成分股（见 fetch_*_universe_at）。
+
+    ``asof_filter_config`` 仅影响 config 股票池（如 etf_core/etf_core_sub）：
+    单时点选股（pick/screen）保持 True，按 asof 过滤"当时已存在"的子集；
+    多时点回测置 False，用完整池并由 select() 逐决策日自然纳入（见
+    ``_maybe_asof_filter_config``）。
     """
     if symbols:
         seen: set[str] = set()
@@ -168,8 +142,12 @@ def resolve_universe_rows(
         return fetch_etf_universe(max_universe, seed=seed)
     if selected.startswith("config:"):
         rows, note = _load_config_pool(selected.split(":", 1)[1])
-        return _maybe_asof_filter_config(rows, note, asof_s)
+        return _maybe_asof_filter_config(
+            rows, note, asof_s, asof_filter_config=asof_filter_config
+        )
     if (_CONFIG_DIR / f"{selected}_pool.json").exists():
         rows, note = _load_config_pool(selected)
-        return _maybe_asof_filter_config(rows, note, asof_s)
+        return _maybe_asof_filter_config(
+            rows, note, asof_s, asof_filter_config=asof_filter_config
+        )
     return fetch_a_share_universe(max_universe, seed=seed)

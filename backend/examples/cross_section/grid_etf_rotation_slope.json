@@ -1,0 +1,7 @@
+{
+  "strategy_params": {
+    "score_mode": ["slope"],
+    "slope_days": [20, 40, 60, 90],
+    "min_score": [0.0, 0.1]
+  }
+}

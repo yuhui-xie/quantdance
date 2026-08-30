@@ -52,7 +52,8 @@
     "slope_days": 20,
     "efficiency_days": 20,
     "rebalance_threshold": 1.5,
-    "min_score_to_hold": 0.0
+    "min_score_to_hold": 0.0,
+    "ma_filter_days": 20
   },
   "output_options": {
     "json": false,

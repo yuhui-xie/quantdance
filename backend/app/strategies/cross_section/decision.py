@@ -75,6 +75,30 @@ def _monthly_weekday_trading_days(
     return sorted(picks)
 
 
+def _monthly_nth_trading_days(
+    calendar: Sequence[str], *, nth: int, months: int = 1
+) -> list[str]:
+    """返回每 N 个自然月内第 ``nth`` 个交易日的决策日。
+
+    ``nth`` 从 1 计：1=每月首个交易日（等价 ``anchor="start"``）。某月交易日不足
+    ``nth`` 个（长假等）则跳过该月不补齐。日期按天排序去重，与回测起始日无关。
+    """
+    if nth < 1:
+        raise ValueError("月度第几个交易日必须大于等于 1")
+    ordered = sorted(str(day)[:10] for day in calendar)
+    by_month: dict[str, list[str]] = {}
+    for day in ordered:
+        by_month.setdefault(day[:7], []).append(day)
+    picks: list[str] = []
+    for month in sorted(by_month):
+        if int(month[5:7]) % months != 0:
+            continue
+        days = by_month[month]
+        if len(days) >= nth:
+            picks.append(days[nth - 1])
+    return sorted(picks)
+
+
 def month_end_trading_days(calendar: Sequence[str], months: int = 1) -> list[str]:
     """返回日历上每 N 个自然月最后一个交易日的决策日（月末锚定）。"""
     return _monthly_trading_days(calendar, months, "end")
@@ -100,10 +124,11 @@ def _weekly_trading_days(calendar: Sequence[str], every_n: int) -> list[str]:
 def decision_dates_by_frequency(
     calendar: Sequence[str],
     *,
-    frequency: Literal["daily", "weekly", "biweekly", "monthly", "monthly_2x"] = "monthly",
+    frequency: Literal["daily", "weekly", "biweekly", "monthly", "monthly_2x", "monthly_nth"] = "monthly",
     every_n: int = 1,
     warmup: int = 20,
     anchor: Literal["start", "end"] = "end",
+    nth: int = 1,
 ) -> list[str]:
     """按自然周期锚定生成决策日：daily 每个交易日 / weekly 每周末 / biweekly 每双周 / monthly 每月。
 
@@ -116,7 +141,9 @@ def decision_dates_by_frequency(
     - ``frequency="monthly_2x"``：每自然月第一、第三个周一的交易日（忽略 every_n/anchor），
       落在自然月内的半月节奏，比 ``biweekly``（偶数 ISO 周）更贴近日历月；
     - ``frequency="monthly"``：每 ``every_n`` 个自然月锚定交易日；``anchor="end"``
-      取月末、``anchor="start"`` 取月初（= 季末/季初等）。
+      取月末、``anchor="start"`` 取月初（= 季末/季初等）；
+    - ``frequency="monthly_nth"``：每自然月第 ``nth`` 个交易日（忽略 every_n/anchor），
+      ``nth=1`` 等价 ``monthly+anchor="start"``；某月交易日不足则跳过该月。
     """
     if every_n < 1:
         raise ValueError("决策间隔必须大于等于 1")
@@ -131,23 +158,32 @@ def decision_dates_by_frequency(
         return _monthly_weekday_trading_days(ordered, months=1, weekday=0, weeks=(1, 3))
     if frequency == "monthly":
         return _monthly_trading_days(ordered, every_n, anchor)
+    if frequency == "monthly_nth":
+        return _monthly_nth_trading_days(ordered, nth=nth)
     raise ValueError(f"未知决策频率: {frequency}")
 
 
 class DecisionFrequencyParams(BaseModel):
     """按周期决策的共享参数；横截面策略的 Params 直接继承即可复用。"""
 
-    decision_frequency: Literal["daily", "weekly", "biweekly", "monthly", "monthly_2x"] = Field(
+    decision_frequency: Literal["daily", "weekly", "biweekly", "monthly", "monthly_2x", "monthly_nth"] = Field(
         "monthly",
         description=(
             "决策频率：daily=每日（冷启动期后）| weekly=每周末 | biweekly=每双周 | "
-            "monthly_2x=每月第一、第三个周一 | monthly=每月"
+            "monthly_2x=每月第一、第三个周一 | monthly_nth=每月第 decision_month_nth 个交易日 | "
+            "monthly=每月"
         ),
     )
-    decision_every_n: int = Field(1, ge=1, description="决策步长：monthly+3=季、weekly+2=双周；daily/biweekly/monthly_2x 忽略")
+    decision_every_n: int = Field(1, ge=1, description="决策步长：monthly+3=季、weekly+2=双周；daily/biweekly/monthly_2x/monthly_nth 忽略")
     decision_anchor: Literal["start", "end"] = Field(
         "end",
         description="月度决策锚点：end=每自然月末（默认）| start=每自然月首个交易日；仅 monthly 生效",
+    )
+    decision_month_nth: int = Field(
+        1,
+        ge=1,
+        le=23,
+        description="每月第几个交易日调仓（1=月初首个交易日，等价 monthly+start）；仅 monthly_nth 生效，某月交易日不足则跳过该月",
     )
     decision_warmup: int = Field(20, ge=0, le=250, description="冷启动期（交易日），仅 daily 生效")
 
@@ -170,12 +206,14 @@ def periodic_decision_dates(
     every_n = int(getattr(params, "decision_every_n", 1) or 1)
     warmup = int(getattr(params, "decision_warmup", 20) or 0)
     anchor = str(getattr(params, "decision_anchor", "end") or "end")
+    nth = int(getattr(params, "decision_month_nth", 1) or 1)
     return decision_dates_by_frequency(
         calendar,
         frequency=frequency,  # type: ignore[arg-type]
         every_n=every_n,
         warmup=warmup,
         anchor=anchor,  # type: ignore[arg-type]
+        nth=nth,
     )
 
 

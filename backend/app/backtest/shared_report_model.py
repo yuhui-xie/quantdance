@@ -506,6 +506,29 @@ def build_backtest_shared_report_model(
             }
         )
 
+    # ---- 事后最优：每个调仓周期内（本次决策日 → 下次调仓日）涨幅最大的候选 ----
+    # 用各决策日候选的收盘价构建 (symbol, date) -> close，计算持有期前向收益 fwd_return。
+    # 仅供分析诊断，属事后视角（使用了未来数据），不构成交易信号。
+    close_at: dict[str, dict[str, float]] = {}
+    for period in periods:
+        day = period["date"]
+        for sel in period["selection"]:
+            sym = sel.get("symbol")
+            c = sel.get("close")
+            if sym and c is not None:
+                close_at.setdefault(sym, {})[day] = c
+    for period in periods:
+        day = period["date"]
+        next_day = period.get("next_date")
+        for sel in period["selection"]:
+            sym = sel.get("symbol")
+            c0 = sel.get("close")
+            c1 = close_at.get(sym, {}).get(next_day) if sym and next_day else None
+            if c0 and c1 and c0 > 0:
+                sel["fwd_return"] = round(float(c1) / float(c0) - 1.0, 8)
+            else:
+                sel["fwd_return"] = None
+
     # 按股票聚合历次决策日的指标（symbol → [{date, ...指标字段}]），供个股详情弹窗展示。
     # 行内已含 symbol/name/close/rank/score/llt_slope 等通用字段，date 取自所属调仓日。
     symbol_indicators: dict[str, list[dict[str, Any]]] = {}

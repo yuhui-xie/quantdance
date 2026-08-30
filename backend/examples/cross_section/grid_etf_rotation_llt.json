@@ -1,0 +1,8 @@
+{
+  "strategy_params": {
+    "score_mode": ["llt"],
+    "llt_period": [20, 30, 45],
+    "llt_window": [20, 45],
+    "min_r2": [0.1, 0.5]
+  }
+}

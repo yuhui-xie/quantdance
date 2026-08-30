@@ -1,0 +1,6 @@
+{
+  "strategy_params": {
+    "decision_frequency": ["weekly", "biweekly", "monthly"],
+    "top_n": [1, 3, 5]
+  }
+}

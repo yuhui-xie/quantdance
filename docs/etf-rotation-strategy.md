@@ -5,7 +5,7 @@
 实现代码：`backend/app/strategies/cross_section/etf_rotation.py`
 横截面执行：`backend/app/backtest/cross_section_runner.py`，共享资金引擎：`backend/app/backtest/shared_engine.py`
 
-> 相关策略：`etf_rotation_3factor` 用乖离/斜率/效率三个动量因子做加权评分（见 [etf-rotation-3factor-strategy.md](./etf-rotation-3factor-strategy.md)）。本策略更简单：单因子 LLT 拟合趋势 + 可选量价过滤。
+> 打分来源由 `score_mode` 决定：`llt`（默认）用 LLT 拟合趋势（斜率×R²），`slope` 用归一化收盘价线性回归斜率×R² 的横截面 z 值，二选一、不再融合。可选叠加 VPT 量价方向过滤。
 
 ## 1. 策略概述
 
@@ -47,19 +47,31 @@
 | `volume_confirm` | `False` | 是否启用量能确认（见 §3） |
 | `volume_days` | `20` | 量能确认的 VPT 斜率回看交易日数 |
 | `rotate_threshold` | `0.9` | 轮动惰性阈值：当前持仓得分不低于新候选得分×该阈值时保持持仓、不调仓（见 §3.1）；`0` 关闭惰性、纯按得分轮动 |
+| `score_mode` | `llt` | 打分来源：`llt`（默认）= LLT 拟合斜率×R²；`slope` = 归一化收盘价线性回归斜率×R² 的横截面 z 值 |
+| `slope_days` | `60` | `slope` 模式的斜率回归窗口（归一化收盘价线性回归天数，SLOPE_N） |
 | `exclude_limit` / `exclude_suspended` | `True` | 调仓日排除涨跌停 / 停牌标的 |
 | `limit_pct_threshold` | `9.5` | 判定涨跌停的涨跌幅阈值（%） |
 
 ### 综合得分公式
 
+`score_mode` 决定排序得分来源，二选一：
+
+**`llt`（默认）**：
 ```
 得分 = LLT 拟合斜率 × R²
 ```
-
-- **LLT 趋势线**：对价格做低延迟平滑（`llt(close, llt_period)`），再按首值归一化以消除价格水平差异，使斜率跨标的可比。
+- **LLT 趋势线**：对价格做低延迟平滑（`llt(close, llt_period)`），再对趋势线取对数后拟合（回归斜率即每根 K 线的对数涨幅），跨标的口径统一。
 - **斜率**：对最近 `llt_window` 根 K 线的 LLT 趋势线做最小二乘线性回归（`llt_slope_fit`），斜率 > 0 表示上升趋势。
 - **R²**：拟合质量，越接近 1 趋势越贴近一条直线、斜率越可信；接近 0 表示窗口内涨跌混乱、斜率不可信。
 - 得分 = 斜率 × R² 天然按拟合质量加权：趋势强但拟合差的标的得分被压低。`min_r2` 提供显式的质量硬门槛，`min_score` 提供得分下界（默认 `0` → 只留上升趋势）。
+
+**`slope`（收盘价斜率）**：
+```
+得分 = z( 归一化收盘价线性回归斜率 × R² )
+```
+- 对最近 `slope_days` 根 K 线的**原始收盘价**按首值归一化后做最小二乘回归，取 `斜率 × R²`（`slope_momentum`），同样用 R² 给趋势质量加权。
+- 再对当日池内所有候选做**横截面 z 标准化**（均值 0、标准差 1，z 值可 >1），含义为「高于当日池内平均多少个标准差」。
+- 经验上该模式在中短窗口（`slope_days≈40`）表现较好；长窗口（≥60）因原始价格回归被端点主导、信噪比下降，表现劣化。
 
 ## 3. 可选量价确认（`volume_confirm=True`）
 
@@ -158,5 +170,5 @@ detail 字典里加一个字段**（如 `"my_score": value`），无需改动报
 ## 6. 局限
 
 - LLT 拟合趋势是趋势跟随信号，震荡/熊市里可能频繁在弱势标的间切换或持有现金。
-- `volume_confirm` 只做方向过滤，不能替代 LLT 得分排名；如需多因子加权评分，参考 `etf_rotation_3factor`。
+- `volume_confirm` 只做方向过滤，不能替代得分排名。策略当前只保留 `llt` 与 `slope` 两种单因子打分，不做多因子融合。
 - 候选池过小（如只有 1–2 只）时，排名与过滤的意义有限。

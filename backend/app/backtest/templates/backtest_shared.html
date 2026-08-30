@@ -145,6 +145,11 @@ header .meta { color: var(--muted); font-size: 13px; }
 .detail .row { margin-bottom: 8px; color: var(--muted); }
 .detail .row b { color: var(--text); font-weight: 600; }
 .tables { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.trade-row { cursor: pointer; }
+.trade-row:hover { background: var(--panel); }
+.trade-row.active { background: var(--accent); color: #fff; }
+.trade-row.active td.side-buy { color: #fff; }
+.trade-row.active td.side-sell { color: #fff; }
 @media (max-width: 900px) {
   .tables { grid-template-columns: 1fr; }
 }
@@ -204,6 +209,28 @@ table.heat td.heat-sel {
 }
 .note { color: var(--muted); font-size: 12px; margin-top: 8px; }
 .empty { color: var(--muted); padding: 12px; }
+.best-box {
+  background: #222b38;
+  border: 1px solid rgba(79,195,247,.4);
+  border-left: 3px solid var(--accent);
+  border-radius: 6px;
+  padding: 10px 12px;
+  margin-bottom: 12px;
+}
+.best-box .best-label { color: var(--muted); font-size: 12px; }
+.best-box .best-main { font-size: 14px; margin: 4px 0 7px; font-weight: 600; }
+.best-box .best-main .nm { color: var(--text); }
+.best-box .badge {
+  display: inline-block; background: rgba(79,195,247,.18); color: var(--accent);
+  border-radius: 4px; padding: 0 6px; font-size: 11px; margin-left: 6px;
+}
+.best-box .best-metrics { font-size: 12px; color: var(--muted); display: flex; flex-wrap: wrap; gap: 14px; }
+.best-box .best-metrics b { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
+.best-box .best-compare {
+  margin-top: 7px; padding-top: 7px; border-top: 1px dashed var(--border);
+  font-size: 12px; color: var(--muted);
+}
+.best-box .best-compare b { font-weight: 600; font-variant-numeric: tabular-nums; }
 a.sym-link {
   color: var(--accent);
   text-decoration: none;
@@ -273,6 +300,16 @@ a.sym-link:hover { color: #81d4fa; border-bottom-color: #81d4fa; }
 }
 .legend .candle-down {
   width: 8px; height: 12px; background: #26a69a; border-radius: 1px;
+}
+#indicatorChart {
+  width: 100%;
+  height: 240px;
+  display: block;
+  background: #0f1115;
+  border-radius: 6px;
+  touch-action: none;
+  user-select: none;
+  cursor: crosshair;
 }
 </style>
 </head>
@@ -407,6 +444,14 @@ a.sym-link:hover { color: #81d4fa; border-bottom-color: #81d4fa; }
         </table></div>
       </div>
     </div>
+    <h2 style="margin-top:14px">指标随时间的折线图（历次决策日 · 可选择性显示）</h2>
+    <div class="chart-toolbar">
+      <button type="button" id="indShowAll">全选</button>
+      <button type="button" id="indShowNone">全不选</button>
+      <span class="note" id="indHint" style="margin:0">各线已按自身范围归一化 · 点击图例开关指标线</span>
+    </div>
+    <svg id="indicatorChart" viewBox="0 0 900 240" preserveAspectRatio="none"></svg>
+    <div class="legend" id="indLegend"></div>
     <h2 style="margin-top:14px">指标详情（历次决策日）</h2>
     <div class="scroll">
       <table>
@@ -446,13 +491,42 @@ function symLink(symbol, name) {
 
 // ---- 通用指标基座：选股 detail 里除元字段外的数值字段自动成为报告列 / 热力图字段 ----
 const SELECTION_META = new Set(["symbol", "name", "asof", "close", "float_market_cap", "rank_market_cap", "rank", "selected"]);
-const PREFERRED_INDICATOR_ORDER = ["score", "llt_slope", "llt_r2", "vpt_slope", "pct_change"];
+const PREFERRED_INDICATOR_ORDER = ["score", "llt_slope", "llt_r2", "vpt_slope", "ma_value", "pct_change", "fwd_return"];
 const FIELD_LABELS = {
   score: "综合得分", llt_slope: "LLT斜率", llt_r2: "LLT R²", vpt_slope: "VPT斜率",
-  pct_change: "当日涨跌%", close: "收盘价", rank: "排名", float_market_cap: "流通市值",
+  pct_change: "当日涨跌%", fwd_return: "持有期涨跌%", close: "收盘价", rank: "排名", float_market_cap: "流通市值",
+  ma_value: "均线价",
 };
 
 function fieldLabel(f) { return FIELD_LABELS[f] || f; }
+
+// 策略视角最优：决策时刻得分最高、排名最靠前的那只（通用策略无 rank 时回退 score 最高）。
+function bestOfSelection(selection) {
+  const items = (selection || []).filter(s => s.symbol);
+  if (!items.length) return null;
+  const byRank = items.find(s => Number(s.rank) === 1);
+  if (byRank) return byRank;
+  return [...items].sort(
+    (a, b) => (Number(b.score) || -Infinity) - (Number(a.score) || -Infinity)
+  )[0] || items[0];
+}
+
+// 事后最优：到下次调仓日（持有期）涨幅最大、本应最值得持有的候选。
+// 依据模型层算好的 fwd_return；无法计算（最后一期/停牌等）返回 null。
+function fwdWinner(selection) {
+  const items = (selection || []).filter(s => s.symbol && s.fwd_return != null && Number.isFinite(s.fwd_return));
+  if (!items.length) return null;
+  return [...items].sort((a, b) => b.fwd_return - a.fwd_return)[0];
+}
+
+// 单只候选的指标片段：label: value（复用 indicatorFields 的列序与标签）。
+function bestMetricsHtml(best) {
+  const fields = indicatorFields([best]).filter(f => f !== "fwd_return");
+  if (!fields.length) return "";
+  return fields.map(f =>
+    `<span>${fieldLabel(f)} <b>${num(best[f], 4)}</b></span>`
+  ).join("");
+}
 
 // 收集 selection 各行的非元指标字段（去重），按优先序 + 其余字母序排列
 function indicatorFields(selection) {
@@ -738,6 +812,30 @@ function selectPeriod(index) {
   ).join("");
   const selItems = p.selection || [];
   const selIndFields = indicatorFields(selItems);
+  // 事后最优：持有期涨幅最大者；若无（最后一期等）回退策略最优（rank1）。
+  const fwdWin = fwdWinner(selItems);
+  const win = fwdWin || bestOfSelection(selItems);
+  const boughtNow = selItems.filter(s => s.selected);
+  const winState = win
+    ? (win.selected ? `<span class="side-buy">✓ 当时已买入</span>` : `<span class="muted">✗ 当时未买入（策略实际买 ${boughtNow.length ? boughtNow.map(s => s.symbol).join("/") : "现金"}）</span>`)
+    : "";
+  // 收益对比：本应持有事后最优 vs 策略实际持仓，同一持有期（D→下次调仓）
+  const cmpHtml = (fwdWin && p.period_return != null && Number.isFinite(p.period_return)) ? (() => {
+    const delta = fwdWin.fwd_return - p.period_return;
+    const deltaCls = delta >= 0 ? "neg" : "pos"; // 差距为正=策略跑输事后最优
+    return `<div class="best-compare">持有期收益对比：本应持有 ${pct(fwdWin.fwd_return)} · 策略实际 <b class="${clsRet(p.period_return)}">${pct(p.period_return)}</b> · 差距 <b class="${deltaCls}">${delta >= 0 ? "+" : ""}${(delta * 100).toFixed(2)}pp</b></div>`;
+  })() : "";
+  const bestBoxHtml = win ? `
+    <div class="best-box">
+      <div class="best-label">${fwdWin ? `事后最优 · 持有期 ${p.date} → ${p.next_date || "…"} 涨幅最大（事后视角，仅供参考）` : `策略最优候选 · 决策日 ${p.date}（无可比持有期）`}</div>
+      <div class="best-main">
+        ${symLink(win.symbol)} <span class="nm">${win.name || ""}</span>
+        ${fwdWin ? `<span class="${clsRet(win.fwd_return)}">${pct(win.fwd_return)}</span>` : `<span class="badge">#${win.rank != null ? win.rank : "-"}</span>`}
+        ${winState}
+      </div>
+      <div class="best-metrics">${bestMetricsHtml(win)}</div>
+      ${cmpHtml}
+    </div>` : "";
   const selHead = `<th>选</th><th>排名</th><th>代码</th><th>名称</th><th>收盘价</th>` +
     selIndFields.map(f => `<th>${fieldLabel(f)}</th>`).join("");
   const selRows = selItems.map(s => {
@@ -755,6 +853,7 @@ function selectPeriod(index) {
       · 区间收益 <b class="${clsRet(p.period_return)}">${pct(p.period_return)}</b>
     </div>
     <div class="row">卖出 ${p.sell_count} / 买入 ${p.buy_count} · 调仓后现金 ${num(p.cash, 0)}</div>
+    ${bestBoxHtml}
     <div class="tables">
       <div>
         <h2>当日卖出</h2>
@@ -784,13 +883,17 @@ function selectPeriod(index) {
 function renderPeriodList() {
   const list = document.getElementById("periodList");
   const periods = DATA.periods || [];
-  list.innerHTML = periods.map((p, i) => `
+  list.innerHTML = periods.map((p, i) => {
+    const fw = fwdWinner(p.selection);
+    const b = fw || bestOfSelection(p.selection);
+    return `
     <div class="period-item" data-index="${i}">
       <span class="d">${p.date}</span>
       <span class="r ${clsRet(p.period_return)}">${pct(p.period_return)}</span>
-      <div style="color:var(--muted);margin-top:2px">卖${p.sell_count} / 买${p.buy_count}</div>
+      <div style="color:var(--muted);margin-top:2px">${fw ? "事后最优" : "最优"} <b style="color:var(--text)">${b ? b.symbol : "-"}</b>${fw ? ` <span class="${clsRet(fw.fwd_return)}">${pct(fw.fwd_return)}</span>` : (b ? (b.selected ? " ✓" : " ✗") : "")} · 卖${p.sell_count}/买${p.buy_count}</div>
     </div>
-  `).join("") || `<div class="empty">无调仓</div>`;
+  `;
+  }).join("") || `<div class="empty">无调仓</div>`;
   list.querySelectorAll(".period-item").forEach(el => {
     el.addEventListener("click", () => selectPeriod(Number(el.getAttribute("data-index"))));
   });
@@ -895,6 +998,27 @@ function zoomAroundTrades(series, trades, padBars) {
     hi = Math.min(series.length - 1, lo + minSpan - 1);
   }
   return { lo, hi };
+}
+
+// 定位到单笔成交：把个股K线图缩放到该笔成交日期前后一个区间。
+function zoomSymbolToTrade(date) {
+  const series = symbolChartState.full;
+  if (!series.length) return;
+  const i = findBarIndex(series, date);
+  if (i < 0) return;
+  const pad = Math.max(15, Math.min(series.length, 30));
+  const minSpan = Math.min(series.length, 40);
+  let lo = Math.max(0, i - pad);
+  let hi = Math.min(series.length - 1, i + pad);
+  if (hi - lo + 1 < minSpan) {
+    const mid = Math.round((lo + hi) / 2);
+    const half = Math.floor(minSpan / 2);
+    lo = Math.max(0, mid - half);
+    hi = Math.min(series.length - 1, lo + minSpan - 1);
+  }
+  symbolChartState.i0 = lo;
+  symbolChartState.i1 = hi;
+  drawSymbolChart();
 }
 
 const symbolChartState = {
@@ -1103,6 +1227,139 @@ function renderSymbolChart(info) {
   bindSymbolChartInteractions();
 }
 
+// ---- 候选标的指标随时间的折线图（多指标线叠加 · 可选择性显示）----
+const IND_COLORS = ["#4fc3f7", "#66bb6a", "#ffb74d", "#ce93d8", "#ef5350", "#26a69a", "#81d4fa", "#aed581"];
+let indCtx = null;      // {inds, fields, series}
+let indHidden = null;   // 隐藏的指标字段集合；null = 全部显示
+
+// 每个指标序列：按决策日序号收集数值点，记录该指标自身 min/max 供归一化。
+function buildIndSeries(inds, fields) {
+  const series = {};
+  fields.forEach((f, fi) => {
+    const pts = [];
+    inds.forEach((r, i) => {
+      const v = r[f];
+      if (v == null || !Number.isFinite(v)) return;
+      pts.push({ i, date: r.date, v });
+    });
+    if (pts.length >= 2) {
+      series[f] = {
+        color: IND_COLORS[fi % IND_COLORS.length],
+        pts,
+        min: Math.min(...pts.map(p => p.v)),
+        max: Math.max(...pts.map(p => p.v)),
+      };
+    }
+  });
+  return series;
+}
+
+function renderIndicatorChart() {
+  const svg = document.getElementById("indicatorChart");
+  const legend = document.getElementById("indLegend");
+  const hint = document.getElementById("indHint");
+  if (!indCtx) { svg.innerHTML = ""; legend.innerHTML = ""; hint.textContent = ""; return; }
+  const { inds, fields, series } = indCtx;
+  const shown = fields.filter(f => series[f] && !(indHidden && indHidden.has(f)));
+  if (!inds.length || !shown.length) {
+    svg.innerHTML = `<text x="20" y="40" fill="#9aa0a6" font-size="13">${inds.length ? "未选择任何指标，点击上方图例选择" : "无候选指标数据"}</text>`;
+    legend.innerHTML = "";
+    hint.textContent = "";
+    return;
+  }
+  const n = inds.length;
+  const W = 900, H = 240, pad = { l: 46, r: 16, t: 18, b: 26 };
+  const xOf = i => pad.l + (i / Math.max(n - 1, 1)) * (W - pad.l - pad.r);
+  const ranges = {};
+  shown.forEach(f => { ranges[f] = (series[f].max - series[f].min) || 1; });
+  const yOf = (f, v) => pad.t + (1 - (v - series[f].min) / ranges[f]) * (H - pad.t - pad.b);
+
+  let paths = "";
+  const lastVal = {};
+  shown.forEach(f => {
+    const s = series[f];
+    let d = "";
+    s.pts.forEach((p, k) => {
+      const y = yOf(f, p.v);
+      d += `${k === 0 ? "M" : "L"}${xOf(p.i).toFixed(2)},${y.toFixed(2)} `;
+    });
+    paths += `<path d="${d.trim()}" fill="none" stroke="${s.color}" stroke-width="2"/>`;
+    lastVal[f] = s.pts[s.pts.length - 1];
+  });
+  let marks = "";
+  shown.forEach(f => {
+    const s = series[f];
+    s.pts.forEach(p => {
+      marks += `<circle data-ind-dot data-f="${f}" data-i="${p.i}" cx="${xOf(p.i).toFixed(2)}" cy="${yOf(f, p.v).toFixed(2)}" r="2.4" fill="${s.color}" stroke="#0f1115" stroke-width="0.6"/>`;
+    });
+  });
+  let xlabels = "";
+  const step = Math.max(1, Math.ceil(n / 8));
+  inds.forEach((r, i) => {
+    if (i % step !== 0 && i !== n - 1) return;
+    xlabels += `<text x="${xOf(i)}" y="${H - 8}" fill="#9aa0a6" font-size="10" text-anchor="middle">${String(r.date).slice(5)}</text>`;
+  });
+  const centerY = pad.t + (H - pad.t - pad.b) / 2;
+  svg.innerHTML = `
+    <rect x="0" y="0" width="${W}" height="${H}" fill="#0f1115"/>
+    <line x1="${pad.l}" y1="${centerY}" x2="${W - pad.r}" y2="${centerY}" stroke="#2a2f3a" stroke-dasharray="3 3"/>
+    ${paths}
+    ${marks}
+    ${xlabels}
+    <text x="${pad.l}" y="14" fill="#9aa0a6" font-size="11">指标随决策日变化（各线已按自身范围归一化）</text>
+  `;
+  // 十字准线 + 悬停提示
+  const guide = document.createElementNS(svg.namespaceURI, "line");
+  guide.setAttribute("y1", pad.t);
+  guide.setAttribute("y2", H - pad.b);
+  guide.setAttribute("stroke", "#9aa0a6");
+  guide.setAttribute("stroke-width", "0.8");
+  guide.setAttribute("stroke-dasharray", "2 2");
+  guide.style.display = "none";
+  svg.appendChild(guide);
+  const tip = document.createElementNS(svg.namespaceURI, "g");
+  svg.appendChild(tip);
+  svg.onmousemove = (ev) => {
+    const rect = svg.getBoundingClientRect();
+    const rel = (ev.clientX - rect.left) / Math.max(rect.width, 1);
+    const i = Math.max(0, Math.min(n - 1, Math.round(rel * (n - 1))));
+    const x = xOf(i);
+    guide.setAttribute("x1", x);
+    guide.setAttribute("x2", x);
+    guide.style.display = "";
+    tip.innerHTML = "";
+    const vals = [];
+    shown.forEach(f => {
+      const s = series[f];
+      const pt = s.pts.find(p => p.i === i);
+      if (!pt) return;
+      tip.innerHTML += `<circle cx="${x.toFixed(2)}" cy="${yOf(f, pt.v).toFixed(2)}" r="3.2" fill="${s.color}" stroke="#0f1115"/>`;
+      vals.push(`${fieldLabel(f)} ${num(pt.v, 4)}`);
+    });
+    hint.textContent = `${inds[i].date} · ` + (vals.length ? vals.join("  ") : "该日无数据");
+  };
+  svg.onmouseleave = () => { guide.style.display = "none"; tip.innerHTML = ""; };
+
+  legend.innerHTML = fields.filter(f => series[f]).map(f => {
+    const s = series[f];
+    const on = !(indHidden && indHidden.has(f));
+    const lv = lastVal[f] ? lastVal[f].v : null;
+    return `<span data-ind-field="${f}" style="cursor:pointer;opacity:${on ? 1 : .35}" title="点击开关">
+      <i class="line" style="background:${s.color}"></i>${fieldLabel(f)}
+      <span style="opacity:.7">${on && lv != null ? num(lv, 4) : "—"} [${num(s.min, 3)}–${num(s.max, 3)}]</span>
+    </span>`;
+  }).join("");
+  legend.querySelectorAll("[data-ind-field]").forEach(chip => {
+    chip.addEventListener("click", () => {
+      const f = chip.getAttribute("data-ind-field");
+      const hid = new Set(indHidden || []);
+      if (hid.has(f)) hid.delete(f); else hid.add(f);
+      indHidden = hid.size ? hid : null;
+      renderIndicatorChart();
+    });
+  });
+}
+
 // ---- 个股指标详情：历次决策日该股的指标明细（score/LLT斜率/LLT R²/VPT斜率/涨跌等）----
 function renderSymbolIndicators(symbol) {
   const inds = (DATA.symbol_indicators || {})[symbol] || [];
@@ -1111,10 +1368,15 @@ function renderSymbolIndicators(symbol) {
   if (!inds.length) {
     head.innerHTML = "";
     body.innerHTML = '<tr><td class="empty">该股未出现在选股候选，无指标数据</td></tr>';
+    indCtx = null;
+    renderIndicatorChart();
     return;
   }
   // 动态指标列复用 indicatorFields（排除元字段），前置 日期/排名/收盘价，末列标注入选
   const indFields = indicatorFields(inds);
+  indCtx = { inds, fields: indFields, series: buildIndSeries(inds, indFields) };
+  indHidden = null;
+  renderIndicatorChart();
   head.innerHTML =
     `<tr><th>决策日</th><th>排名</th><th>收盘价</th>` +
     indFields.map(f => `<th>${fieldLabel(f)}</th>`).join("") +
@@ -1133,40 +1395,53 @@ function renderSymbolIndicators(symbol) {
 
 function openSymbol(symbol) {
   const info = (DATA.by_symbol || {})[symbol];
+  const inds = (DATA.symbol_indicators || {})[symbol] || [];
   const modal = document.getElementById("symbolModal");
-  if (!info) {
+  if (!info && !inds.length) {
     return;
   }
+  const candidateOnly = !info;
+  const name = info ? info.name : (inds.length ? (inds[0].name || "") : "");
   document.getElementById("symbolModalTitle").textContent =
-    `${info.symbol} ${info.name || ""}`.trim();
-  const buys = (info.trades || []).filter(t => t.side === "buy").length;
-  const sells = (info.trades || []).filter(t => t.side === "sell").length;
-  const pnl = (info.round_trips || []).reduce((a, t) => a + (t.pnl || 0), 0);
-  document.getElementById("symbolModalSub").textContent =
-    `买入 ${buys} 笔 · 卖出 ${sells} 笔 · 回合盈亏合计 ${num(pnl, 0)}` +
-    (info.has_ohlc
-      ? ` · 日K ${(info.prices || []).length} 根（默认围绕买卖点；滚轮/拖拽可缩放）`
-      : ((info.prices || []).length
-        ? ` · 仅收盘价 ${(info.prices || []).length} 根（无OHLC缓存）`
-        : " · 无本地日线，按成交价示意"));
-  renderSymbolChart(info);
+    `${symbol} ${name}`.trim();
+  document.getElementById("symbolModalSub").textContent = candidateOnly
+    ? `候选标的 · 历次决策日均进入候选池（共 ${inds.length} 期）· 未实际成交`
+    : `买入 ${(info.trades || []).filter(t => t.side === "buy").length} 笔 · ` +
+      `卖出 ${(info.trades || []).filter(t => t.side === "sell").length} 笔 · ` +
+      `回合盈亏合计 ${num((info.round_trips || []).reduce((a, t) => a + (t.pnl || 0), 0), 0)}` +
+      (info.has_ohlc
+        ? ` · 日K ${(info.prices || []).length} 根（默认围绕买卖点；滚轮/拖拽可缩放）`
+        : ((info.prices || []).length
+          ? ` · 仅收盘价 ${(info.prices || []).length} 根（无OHLC缓存）`
+          : " · 无本地日线，按成交价示意"));
+  const tablesEl = document.querySelector("#symbolModal .tables");
+  if (candidateOnly) {
+    document.getElementById("symbolChart").innerHTML =
+      `<text x="20" y="40" fill="#9aa0a6" font-size="13">候选标的（未成交）· 无买卖点价格图</text>`;
+    if (tablesEl) tablesEl.style.display = "none";
+    document.getElementById("symbolTradeBody").innerHTML = "";
+    document.getElementById("symbolTripBody").innerHTML = "";
+  } else {
+    if (tablesEl) tablesEl.style.display = "";
+    renderSymbolChart(info);
+    document.getElementById("symbolTradeBody").innerHTML = (info.trades || []).map(t => `
+      <tr class="trade-row" data-trade-date="${t.date}" title="点击定位K线到该笔成交区间">
+        <td>${t.date}</td>
+        <td class="${t.side === "buy" ? "side-buy" : "side-sell"}">${sideLabel(t.side)}</td>
+        <td>${num(t.price, 3)}</td><td>${num(t.shares, 0)}</td>
+        <td>${num(t.notional, 0)}</td><td>${num(t.cost, 2)}</td>
+      </tr>
+    `).join("") || `<tr><td colspan="6" class="empty">无成交</td></tr>`;
+    document.getElementById("symbolTripBody").innerHTML = (info.round_trips || []).map(t => `
+      <tr>
+        <td>${t.buy_date}</td><td>${t.sell_date}</td>
+        <td>${num(t.buy_price, 3)}</td><td>${num(t.sell_price, 3)}</td>
+        <td class="${clsRet(t.pnl)}">${num(t.pnl, 0)}</td>
+        <td class="${clsRet(t.pnl_pct)}">${pct(t.pnl_pct)}</td>
+      </tr>
+    `).join("") || `<tr><td colspan="6" class="empty">无已平仓回合</td></tr>`;
+  }
   renderSymbolIndicators(symbol);
-  document.getElementById("symbolTradeBody").innerHTML = (info.trades || []).map(t => `
-    <tr>
-      <td>${t.date}</td>
-      <td class="${t.side === "buy" ? "side-buy" : "side-sell"}">${sideLabel(t.side)}</td>
-      <td>${num(t.price, 3)}</td><td>${num(t.shares, 0)}</td>
-      <td>${num(t.notional, 0)}</td><td>${num(t.cost, 2)}</td>
-    </tr>
-  `).join("") || `<tr><td colspan="6" class="empty">无成交</td></tr>`;
-  document.getElementById("symbolTripBody").innerHTML = (info.round_trips || []).map(t => `
-    <tr>
-      <td>${t.buy_date}</td><td>${t.sell_date}</td>
-      <td>${num(t.buy_price, 3)}</td><td>${num(t.sell_price, 3)}</td>
-      <td class="${clsRet(t.pnl)}">${num(t.pnl, 0)}</td>
-      <td class="${clsRet(t.pnl_pct)}">${pct(t.pnl_pct)}</td>
-    </tr>
-  `).join("") || `<tr><td colspan="6" class="empty">无已平仓回合</td></tr>`;
   modal.classList.add("open");
 }
 
@@ -1209,7 +1484,7 @@ function renderHeatmap() {
   document.getElementById("heatHead").innerHTML =
     `<tr><th>标的</th>` + dates.map(d => `<th>${d}</th>`).join("") + `</tr>`;
   document.getElementById("heatBody").innerHTML = symbols.map(s =>
-    `<tr><td class="heat-sym">${s} ${symMap[s]}</td>` + dates.map(d => {
+    `<tr><td class="heat-sym">${symLink(s, symMap[s])}</td>` + dates.map(d => {
       const c = byDate[d] && byDate[d][s];
       const v = c ? c.v : undefined;
       const txt = (v == null || !Number.isFinite(v)) ? "-" : num(v, 4);
@@ -1260,6 +1535,15 @@ function boot() {
   document.getElementById("symbolModal").addEventListener("click", (ev) => {
     if (ev.target.id === "symbolModal") closeSymbolModal();
   });
+  document.getElementById("indShowAll").addEventListener("click", () => {
+    indHidden = null;
+    renderIndicatorChart();
+  });
+  document.getElementById("indShowNone").addEventListener("click", () => {
+    if (!indCtx) return;
+    indHidden = new Set(indCtx.fields.filter(f => indCtx.series[f]));
+    renderIndicatorChart();
+  });
   document.addEventListener("keydown", (ev) => {
     if (ev.key === "Escape") closeSymbolModal();
   });
@@ -1267,9 +1551,17 @@ function boot() {
     const el = ev.target.closest("[data-symbol]");
     if (!el) return;
     const sym = el.getAttribute("data-symbol");
-    if (!sym || !(DATA.by_symbol || {})[sym]) return;
+    if (!sym || !((DATA.by_symbol || {})[sym] || (DATA.symbol_indicators || {})[sym])) return;
     ev.preventDefault();
     openSymbol(sym);
+  });
+  // 点击个股成交明细行 → 把K线缩放到该笔成交区间
+  document.body.addEventListener("click", (ev) => {
+    const el = ev.target.closest("[data-trade-date]");
+    if (!el) return;
+    document.querySelectorAll("#symbolTradeBody .trade-row").forEach(r => r.classList.remove("active"));
+    el.classList.add("active");
+    zoomSymbolToTrade(el.getAttribute("data-trade-date"));
   });
 }
 boot();

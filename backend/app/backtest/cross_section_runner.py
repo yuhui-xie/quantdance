@@ -70,6 +70,7 @@ def _resolve_universe(
     spec: CrossSectionStrategySpec,
     *,
     asof: str | None = None,
+    asof_filter_config: bool = True,
 ) -> tuple[list[dict[str, str]], str]:
     requested_universe = request.universe
     if "universe" not in request.model_fields_set:
@@ -100,6 +101,7 @@ def _resolve_universe(
         seed=request.seed,
         default_universe=spec.default_universe,
         asof=asof,
+        asof_filter_config=asof_filter_config,
     )
 
 
@@ -285,7 +287,12 @@ def run_cross_section_backtest(
     if spec.requires_symbols and not request.symbols:
         raise ValueError(f"{spec.id} 策略须通过 symbols 显式提供标的池")
 
-    universe, note = _resolve_universe(request, spec, asof=start or None)
+    # 多时点回测：config ETF 池用完整池（asof_filter_config=False），不按 start_date
+    # 过滤，否则会永久剔除上市晚于 start_date 的细分行业 ETF；其上市后由 select() 在
+    # 每个决策日按可用 K 线根数自然纳入（见 universe.py::_maybe_asof_filter_config）。
+    universe, note = _resolve_universe(
+        request, spec, asof=start or None, asof_filter_config=False
+    )
     symbols = [row["symbol"] for row in universe]
     names = {row["symbol"]: row.get("name") or "" for row in universe}
     panel = _load_panel(symbols, request, spec=spec)
@@ -434,7 +441,9 @@ def run_cross_section_per_stock_backtest(
     if spec.requires_symbols and not request.symbols:
         raise ValueError(f"{spec.id} 策略须通过 symbols 显式提供标的池")
 
-    universe, note = _resolve_universe(request, spec, asof=start or None)
+    universe, note = _resolve_universe(
+        request, spec, asof=start or None, asof_filter_config=False
+    )
     symbols = [row["symbol"] for row in universe]
     names = {row["symbol"]: row.get("name") or "" for row in universe}
     panel = _load_panel(symbols, request, spec=spec)

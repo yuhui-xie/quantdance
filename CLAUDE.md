@@ -26,8 +26,21 @@ python -m app.script backtest --request examples/backtest_ma_crossover.json
 python -m app.script backtest --strategy market_auntie --mode screen --max-universe 80 --seed 42 --json
 python -m app.script screen --list-presets
 python -m app.script screen --preset momentum --top-k 10 --json
+python -m app.script pick --strategy etf_rotation --asof 2024-05-06 --universe etf_asof --top-n 5
+python -m app.script correlation --universe etf_core          # 池内标的日收益率相关矩阵
 python -m app.script stock-search 贵州茅台
 ```
+
+`pick` 是横截面策略的「按日期挑标的」快捷命令：以 `--asof` 为截面日解析当时已存在的股票池、运行策略 `select()`，默认把完整排序候选（含 selected 标记）落盘为 `out/pick_<strategy>_<asof>.json`。示例：
+
+```bash
+# ETF 动量轮动在 2024-05-06 的动态 as-of 池里挑前 3 只
+python -m app.script pick --strategy etf_rotation --asof 2024-05-06 --universe etf_asof --top-n 3
+# 指定候选代码、覆盖策略参数、输出到指定文件
+python -m app.script pick --strategy etf_rotation --asof 2024-05-06 --symbols 510300 510500 --params '{"min_r2":0.5}'
+```
+
+`correlation` 计算股票池内标的的**日收益率两两 Pearson 相关**，用于检查池内标的独立性与冗余：默认取全体共同历史窗口（对齐后 dropna），可用 `--start/--end` 限定；控制台打印紧凑矩阵 + 最相关/最独立配对，`--output` 落盘完整 JSON（含矩阵与配对汇总）。示例：`python -m app.script correlation --universe etf_core --start 2023-01-01`。
 
 回测请求由 `backend/examples/*.json` 驱动（`--request`），也支持全部 CLI 参数覆盖。结果默认打印摘要；追加 `--json` 打印完整结果，`--output out/x.json` 落盘，`--report path` 存交互 HTML（仅此一种可视化产物，无静态图）。`output_options.*` 可放进请求 JSON（见 `docs/strategy-guide.md` 的字段表）。
 
@@ -84,4 +97,4 @@ python -m app.script stock-search 贵州茅台
 
 ## 测试约定
 
-`pytest`（`backend/pytest.ini` 设 `pythonpath=.`、`testpaths=tests`）。测试使用内存构造的 DataFrame，不访问网络。横截面/批量测试通过 mock 行情与基本面面板验证调度与执行逻辑。
+`pytest`（`backend/pytest.ini` 设 `pythonpath=.`、`testpaths=tests`）。不需要写单测。

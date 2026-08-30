@@ -9,12 +9,6 @@ K 线的 LLT 趋势线做最小二乘线性回归，得到 ``(斜率, R²)``。�
 轮动带惰性（``rotate_threshold``，默认 0.9）：调仓日对仍可作为候选的当前持仓，
 用其当前决策日的得分对比新入选标的的当前得分，不低于新得分×该阈值则继续持有、
 不调仓，仅在候选明显更优时才轮动，从而降低标的间的来回切换频率。
-
-可选的量价确认（``volume_confirm``）复用 ``vpt`` 量价趋势，对候选做资金
-流入方向过滤：
-
-- ``volume_confirm=False``（默认）：纯 LLT 趋势选股。
-- ``volume_confirm=True``：额外要求 VPT 量价趋势的回归斜率为正才纳入候选，
   避免无量能配合的价格反弹；仍按 LLT 得分排序选 top-N。
 """
 
@@ -33,7 +27,13 @@ from app.strategies.base import (
     CrossSectionContext,
     CrossSectionStrategySpec,
 )
-from app.strategies.cross_section.common import asof_tradeable_row
+from app.strategies.cross_section.common import (
+    apply_score_threshold_rotation,
+    asof_tradeable_row,
+)
+
+from app.factors.cross_section import zscore
+from app.factors.momentum import price_history, slope_momentum
 from app.strategies.cross_section.decision import DecisionFrequencyParams
 
 
@@ -46,36 +46,35 @@ class EtfRotationParams(DecisionFrequencyParams):
         "start",
         description="月度决策锚点：start=每自然月首个交易日（默认）| end=每自然月末",
     )
-    top_n: int = Field(1, ge=1, le=10, description="持有 LLT 趋势得分最高的 ETF 数量")
-    llt_period: int = Field(20, ge=2, le=400, description="LLT 平滑周期")
-    llt_window: int = Field(
-        20,
-        ge=2,
-        le=250,
-        description="LLT 拟合窗口：对最近该根 K 线的 LLT 趋势线做最小二乘线性回归取斜率",
+    top_n: int = Field(1, description="持有 LLT 趋势得分最高的 ETF 数量")
+    llt_period: int = Field(
+        20, description="LLT 平滑周期"
     )
-    min_r2: float = Field(
+    llt_window: int = Field(
+        20, description="LLT 拟合窗口：对最近该根 K 线的 LLT 趋势线做最小二乘线性回归取斜率",
+    )
+    min_r2: float = Field( 0.0,)
+    llt_slope_filter: float = Field(
         0.0,
-        ge=0.0,
-        le=1.0,
         description=(
-            "回归拟合质量（R²）门槛：R² 低于此值视为无可靠趋势（窗口内涨跌混乱、"
-            "斜率不可信），不纳入候选；0 表示关闭拟合质量过滤。"
+            "LLT 对数斜率门槛：归一化 LLT 趋势线拟合斜率（≈每根 K 线对数涨幅）"
+            "低于该值则剔除，0 关闭。比 MA 硬门限平滑，熊市不来回打脸。"
         ),
     )
     min_score: float = Field(
         0.0,
         description="最低综合得分（斜率×R²）；0 表示只持有上升趋势（得分>0）的标的",
     )
-    volume_confirm: bool = Field(
-        False,
-        description="是否启用量能确认：要求 VPT 量价趋势回归斜率为正才纳入候选",
+    slope_days: int = Field(
+        60, description="斜率模式（score_mode=slope）：归一化价格线性回归的窗口（SLOPE_N）"
     )
-    volume_days: int = Field(
-        20,
-        ge=2,
-        le=250,
-        description="量能确认的 VPT 斜率回看交易日数",
+
+    score_mode: Literal["llt", "slope"] = Field(
+        "llt",
+        description=(
+            "排序得分来源：llt=LLT 拟合斜率×R²（默认）；slope=归一化收盘价线性回归"
+            "斜率×R² 的横截面 z 值。"
+        ),
     )
     rotate_threshold: float = Field(
         0.9,
@@ -93,60 +92,19 @@ class EtfRotationParams(DecisionFrequencyParams):
     limit_pct_threshold: float = Field(9.5, ge=1.0, le=30.0)
 
 
-def _volume_history(
-    value_df: pd.DataFrame, asof: str
-) -> pd.Series | None:
-    """取 asof 及之前的成交量序列（按日期排序去重，索引为 date）。
-
-    与 ``price_history`` 的日期口径保持一致，便于按日对齐；面板无成交量列时返回 None。
-    """
-    if "volume" not in value_df.columns:
-        return None
-    v = value_df[["date", "volume"]].copy()
-    v["date"] = pd.to_datetime(v["date"], errors="coerce")
-    v["volume"] = pd.to_numeric(v["volume"], errors="coerce")
-    v = v[v["date"] <= pd.Timestamp(str(asof)[:10])]
-    v = v.dropna(subset=["date"])
-    v = v.sort_values("date").drop_duplicates("date", keep="last")
-    return v.set_index("date")["volume"].astype(float)
-
-
-def _vpt_slope(history: pd.DataFrame, volumes: pd.Series, window: int) -> float | None:
-    """最近 ``window`` 日 VPT 量价趋势的回归斜率；数据不足或无有效值返回 None。
-
-    VPT 是逐日累积的量纲量，但斜率的正负代表资金流入/流出的方向，跨标的比较时
-    只取符号做方向过滤，不参与排序（排序仍由 LLT 得分决定）。
-    """
-    if volumes is None or len(history) < window + 1:
-        return None
-    # 按日期对齐收盘价与成交量（history 与 volumes 均已按日排序去重）
-    aligned = history[["date", "close"]].copy()
-    aligned["date"] = pd.to_datetime(aligned["date"], errors="coerce")
-    merged = aligned.join(volumes, on="date", how="left")
-    if merged["close"].isna().any() or merged["volume"].isna().any():
-        return None
-    c = merged["close"].astype(float).to_numpy()
-    vol = merged["volume"].astype(float).to_numpy()
-    vpt_series = vpt(c, vol)
-    recent = vpt_series[-window:]
-    if not np.isfinite(recent).all():
-        return None
-    x = np.arange(window)
-    slope, _ = linreg(x, recent)
-    return slope
-
-
 def select_etf_rotation(
     asof: str,
     ctx: CrossSectionContext,
     params: EtfRotationParams,
 ) -> tuple[list[str], list[dict[str, Any]]]:
     candidates: list[dict[str, Any]] = []
-    # LLT 平滑暖机 + 拟合窗口；量价确认另需 volume_days+1 根
-    required_bars = params.llt_period + params.llt_window
-    if params.volume_confirm:
-        required_bars = max(required_bars, params.volume_days + 1)
-
+    use_llt = params.score_mode == "llt"
+    # 所需历史根数：llt 模式 = 平滑暖机 + 拟合窗口；slope 模式 = 斜率回归窗口
+    required_bars = (
+        params.llt_period + params.llt_window
+        if use_llt
+        else params.slope_days
+    )
     for symbol, payload in ctx.panel.items():
         value_df = payload.get("value")
         if value_df is None or value_df.empty:
@@ -169,29 +127,31 @@ def select_etf_rotation(
         close = float(history["close"].iloc[-1])
         closes = history["close"].astype(float).to_numpy()
 
-        # LLT 趋势线（按首值归一化，消除价格水平差异，使斜率跨标的可比）
-        trend = llt(closes, period=params.llt_period)
-        base = trend[0]
-        if not np.isfinite(base) or base <= 0:
-            continue
-        slope_arr, r2_arr = llt_slope_fit(trend / base, params.llt_window)
-        llt_slope_value = float(slope_arr[-1]) if np.isfinite(slope_arr[-1]) else None
-        llt_r2 = float(r2_arr[-1]) if np.isfinite(r2_arr[-1]) else None
-        if llt_slope_value is None or llt_r2 is None:
-            continue
-        if llt_r2 < params.min_r2:
-            continue
-        score = llt_slope_value * llt_r2
-        if score <= params.min_score:
-            continue
-
-        # 可选量能确认：要求 VPT 量价趋势回归斜率为正，过滤无量能配合的反弹
-        vpt_slope_value: float | None = None
-        if params.volume_confirm:
-            volumes = _volume_history(value_df, asof)
-            vpt_slope_value = _vpt_slope(history, volumes, params.volume_days)
-            if vpt_slope_value is None or vpt_slope_value <= 0:
+        # LLT 趋势线（对趋势线取对数后拟合：回归斜率即每根 K 线的对数涨幅，
+        # 天然无量纲、跨标的口径统一，无需再按首值归一化）。仅在 llt 模式作为打分依据。
+        llt_fit_score = 0
+        llt_slope_value = None
+        llt_r2 = None
+        if use_llt:
+            trend = llt(closes, period=params.llt_period)
+            if not np.isfinite(trend[0]) or trend[0] <= 0:
                 continue
+            slope_arr, r2_arr = llt_slope_fit(np.log(trend), params.llt_window)
+            llt_slope_value = float(slope_arr[-1]) if np.isfinite(slope_arr[-1]) else None
+            llt_r2 = float(r2_arr[-1]) if np.isfinite(r2_arr[-1]) else None
+
+            if llt_slope_value is None or llt_r2 is None:
+                llt_fit_score = -1
+            # ── LLT 拟合质量与对数斜率过滤（仅 llt 模式生效）──
+            elif llt_r2 < params.min_r2:
+                llt_fit_score = -1
+            elif params.llt_slope_filter > 0 and llt_slope_value < params.llt_slope_filter:
+                llt_fit_score = -1
+            else:
+                llt_fit_score = llt_slope_value * llt_r2
+
+        # 收盘价斜率（归一化线性回归斜率×R²），slope 模式作为打分依据
+        slope_raw = slope_momentum(closes, params.slope_days)
 
         candidates.append(
             {
@@ -201,56 +161,44 @@ def select_etf_rotation(
                 "close": close,
                 "llt_slope": llt_slope_value,
                 "llt_r2": llt_r2,
-                "score": score,
-                "vpt_slope": vpt_slope_value,
-                "pct_change": row.get("pct_change"),
+                "score": llt_fit_score,
+                # 生值保留量级（可超 1，供核查）；slope_score 下方改为横截面 z 值
+                "slope_raw": slope_raw,
+                "slope_score": slope_raw,
             }
         )
 
+    # slope 模式：收盘价斜率横截面 z 标准化（均值0、标准差1，z 值可 >1）
+    z_slope = zscore([c["slope_raw"] for c in candidates])
+
+    for idx, cand in enumerate(candidates):
+        cand["slope_score"] = z_slope[idx]
+        if params.score_mode == "slope":
+            cand["score"] = z_slope[idx]
+        # 其余（score_mode=="llt"）score 已在循环内由 llt_fit_score 设定
+
     candidates.sort(key=lambda item: (-item["score"], item["symbol"]))
+
     # 每个候选标注排名，details 返回完整排序候选，便于报告展示全部标的的指标对比。
-    for idx, item in enumerate(candidates):
-        item["rank"] = idx + 1
+    for idx, cand in enumerate(candidates):
+        cand["rank"] = idx + 1
 
     # ---- 轮动惰性（降低调仓频率）----
-    # 从 ctx.cache 读取上一调仓日持仓的 symbol 列表（runner 复用同一 context，
-    # cache 跨决策日保留）。对仍可作为候选的当前持仓，用它在【当前决策日】的
-    # 得分对比新入选标的的【当前】得分：不低于新得分×rotate_threshold 时继续持有，
-    # 仅当新候选明显更优才轮动，避免在得分相近的标的间来回切换。
-    score_by_symbol = {item["symbol"]: item["score"] for item in candidates}
-    selected = [item["symbol"] for item in candidates[: params.top_n]]
-    held_symbols: list[str] = ctx.cache.get(CACHE_KEY, [])
-    threshold = params.rotate_threshold
-    # 1.0（或以上）即关闭惰性，纯按得分轮动；0 表示几乎永不调仓
-    if threshold < 1.0 and held_symbols and selected:
-        held_set = set(held_symbols)
-        selected_set = set(selected)
-        for symbol in held_symbols:
-            if symbol in selected_set:
-                continue
-            if symbol not in score_by_symbol:
-                # 上一持仓当前时刻已跌出候选（得分≤0/停牌/涨跌停等），无法继续持有
-                continue
-            # 顶替基准：当前入选里、非当前持仓、当前得分最低的那只新标的
-            displaceable = [
-                sym for sym in selected
-                if sym not in held_set and sym != symbol
-            ]
-            if not displaceable:
-                continue
-            weakest_new = min(displaceable, key=lambda sym: score_by_symbol[sym])
-            if score_by_symbol[symbol] >= score_by_symbol[weakest_new] * threshold:
-                # 当前持仓在当前时刻仍够强：保留它，踢掉最弱的新入选标的
-                selected_set.discard(weakest_new)
-                selected_set.add(symbol)
-        selected = sorted(
-            selected_set, key=lambda sym: score_by_symbol[sym], reverse=True
-        )
+    # 对仍可作为候选的当前持仓，用其【当前决策日】得分对比新入选标的的【当前】得分，
+    # 不低于新得分×rotate_threshold 时继续持有，仅当新候选明显更优才轮动，避免在
+    # 得分相近的标的间来回切换。上一调仓日持仓从 ctx.cache 读取（runner 复用同一
+    # context，cache 跨决策日保留），本次结果由该函数写回 cache。
+    selected = apply_score_threshold_rotation(
+        ctx,
+        candidates,
+        params.top_n,
+        params.rotate_threshold,
+        cache_key=CACHE_KEY,
+    )
 
+    selected_set = set(selected)
     for item in candidates:
-        item["selected"] = item["symbol"] in set(selected)
-    # 记录本次持仓的 symbol 供下一决策日惰性比较（runner 复用同一 context，cache 跨日保留）
-    ctx.cache[CACHE_KEY] = list(selected)
+        item["selected"] = item["symbol"] in selected_set
     return selected, candidates
 
 
@@ -278,6 +226,9 @@ STRATEGY = CrossSectionStrategySpec(
         "rotate_threshold 引入轮动惰性：对仍可作为候选的当前持仓，用其当前决策日得分"
         "对比新候选当前得分，不低于新得分×阈值时保持持仓、不调仓，仅在候选明显更优时"
         "轮动；1.0 关闭惰性，越接近 0 惰性越强。",
+        "score_mode 决定排序得分来源：llt（默认）= LLT 拟合斜率×R²；slope = 归一化"
+        "收盘价线性回归斜率×R² 的横截面 z 值（z 化后可 >1，含义为「高于当日池内平均」"
+        "多少个标准差，属正常）。",
         "趋势判定仅使用调仓日及之前的收盘价，不使用未来数据。",
     ),
 )

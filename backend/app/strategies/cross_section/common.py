@@ -136,3 +136,57 @@ def apply_hysteresis(
     ctx.cache[cache_key] = result
     details = [c for c in ranked_candidates if c["symbol"] in result_set]
     return result, details
+
+
+def apply_score_threshold_rotation(
+    ctx: CrossSectionContext,
+    ranked_candidates: list[dict[str, Any]],
+    top_n: int,
+    threshold: float,
+    *,
+    cache_key: str = "rotation_lazy_holdings",
+    score_key: str = "score",
+) -> list[str]:
+    """对已按得分降序排序的候选池应用得分比例惰性，返回稳定的 top-N 持仓。
+
+    与 ``apply_hysteresis``（按排名名次的滞后带）不同，本函数按【得分比例】做惰性，
+    适用于任何 top-N 轮动场景（股票、ETF 等）：
+    先取得分最高的 top-N 作为默认入选，再对上一决策日持仓中、当前仍为候选但未
+    入选的标的，用其【当前决策日】得分与当前入选里得分最低的新标的比较——当前持仓
+    得分不低于新标的得分×``threshold`` 时保留该持仓并踢掉最弱的新入选，否则让位。
+    仅当新候选明显更优才轮动，避免在得分相近的标的间来回切换。
+
+    ``threshold >= 1.0`` 即关闭惰性、纯按得分轮动；越接近 0 惰性越强（0 时几乎
+    永不调仓）。
+
+    状态经 ``ctx.cache`` 跨决策日保存，须按决策日时序调用。
+    """
+    by_score = {c["symbol"]: float(c[score_key]) for c in ranked_candidates}
+    selected = [c["symbol"] for c in ranked_candidates[:top_n]]
+    held = ctx.cache.get(cache_key, [])
+    if threshold < 1.0 and held and selected:
+        held_set = set(held)
+        selected_set = set(selected)
+        for symbol in held:
+            if symbol in selected_set:
+                continue
+            if symbol not in by_score:
+                # 上一持仓当前时刻已跌出候选（得分≤0/停牌/涨跌停等），无法继续持有
+                continue
+            # 顶替基准：当前入选里、非当前持仓、当前得分最低的那只新标的
+            displaceable = [
+                sym for sym in selected
+                if sym not in held_set and sym != symbol
+            ]
+            if not displaceable:
+                continue
+            weakest_new = min(displaceable, key=lambda sym: by_score[sym])
+            if by_score[symbol] >= by_score[weakest_new] * threshold:
+                # 当前持仓在当前时刻仍够强：保留它，踢掉最弱的新入选标的
+                selected_set.discard(weakest_new)
+                selected_set.add(symbol)
+        selected = sorted(
+            selected_set, key=lambda sym: by_score[sym], reverse=True
+        )
+    ctx.cache[cache_key] = list(selected)
+    return selected
