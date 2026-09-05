@@ -152,9 +152,15 @@ def run_shared_backtest(
         exec_date_of = {day: day for day in calendar}
 
     # 同一成交日若被多个决策命中（理论上逐月调仓不会），取最晚决策为准。
+    # decision_of_exec 记录每个成交日由哪个决策日产生，供上层把该决策的完整
+    # 候选 selection（名称/rank/score 等）回接到对应调仓记录上。next_day 模式下
+    # 成交日 != 决策日，若只用成交日去关联会把 selection 全部关联丢。
     targets: dict[str, list[str]] = {}
+    decision_of_exec: dict[str, str] = {}
     for decision_day in sorted(decision_by_day):
-        targets[exec_date_of[decision_day]] = decision_by_day[decision_day]
+        exec_day = exec_date_of[decision_day]
+        targets[exec_day] = decision_by_day[decision_day]
+        decision_of_exec[exec_day] = decision_day
     if not targets:
         raise ValueError("目标执行日期与交易日历无交集")
 
@@ -383,6 +389,7 @@ def run_shared_backtest(
         if target is not None:
             rebalances.append({
                 "date": day,
+                "decision_date": decision_of_exec.get(day, day),
                 "targets": target,
                 "weights": {s: 1.0 / len(target) for s in target} if target else {},
                 "cash": float(cash),

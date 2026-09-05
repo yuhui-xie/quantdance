@@ -421,7 +421,14 @@ def run_cross_section_backtest(
         "equity": result.equity,
         "trades": result.trades,
         "rebalances": [
-            {**rebalance, "selection": selection_by_date.get(rebalance["date"], [])}
+            {
+                **rebalance,
+                # 候选 selection 以决策日 asof 为键；rebalance.date 是实际成交日，
+                # next_day 模式下二者不同，须用决策日关联，否则 selection 全部落空。
+                "selection": selection_by_date.get(
+                    rebalance.get("decision_date") or rebalance["date"], []
+                ),
+            }
             for rebalance in result.rebalances
         ],
         "metrics": dict(result.metrics),
