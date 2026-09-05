@@ -74,12 +74,13 @@ Sharpe 更高。→ 动量轮动不建议开这类峰位减仓。
 回撤/收益双重约束：放宽波动率上限（>40%）或近期涨幅上限会显著降收益、升回撤。三条缺一
 不可：40 日原始斜率>0、20 日年化波动率 std·√252 ≤40%、近 10 日涨幅 ≤10%。
 
-## 8. 结论性配方（2025-09 锁定值）
+## 8. 结论性配方（锁定值）
 
 ```
 decision_frequency=monthly, decision_anchor=start, top_n=1
 slope_days=40
 short_term_slope_days=20, short_term_damp_coef=0.1      # 轻微压制短期过热
+amount_recent_days=5, amount_baseline_days=10, amount_surge_damp_coef=0.1   # 量价综合(温和)
 require_raw_trend=true, raw_trend_days=40
 max_annualized_vol=0.40, vol_lookback=20
 max_recent_gain_pct=10.0, recent_gain_days=10
@@ -88,4 +89,53 @@ rotate_threshold=1.0（关惰性）
 exclude_limit/suspended=true, limit_pct_threshold=9.5
 execution_timing=next_day_open
 ```
-→ etf_core_sub 2020-2026 约 **19.4×**（年化 56%、回撤 24.8%、Sharpe 1.67）。
+→ etf_core_sub 2020-2026 约 **20.9×**（累计 +1990%、年化 58%、回撤 24.8%、Sharpe 1.71、143 换手）。
+这是 short=0.1 + amount=0.1 的最终锁定值；amount=0 的旧锁定基线为 19.4× / S1.67，回撤同为 24.8%。
+锁定取温和档 0.1 的理由见 §10 结论。
+
+## 9. 量价综合：近期异常放量压制（已锁进配方，温和档 amount=0.1）
+
+`etf_rotation`（斜率版）新增可选压制项，在短期过热调整后的得分上再扣：
+`score = 过热后分 − amount_surge_damp_coef × z( LOG( 近 amount_recent_days 日均成交额
+/ 紧邻其前 amount_baseline_days 日均成交额 ) )`。用**成交额 amount**（非成交量），
+**非重叠窗口**：分子=截至调仓日最近 `amount_recent_days`(=5) 个有效交易日均额，分母=紧邻
+其前 `amount_baseline_days`(=10) 个交易日均额，需 ≥15 根。z 为当日池内横截面；放量生值
+z 高 = 近端量能扩张高于池内平均 → 扣分，避免买入刚异常放量的 ETF。缩量者 z 负轻微加分
+（对称口径）。
+
+- 参数：代码默认 `amount_recent_days=5`、`amount_baseline_days=10`、`amount_surge_damp_coef=0.0`
+  （默认关，`coef=0` 与基线严格等价、向后兼容）；**主配方(§8)在 short=0.1 之上叠加 amount=0.1**
+  锁定为 20.9× / S1.71 / 回撤 24.8%。
+- 系数由 §10 的 OOS 标定选取温和档 0.1（全程 0.2 更高但增益主在 2020-24；0.1 捕获大部分
+  全程增益且回撤/换手中性）。放量压制与动量天然有张力（主升多伴放量），故不追大系数，
+  先验与全程/OOS 证据都指向温和。叠加前须在 etf_core_sub / next_day_open / 三档过滤同口径
+  重跑（即本文件的 20.9×），勿拿旧 19.4× 数字当叠加后结果。
+
+## 10. 阻尼系数的 OOS 标定（calibrate_damp.py）—— 方法与对 amount 的结论
+
+新增 `experiment/calibrate_damp.py`：不做「整段选最大」，而是①切**永久 hold-out**（train
+2020-01~2024-12，test 2025-01~期末，同一资金/特征曲线按日切指标，天然热启动）；②train 段
+Sharpe 沿系数**邻域平滑**塌尖峰；③取「平滑后 ≥ 最优 − tol、系数最小」=**最轻有效点**。
+单开 1D 时另一阻尼**保留基线配方当前值**（如 short=0.1），直接回答「在当前配方上加不值」；
+`--joint` 才二维联合。口径：示例主配方 JSON（short=0.1、amount=0）为基，每格跑整段连续回测
+再切片，6 格约 2 分钟（每格 ~19s）。
+
+**结论（train/test 分开看，别只看全段 / 只看尖峰）：**
+
+- **short 阻尼是真信号、轻度更优**：train 单调升到 0.3，但 OOS test Sharpe 在 **0.05–0.15
+  达峰(2.26)后回落到 0.2+(1.95)**。→ 印证锁定值 **short≈0.1** 合理，0.2+ 是 train 虚高、
+  OOS 反而变差。字面"取 train 最大 0.3"恰是过拟合反例。
+- **amount 阻尼（叠加 short=0.1 上）信号弱/不稳**：OOS test Sharpe 0→2.261，0.05/0.1 无变化，
+  0.15 反而**凹陷(2.063)**、0.2+ 才回 2.280（Calmar 12.70→13.63，增益小且要 0.2 的大系数）。
+  train 一路爬到 0.3。→ OOS 曲线无早饱和、有凹陷，**更像拟合 train 而非真加分**。
+  **倾向不开启 amount**（即便开也≤0.1，属中性、无明确害处，但谈不上稳健增益）。
+- 以上两轴都演示：train argmax 恒落在网格上界(0.3)，与 OOS 判断分歧——这正是"科学标定"要
+  规避的。amount 若最终要入配方，建议改在 short 0.1 之上做 0.05~0.15 的窄扫并先解决 OOS
+  凹陷是否跨随机种子稳健（换 universe/起点重测），勿直接锁大系数。
+
+**最终决定（2026-09）**：因全程口径 amount 0.05→0.2 单调升 Sharpe 且回撤恒 24.8%、换手几乎
+不变（0.2 才 +2 次），收益可观且下行有限；OOS 虽近中性但非有害，凹陷仅在 0.15 单点。故取
+**短 0.1 + 量价 0.1（温和档）** 锁进主配方 → **20.9× / S1.71 / 回撤 24.8% / 143 换手**（见 §8）。
+未锁 0.2 是因为其超额增益集中在 2020-24（train），0.1 在"捕获大部分全程增益"与"不追 train
+主导尖峰"间取平衡，是对齐用户"不选最大、科学标定"偏好的选择。OOS 凹陷若后续验证跨样本
+稳健，可再把 0.1 上修为 0.15~0.2。

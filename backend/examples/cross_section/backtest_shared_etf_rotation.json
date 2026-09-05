@@ -32,7 +32,10 @@
     "limit_pct_threshold": 9.5,
     "slope_days": 40,
     "short_term_slope_days": 20,
-    "short_term_damp_coef": 0.1
+    "short_term_damp_coef": 0.1,
+    "amount_recent_days": 5,
+    "amount_baseline_days": 10,
+    "amount_surge_damp_coef": 0.1
 
   },
   "output_options": {

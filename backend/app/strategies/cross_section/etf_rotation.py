@@ -19,6 +19,12 @@
 可选短期过热压制：``short_term_damp_coef>0`` 时最终得分 = z(长窗 slope_days 斜率) −
 系数 × z(短窗 short_term_slope_days 斜率)，扣减近端急拉者追高；``coef=0``（默认）等价
 纯长窗斜率 z。
+
+可选**量价综合（近期异常放量压制）**：``amount_surge_damp_coef>0`` 时在（短期过热调整后
+的）斜率得分上再扣减 ``系数 × z( LOG( 近 amount_recent_days 日均成交额 / 紧邻其前
+amount_baseline_days 日均成交额 ) )`` —— 用成交额(amount)刻画近端量能相对自身近期基线
+是否异常扩张，横截面 z 标准化后对当日池内近期相对放量者扣分，避免买入刚异常放量的 ETF；
+``coef=0``（默认）关闭，保持向后兼容。
 """
 
 from __future__ import annotations
@@ -26,6 +32,7 @@ from __future__ import annotations
 from typing import Any, Literal
 
 import numpy as np
+import pandas as pd
 from pydantic import Field
 
 from app.strategies.base import (
@@ -79,6 +86,63 @@ def recent_gain(closes: np.ndarray, days: int) -> float | None:
     return float(last / base - 1.0)
 
 
+def amount_history(value_df: pd.DataFrame, asof: str) -> np.ndarray | None:
+    """取 asof 及之前、与 close 对齐的日线成交额(amount)数组，按日期排序去重。
+
+    只保留当日有正成交额(amount>0 且有限)的交易日，避免停牌/缺失日把均值拉低。
+    ``amount`` 列缺失时返回 None（调用方据此跳过成交额相关计算）。
+    """
+    if "date" not in value_df.columns or "amount" not in value_df.columns:
+        return None
+    cols = ["date", "close", "amount"]
+    h = value_df.loc[
+        value_df["date"].astype(str).str[:10] <= str(asof)[:10], cols
+    ].copy()
+    h["date"] = pd.to_datetime(h["date"], errors="coerce")
+    for c in ("close", "amount"):
+        h[c] = pd.to_numeric(h[c], errors="coerce")
+    h = h.dropna(subset=["date", "close"])
+    h = h[h["close"] > 0]
+    h = h.sort_values("date").drop_duplicates("date", keep="last")
+    amt = h["amount"].astype(float).to_numpy()
+    amt = amt[np.isfinite(amt) & (amt > 0)]
+    if amt.size == 0:
+        return None
+    return amt
+
+
+def log_amount_spike(
+    value_df: pd.DataFrame,
+    asof: str,
+    recent_days: int,
+    baseline_days: int,
+) -> float | None:
+    """量价综合生值：LOG( 近 ``recent_days`` 日均成交额 / 紧邻其前 ``baseline_days`` 日均成交额 )。
+
+    非重叠窗口：分子=截至 asof 最近 ``recent_days`` 个有效交易日的日均成交额，分母=紧邻
+    该近期窗口之前 ``baseline_days`` 个交易日的日均成交额。正值=近端相对自身近期基线放量，
+    负值=缩量；该值在当日池内再做横截面 z。数据不足、均值非正或成交额列缺失返回 None。
+    """
+    amt = amount_history(value_df, asof)
+    if amt is None:
+        return None
+    need = recent_days + baseline_days
+    if amt.size < need:
+        return None
+    recent = amt[-recent_days:]
+    baseline = amt[-(recent_days + baseline_days):-recent_days]
+    recent_mean = float(recent.mean())
+    baseline_mean = float(baseline.mean())
+    if (
+        not np.isfinite(recent_mean)
+        or not np.isfinite(baseline_mean)
+        or recent_mean <= 0
+        or baseline_mean <= 0
+    ):
+        return None
+    return float(np.log(recent_mean / baseline_mean))
+
+
 class EtfRotationParams(DecisionFrequencyParams):
     decision_anchor: Literal["start", "end"] = Field(
         "start",
@@ -109,6 +173,37 @@ class EtfRotationParams(DecisionFrequencyParams):
             "短期过热压制系数。>0 时最终得分 = z(长窗 slope_days 斜率) − 该系数 × "
             "z(短窗 short_term_slope_days 斜率)：扣减近期斜率远强于长期者的得分，压制"
             "短期过热。0 = 关闭（默认，得分退化为纯长窗斜率 z，向后兼容）。典型 0.2。"
+        ),
+    )
+    # ---- 量价综合：近期异常放量压制（可选，默认关闭）----
+    amount_recent_days: int = Field(
+        5,
+        ge=1,
+        le=60,
+        description=(
+            "量价综合的近期窗口：截至调仓日最近 amount_recent_days 个有效交易日的日均"
+            "成交额作为比值分子。仅 amount_surge_damp_coef>0 时生效。"
+        ),
+    )
+    amount_baseline_days: int = Field(
+        10,
+        ge=1,
+        le=120,
+        description=(
+            "量价综合的分母基线窗口：紧邻近期窗口之前 amount_baseline_days 个交易日的"
+            "日均成交额。仅 amount_surge_damp_coef>0 时生效。"
+        ),
+    )
+    amount_surge_damp_coef: float = Field(
+        0.0,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "量价综合（近期异常放量压制）系数。>0 时在短期过热调整后的斜率得分上再"
+            "扣减 该系数 × z( LOG( 近 amount_recent_days 日均成交额 / 紧邻其前 "
+            "amount_baseline_days 日均成交额 ) )：对当日池内近期相对放量（成交额扩张高于"
+            "池内平均）的 ETF 扣分，避免买入刚异常放量的标的。0 = 关闭（默认，向后兼容）。"
+            "典型 0.1。"
         ),
     )
     min_score: float = Field(
@@ -192,8 +287,14 @@ def select_etf_rotation(
     params: EtfRotationParams,
 ) -> tuple[list[str], list[dict[str, Any]]]:
     candidates: list[dict[str, Any]] = []
-    # 打分需至少 max(slope_days, 短窗) 根 K 线；各可选过滤的更长回看在其内部单独守卫。
+    # 打分需至少 max(slope_days, 短窗) 根 K 线；量价综合开启时还须近+基线窗足额；
+    # 各可选过滤的更长回看在其内部单独守卫。
     required_bars = max(params.slope_days, params.short_term_slope_days)
+    if params.amount_surge_damp_coef > 0:
+        required_bars = max(
+            required_bars,
+            params.amount_recent_days + params.amount_baseline_days,
+        )
 
     for symbol, payload in ctx.panel.items():
         value_df = payload.get("value")
@@ -256,6 +357,19 @@ def select_etf_rotation(
             if slope_short is None or not np.isfinite(slope_short):
                 continue
 
+        # 量价综合生值：近端(amount_recent_days)相对紧邻其前(amount_baseline_days)基线的
+        # 对数成交额扩张；仅在 amount_surge_damp_coef>0 时计算。
+        amount_log_ratio: float | None = None
+        if params.amount_surge_damp_coef > 0:
+            amount_log_ratio = log_amount_spike(
+                value_df,
+                asof,
+                params.amount_recent_days,
+                params.amount_baseline_days,
+            )
+            if amount_log_ratio is None:
+                continue
+
         candidates.append(
             {
                 "symbol": symbol,
@@ -266,24 +380,40 @@ def select_etf_rotation(
                 "slope_raw": slope_raw,
                 "slope_short": slope_short,
                 "slope_score": slope_raw,
+                "amount_log_ratio": amount_log_ratio,
             }
         )
 
     if not candidates:
         return [], []
-    # 最终得分：长窗斜率 z。short_term_damp_coef>0 时再扣减 短窗斜率 z × 系数，压制
-    # 近期斜率远强于长期（短期过热）的标的追高；z 均为当日池内横截面（均值0、标准差1）。
+    # 基线分：长窗斜率 z。short_term_damp_coef>0 时扣减 短窗斜率 z × 系数，压制近期斜率
+    # 远强于长期（短期过热）的追高；amount_surge_damp_coef>0 时再扣减 量价综合 z × 系数，
+    # 压制近期异常放量。z 均为当日池内横截面（均值0、标准差1）。
     z_slope = zscore([c["slope_raw"] for c in candidates])
-    if params.short_term_damp_coef > 0:
-        z_short = zscore([float(c["slope_short"]) for c in candidates])
-        damp = params.short_term_damp_coef
+    z_short = (
+        zscore([float(c["slope_short"]) for c in candidates])
+        if params.short_term_damp_coef > 0
+        else None
+    )
+    for idx, cand in enumerate(candidates):
+        base = float(z_slope[idx])
+        if z_short is not None:
+            base -= params.short_term_damp_coef * float(z_short[idx])
+        cand["slope_score"] = float(base)
+
+    # 量价综合（近期异常放量压制）：扣减 coef × z(LOG 放量生值)。放量生值横截面 z 高者
+    # = 近端量能扩张高于池内平均，得分被下调；缩量者 z 为负，轻微加分（对称口径）。
+    if params.amount_surge_damp_coef > 0:
+        z_amt = zscore([float(c["amount_log_ratio"]) for c in candidates])
         for idx, cand in enumerate(candidates):
-            cand["slope_score"] = float(z_slope[idx]) - damp * float(z_short[idx])
-            cand["score"] = cand["slope_score"]
+            cand["amount_score"] = float(z_amt[idx])
+            cand["score"] = float(cand["slope_score"]) - (
+                params.amount_surge_damp_coef * float(z_amt[idx])
+            )
     else:
-        for idx, cand in enumerate(candidates):
-            cand["slope_score"] = float(z_slope[idx])
-            cand["score"] = float(z_slope[idx])
+        for cand in candidates:
+            cand["amount_score"] = None
+            cand["score"] = cand["slope_score"]
 
     # require_positive_score：只保留得分>0（高于池内平均）的候选。某调仓日全部候选
     # 都不满足 → 无候选 → 本轮持现金，而非买入得分仍为负的最弱标的。默认关闭以保持
@@ -325,7 +455,8 @@ STRATEGY = CrossSectionStrategySpec(
     description=(
         "在 ETF 池（默认 config/etf_core_pool.json 精选池）中选择归一化收盘价回归"
         "斜率（×R²）横截面 z 值最强的标的，每月首个交易日等权调仓；可选叠加原始趋势/"
-        "波动率/近期涨幅过滤与得分>0 现金规则"
+        "波动率/近期涨幅过滤、得分>0 现金规则，以及短期过热/近期异常放量（量价综合）"
+        "两类压制项"
     ),
     params_model=EtfRotationParams,
     select=select_etf_rotation,

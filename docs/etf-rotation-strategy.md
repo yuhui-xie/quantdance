@@ -58,6 +58,9 @@
 | `slope_days` | `60` | 归一化收盘价线性回归窗口（斜率趋势的交易日数，SLOPE_N；recipe 用 40） |
 | `short_term_slope_days` | `20` | 短窗斜率回看（检测短期过热）。仅 `short_term_damp_coef>0` 时生效 |
 | `short_term_damp_coef` | `0.0` | 短期过热压制系数；`0`=关闭（得分退化为纯长窗斜率 z） |
+| `amount_recent_days` | `5` | 量价综合（近期异常放量压制）近期窗口：取截至调仓日最近 `5` 个有效交易日的日均成交额作分子 |
+| `amount_baseline_days` | `10` | 量价综合的分母基线窗口：紧邻近期窗口之前的 `10` 个交易日的日均成交额 |
+| `amount_surge_damp_coef` | `0.0` | 量价综合压制系数；`>0` 时扣减 `coef × z(LOG(近5日均成交额/紧邻其前10日均成交额))`，压制近期异常放量；`0`=关闭（向后兼容）。典型 `0.1` |
 | `require_raw_trend` | `False` | 要求标的自身原始（非横截面）N 日归一化收盘价回归斜率>0 才纳入候选（绝对上升趋势门槛，见 §2.1） |
 | `raw_trend_days` | `40` | 原始趋势门槛的线性回归回看交易日数 |
 | `max_annualized_vol` | `None` | 近 `vol_lookback` 日（默认 20）对数收益年化波动率上限（小数，`0.40`=40%）；超出剔除；`None` 关闭 |
@@ -70,11 +73,13 @@
 | `exclude_limit` / `exclude_suspended` | `True` | 调仓日排除涨跌停 / 停牌标的 |
 | `limit_pct_threshold` | `9.5` | 判定涨跌停的涨跌幅阈值（%） |
 
-### 综合得分公式（斜率单口径 + 可选短期过热压制）
+### 综合得分公式（斜率单口径 + 可选压制项）
 
 ```
-默认：  得分 = z( 归一化收盘价线性回归斜率 × R² )                 # 长窗 slope_days
-压制：  得分 = z(长窗斜率) − short_term_damp_coef × z(短窗斜率)    # 短窗 slope_days 的短窗
+默认：  得分 = z( 归一化收盘价线性回归斜率 × R² )                    # 长窗 slope_days
+过热：  得分 = z(长窗斜率) − short_term_damp_coef × z(短窗斜率)       # 短窗 short_term_slope_days
+量价：  得分 = 过热后得分 − amount_surge_damp_coef × z( LOG( 近 amount_recent_days 日均成交额
+                                                        / 紧邻其前 amount_baseline_days 日均成交额 ) )
 ```
 
 - 对最近 `slope_days` 根 K 线的**原始收盘价**按首值归一化后做最小二乘回归
@@ -86,6 +91,12 @@
   （`short_term_slope_days`）斜率的横截面 z。短窗斜率远强于长期者 = 近端急拉，得分被
   下调，压制追高——是 §2.1 近期涨幅上限在斜率空间的连续版。`coef=0` 关闭，完全等价
   纯长窗斜率 z（向后兼容）。
+- **量价综合（近期异常放量压制）**（`amount_surge_damp_coef>0`）：用**成交额(amount)**
+  构造放量生值 `LOG( 近 5 日均成交额 / 紧邻其前 10 日均成交额 )`（非重叠窗口：分子为截至
+  调仓日最近 `amount_recent_days` 个交易日日均成交额，分母为其前紧邻 `amount_baseline_days`
+  个交易日日均成交额），做当日池内横截面 z 后从得分中扣减。放量生值 z 高者 = 近端量能扩张
+  高于池内平均，得分被下调，从而**避开刚异常放量的标的**；`coef=0` 关闭（向后兼容）。
+  系数同样不宜取大，近端经验约 `0.1`（未锁进主配方）。
 
 经验上长窗 `slope_days` 取中长（约 30–60）较好；过短易追噪音、过长被端点主导。回测
 （recipe 参数、2020–2026 子池）表明轻微压制普遍提升 Sharpe：`短窗 20 · coef 0.1` 在保持
@@ -143,8 +154,9 @@ top-N）。
 
 主配方见 `backend/examples/cross_section/backtest_shared_etf_rotation.json`，跑在
 `etf_core_sub` 精选池、2020-01 ~ 2026-09，开启三档绝对过滤 + `require_positive_score` +
-`rotate_threshold=1.0`（关闭惰性），长窗 `slope_days=40` + 短期过热压制（短窗 20 · coef 0.1），
-`execution_timing=next_day_open`（决策次日开盘成交）：
+`rotate_threshold=1.0`（关闭惰性），长窗 `slope_days=40` + 短期过热压制（短窗 20 · coef 0.1）
++ **量价综合压制（近5/前10 · coef 0.1）**，`execution_timing=next_day_open`
+（决策次日开盘成交）：
 
 ```bash
 cd backend
@@ -152,13 +164,20 @@ cd backend
   --request examples/cross_section/backtest_shared_etf_rotation.json --json
 ```
 
-配方在 2020-2026 子池上约 **19.4 倍**（100000 → ~194 万，即累计 +1840%；年化约 56%、
-最大回撤约 25%、Sharpe≈1.67、约 143 次换手）。三条绝对过滤缺一不可——放宽波动率或近期
-涨幅上限会把总收益压到 ~10 倍区间、回撤升高。轻微短期过热压制相比无压制基线（约 17.9
-倍）在回撤持平下提升收益与 Sharpe。成交时点对结果有明显影响：同参数下
-`same_day_close` 约 17.7 倍、`next_day_close` 约 13.1 倍，故回测应固定一个贴近真实下单
-方式的时点再比较。所有指标仅使用调仓日及之前的收盘价（next_day 成交价不参与决策），
-不使用未来数据。
+配方在 2020-2026 子池上约 **20.9 倍**（100000 → ~209 万，累计 +1990%；年化约 58%、
+最大回撤约 25%、Sharpe≈1.71、约 143 次换手）。相对无量价压制的锁定基线（short=0.1 ·
+amount=0，约 19.4× / S1.67）在**回撤持平(24.8%)**下收益 +8%、Sharpe 升至 1.71。三条绝对
+过滤缺一不可——放宽波动率或近期涨幅上限会把总收益压到 ~10 倍区间、回撤升高。轻微短期
+过热/量价压制相比无压制基线（约 17.9 倍）在回撤持平下提升收益与 Sharpe。成交时点对结果
+有明显影响：同参数下 `same_day_close` 约 17.7 倍、`next_day_close` 约 13.1 倍，故回测应
+固定一个贴近真实下单方式的时点再比较。所有指标仅使用调仓日及之前的收盘价（next_day 成交
+价不参与决策），不使用未来数据。
+
+主配方现已开启量价综合压制 `amount_surge_damp_coef=0.1`（近5/前10），经 OOS 标定
+（`experiment/calibrate_damp.py`，train 2020-24 / test 2025-26 切分）锁定**温和档**：全程
+amount 0.05→0.2 单调升 Sharpe(1.67→1.83)且回撤恒 24.8%，但那段增益主要来自 2020-24，
+OOS(2025-26) 几乎中性，故取 0.1（捕获大部分全程增益、回撤中性、不追 train 主导的 0.2），
+详见 `experiment/etf-rotation-findings.md` §10。
 
 ## 5. 报告中的指标对比
 
