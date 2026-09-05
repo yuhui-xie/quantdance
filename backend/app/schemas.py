@@ -100,6 +100,14 @@ class BacktestRequest(BaseModel):
         "full",
         description="换仓模式：full=目标变动时全仓清空重建；incremental=只交易差异，保留共同持仓",
     )
+    execution_timing: Literal["same_day_close", "next_day_open", "next_day_close"] = Field(
+        "next_day_open",
+        description=(
+            "共享横截面回测的成交时点：same_day_close=决策日当日收盘；"
+            "next_day_open=决策日次日开盘（默认，更贴近现实，决策用当日收盘信息、"
+            "次日开盘成交，无未来信息泄露）；next_day_close=决策日次日收盘"
+        ),
+    )
     include_equity: bool = True
     include_trades: bool = True
     include_price: bool = False

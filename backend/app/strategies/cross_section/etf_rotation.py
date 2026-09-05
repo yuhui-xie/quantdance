@@ -1,15 +1,20 @@
-"""ETF 动量轮动：选择 LLT 拟合趋势最强且拟合质量高的 ETF。
+"""ETF 动量轮动（斜率版）：选择归一化收盘价回归斜率（×R²）最强且未过热的 ETF。
 
-用 LLT（Low-Lag Trendline）对价格做低延迟平滑，再对最近 ``llt_window`` 根
-K 线的 LLT 趋势线做最小二乘线性回归，得到 ``(斜率, R²)``。综合得分取
-``斜率 × R²``：既刻画趋势强弱（斜率），又按拟合质量（R²）加权，避免选中
-涨跌混乱、拟合方差大、斜率不可信的标的。默认在 ``config/etf_core_pool.json``
-精选 ETF 池上轮动，周期（默认每自然月首个交易日）等权调仓。
+对每只 ETF 取近 ``slope_days`` 根 K 线的收盘价，按首值归一化后做最小二乘线性回归，
+得 ``斜率 × R²``（``slope_momentum``）：斜率>0 表示区间整体上行，R² 刻画趋势是否
+贴近一条直线（拟合质量）。排序得分取该生值的**横截面 z 值**（当日池内均值0、标准差1），
+得分高 = 高于当日池内平均斜率强度。
 
-轮动带惰性（``rotate_threshold``，默认 0.9）：调仓日对仍可作为候选的当前持仓，
-用其当前决策日的得分对比新入选标的的当前得分，不低于新得分×该阈值则继续持有、
-不调仓，仅在候选明显更优时才轮动，从而降低标的间的来回切换频率。
-  避免无量能配合的价格反弹；仍按 LLT 得分排序选 top-N。
+可选叠加三条**绝对**过滤（见 §2.1，默认关闭），把"比别的强"与"自身够稳、未过热"
+分开：
+
+- ``require_raw_trend``：标的自身原始（非横截面）N 日回归斜率>0 才纳入候选；
+- ``max_annualized_vol``：近 20 日对数收益年化波动率上限（过滤高波动）；
+- ``max_recent_gain_pct``：近 10 日涨幅上限（避免追高短期已急拉的标的）。
+
+``require_positive_score`` 开启时只保留得分>0 的候选，某调仓日全部不满足则持现金。
+``rotate_threshold=1.0``（默认）关闭轮动惰性、纯按得分调仓。周期默认每自然月首个
+交易日，等权持有 top-N。
 """
 
 from __future__ import annotations
@@ -17,12 +22,8 @@ from __future__ import annotations
 from typing import Any, Literal
 
 import numpy as np
-import pandas as pd
 from pydantic import Field
 
-from app.factors.llt import llt, llt_slope_fit
-from app.factors.momentum import linreg, price_history
-from app.factors.volume_flow import vpt
 from app.strategies.base import (
     CrossSectionContext,
     CrossSectionStrategySpec,
@@ -41,43 +42,65 @@ from app.strategies.cross_section.decision import DecisionFrequencyParams
 CACHE_KEY = "etf_rotation_prev_holdings"
 
 
+def annualized_volatility(closes: np.ndarray, lookback: int) -> float | None:
+    """近 ``lookback`` 根 K 线收盘价的对数收益年化波动率（std × √252）。
+
+    用最近 ``lookback+1`` 个收盘价取 ``lookback`` 个日对数收益，样本标准差
+    (ddof=1) 再按每年约 252 个交易日年化。返回小数（0.40 即 40%）；数据不足
+    或方差无法计算时返回 None。
+    """
+    closes = np.asarray(closes, dtype=float)
+    window = closes[-(lookback + 1):]
+    if len(window) < lookback + 1:
+        return None
+    log_p = np.log(window)
+    rets = np.diff(log_p)
+    if len(rets) < 2:
+        return None
+    std = float(np.std(rets, ddof=1))
+    if not np.isfinite(std):
+        return None
+    return std * np.sqrt(252.0)
+
+
+def recent_gain(closes: np.ndarray, days: int) -> float | None:
+    """近 ``days`` 根 K 线的简单涨幅（小数）：close[-1]/close[-1-days] - 1。"""
+    closes = np.asarray(closes, dtype=float)
+    if len(closes) < days + 1:
+        return None
+    base = closes[-1 - days]
+    last = closes[-1]
+    if not np.isfinite(base) or not np.isfinite(last) or base <= 0:
+        return None
+    return float(last / base - 1.0)
+
+
 class EtfRotationParams(DecisionFrequencyParams):
     decision_anchor: Literal["start", "end"] = Field(
         "start",
         description="月度决策锚点：start=每自然月首个交易日（默认）| end=每自然月末",
     )
-    top_n: int = Field(1, description="持有 LLT 趋势得分最高的 ETF 数量")
-    llt_period: int = Field(
-        20, description="LLT 平滑周期"
-    )
-    llt_window: int = Field(
-        20, description="LLT 拟合窗口：对最近该根 K 线的 LLT 趋势线做最小二乘线性回归取斜率",
-    )
-    min_r2: float = Field( 0.0,)
-    llt_slope_filter: float = Field(
-        0.0,
-        description=(
-            "LLT 对数斜率门槛：归一化 LLT 趋势线拟合斜率（≈每根 K 线对数涨幅）"
-            "低于该值则剔除，0 关闭。比 MA 硬门限平滑，熊市不来回打脸。"
-        ),
+    top_n: int = Field(1, description="持有得分（归一化收盘价斜率 z 值）最高的 ETF 数量")
+    slope_days: int = Field(
+        60,
+        ge=2,
+        le=504,
+        description="归一化收盘价线性回归窗口（斜率趋势的交易日数）",
     )
     min_score: float = Field(
         0.0,
-        description="最低综合得分（斜率×R²）；0 表示只持有上升趋势（得分>0）的标的",
+        description="配合 require_positive_score=True 时的分数下限（score≥min_score）",
     )
-    slope_days: int = Field(
-        60, description="斜率模式（score_mode=slope）：归一化价格线性回归的窗口（SLOPE_N）"
-    )
-
-    score_mode: Literal["llt", "slope"] = Field(
-        "llt",
+    require_positive_score: bool = Field(
+        False,
         description=(
-            "排序得分来源：llt=LLT 拟合斜率×R²（默认）；slope=归一化收盘价线性回归"
-            "斜率×R² 的横截面 z 值。"
+            "开启后只保留得分>0 的候选（得分=池内斜率 z 值，>0 即高于当日池内平均）；"
+            "某调仓日全部候选都不满足 → 持现金，而非买入得分仍为负的最弱标的。"
+            "默认关闭以保持历史行为。"
         ),
     )
     rotate_threshold: float = Field(
-        0.9,
+        1.0,
         ge=0.0,
         le=1.0,
         description=(
@@ -86,6 +109,40 @@ class EtfRotationParams(DecisionFrequencyParams):
             "（当前得分超过当前持仓的 1/阈值）才轮动。取值 1.0 表示关闭惰性、纯按"
             "得分轮动；越接近 0 惰性越强（0 时几乎永不调仓）。"
         ),
+    )
+    # ---- 绝对趋势/风险/过热过滤（默认关闭，逐条可选启用）----
+    require_raw_trend: bool = Field(
+        False,
+        description=(
+            "要求标的自身【原始（非横截面）】归一化收盘价回归斜率为正才纳入候选："
+            "对近 raw_trend_days 根 K 线收盘价按首值归一化后做最小二乘线性回归，"
+            "回归斜率>0 才保留（绝对上升趋势门槛，不随当日池内相对强弱漂移）。"
+        ),
+    )
+    raw_trend_days: int = Field(
+        40, ge=2, le=504, description="原始趋势门槛的线性回归回看交易日数"
+    )
+    max_annualized_vol: float | None = Field(
+        None,
+        ge=0,
+        description=(
+            "近 vol_lookback 日（默认 20）对数收益年化波动率上限（小数，0.40 即 40%）；"
+            "超出则剔除（过滤高波动标的）；None 关闭。年化按日 std×√252。"
+        ),
+    )
+    vol_lookback: int = Field(
+        20, ge=2, le=250, description="年化波动率回看交易日数"
+    )
+    max_recent_gain_pct: float | None = Field(
+        None,
+        ge=0,
+        description=(
+            "近 recent_gain_days 日（默认 10）简单涨幅上限（%）；超出则剔除，"
+            "用于避免追高短期已大幅拉升的标的；None 关闭。"
+        ),
+    )
+    recent_gain_days: int = Field(
+        10, ge=2, le=250, description="近期涨幅回看交易日数"
     )
     exclude_limit: bool = True
     exclude_suspended: bool = True
@@ -98,13 +155,9 @@ def select_etf_rotation(
     params: EtfRotationParams,
 ) -> tuple[list[str], list[dict[str, Any]]]:
     candidates: list[dict[str, Any]] = []
-    use_llt = params.score_mode == "llt"
-    # 所需历史根数：llt 模式 = 平滑暖机 + 拟合窗口；slope 模式 = 斜率回归窗口
-    required_bars = (
-        params.llt_period + params.llt_window
-        if use_llt
-        else params.slope_days
-    )
+    # 打分需至少 slope_days 根 K 线；各可选过滤的更长回看在其内部单独守卫。
+    required_bars = params.slope_days
+
     for symbol, payload in ctx.panel.items():
         value_df = payload.get("value")
         if value_df is None or value_df.empty:
@@ -126,32 +179,34 @@ def select_etf_rotation(
 
         close = float(history["close"].iloc[-1])
         closes = history["close"].astype(float).to_numpy()
+        n_bars = len(closes)
 
-        # LLT 趋势线（对趋势线取对数后拟合：回归斜率即每根 K 线的对数涨幅，
-        # 天然无量纲、跨标的口径统一，无需再按首值归一化）。仅在 llt 模式作为打分依据。
-        llt_fit_score = 0
-        llt_slope_value = None
-        llt_r2 = None
-        if use_llt:
-            trend = llt(closes, period=params.llt_period)
-            if not np.isfinite(trend[0]) or trend[0] <= 0:
+        # ---- 绝对趋势/风险/过热过滤（逐条可选）----
+        # 只使用调仓日及之前的收盘价，不使用未来数据。
+        if params.require_raw_trend:
+            if n_bars < params.raw_trend_days:
                 continue
-            slope_arr, r2_arr = llt_slope_fit(np.log(trend), params.llt_window)
-            llt_slope_value = float(slope_arr[-1]) if np.isfinite(slope_arr[-1]) else None
-            llt_r2 = float(r2_arr[-1]) if np.isfinite(r2_arr[-1]) else None
+            raw_slope = slope_momentum(closes, params.raw_trend_days)
+            # slope_momentum = 10000×斜率×R²，R²≥0，故符号即回归斜率符号
+            if raw_slope is None or not np.isfinite(raw_slope) or raw_slope <= 0:
+                continue
+        if params.max_annualized_vol is not None:
+            if n_bars < params.vol_lookback + 1:
+                continue
+            vol = annualized_volatility(closes, params.vol_lookback)
+            if vol is None or vol > params.max_annualized_vol:
+                continue
+        if params.max_recent_gain_pct is not None:
+            if n_bars < params.recent_gain_days + 1:
+                continue
+            gain = recent_gain(closes, params.recent_gain_days)
+            if gain is None or gain * 100.0 > params.max_recent_gain_pct:
+                continue
 
-            if llt_slope_value is None or llt_r2 is None:
-                llt_fit_score = -1
-            # ── LLT 拟合质量与对数斜率过滤（仅 llt 模式生效）──
-            elif llt_r2 < params.min_r2:
-                llt_fit_score = -1
-            elif params.llt_slope_filter > 0 and llt_slope_value < params.llt_slope_filter:
-                llt_fit_score = -1
-            else:
-                llt_fit_score = llt_slope_value * llt_r2
-
-        # 收盘价斜率（归一化线性回归斜率×R²），slope 模式作为打分依据
+        # 打分生值：归一化收盘价回归斜率×R²（生值保留量级，可超 1，供核查）
         slope_raw = slope_momentum(closes, params.slope_days)
+        if slope_raw is None or not np.isfinite(slope_raw):
+            continue
 
         candidates.append(
             {
@@ -159,23 +214,28 @@ def select_etf_rotation(
                 "name": ctx.names.get(symbol, ""),
                 "asof": str(asof)[:10],
                 "close": close,
-                "llt_slope": llt_slope_value,
-                "llt_r2": llt_r2,
-                "score": llt_fit_score,
-                # 生值保留量级（可超 1，供核查）；slope_score 下方改为横截面 z 值
+                "score": slope_raw,  # 下方改为横截面 z 值
                 "slope_raw": slope_raw,
                 "slope_score": slope_raw,
             }
         )
 
-    # slope 模式：收盘价斜率横截面 z 标准化（均值0、标准差1，z 值可 >1）
+    # 得分 = 收盘价斜率的横截面 z 标准化（均值0、标准差1，z 值可 >1）
+    if not candidates:
+        return [], []
     z_slope = zscore([c["slope_raw"] for c in candidates])
-
     for idx, cand in enumerate(candidates):
         cand["slope_score"] = z_slope[idx]
-        if params.score_mode == "slope":
-            cand["score"] = z_slope[idx]
-        # 其余（score_mode=="llt"）score 已在循环内由 llt_fit_score 设定
+        cand["score"] = z_slope[idx]
+
+    # require_positive_score：只保留得分>0（高于池内平均）的候选。某调仓日全部候选
+    # 都不满足 → 无候选 → 本轮持现金，而非买入得分仍为负的最弱标的。默认关闭以保持
+    # 历史行为（始终在可用候选取 top-N）。开启时按 min_score 一并卡分数下限。
+    if params.require_positive_score:
+        candidates = [
+            c for c in candidates
+            if float(c["score"]) > 0 and float(c["score"]) >= params.min_score
+        ]
 
     candidates.sort(key=lambda item: (-item["score"], item["symbol"]))
 
@@ -206,8 +266,9 @@ STRATEGY = CrossSectionStrategySpec(
     id="etf_rotation",
     name="ETF 动量轮动",
     description=(
-        "在 ETF 池（默认 config/etf_core_pool.json 精选池）中选择 LLT 拟合趋势"
-        "（斜率×R²）最强的标的，每月首个交易日等权调仓；可选用 VPT 量价趋势做资金流入方向确认"
+        "在 ETF 池（默认 config/etf_core_pool.json 精选池）中选择归一化收盘价回归"
+        "斜率（×R²）横截面 z 值最强的标的，每月首个交易日等权调仓；可选叠加原始趋势/"
+        "波动率/近期涨幅过滤与得分>0 现金规则"
     ),
     params_model=EtfRotationParams,
     select=select_etf_rotation,
@@ -215,20 +276,5 @@ STRATEGY = CrossSectionStrategySpec(
     requires_symbols=False,
     needs_fundamentals=False,
     default_top_n=1,
-    warnings=(
-        "默认在 config/etf_core_pool.json 精选 ETF 池上轮动；如需其他池，"
-        "请通过 universe 或 symbols 覆盖。",
-        "综合得分 = LLT 拟合斜率 × R²：斜率>0 表示上升趋势，R² 刻画拟合质量；"
-        "min_r2 低于阈值时视为无可靠趋势。",
-        "当所有 ETF 均未达到最低得分或趋势条件时，组合持有现金。",
-        "volume_confirm=True 时额外要求 VPT 量价趋势斜率为正；VPT 为累积量纲量，"
-        "仅用其符号做方向过滤，不参与排序。",
-        "rotate_threshold 引入轮动惰性：对仍可作为候选的当前持仓，用其当前决策日得分"
-        "对比新候选当前得分，不低于新得分×阈值时保持持仓、不调仓，仅在候选明显更优时"
-        "轮动；1.0 关闭惰性，越接近 0 惰性越强。",
-        "score_mode 决定排序得分来源：llt（默认）= LLT 拟合斜率×R²；slope = 归一化"
-        "收盘价线性回归斜率×R² 的横截面 z 值（z 化后可 >1，含义为「高于当日池内平均」"
-        "多少个标准差，属正常）。",
-        "趋势判定仅使用调仓日及之前的收盘价，不使用未来数据。",
-    ),
+    warnings=(),
 )

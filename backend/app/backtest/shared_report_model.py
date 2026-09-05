@@ -616,10 +616,29 @@ def build_backtest_shared_report_model(
         key=lambda x: (-abs(x["pnl"]), -x["trade_count"], x["symbol"]),
     )
 
+    # 当前推荐：引擎输出末尾决策日（含 end_date 所在月份尚无数据时的尾部“当前推荐”
+    # 决策）的全部候选（已按得分降序排名），即“基于最后可用交易日”当前可选的标的。
+    # candidates 含入选标记，供报告渲染完整排名表并高亮推荐持仓。
+    candidates = [
+        {
+            "symbol": str(item.get("symbol") or ""),
+            "name": str(item.get("name") or ""),
+            "rank": item.get("rank"),
+            "score": _nf(item.get("score")),
+            "close": _nf(item.get("close")),
+            "selected": bool(item.get("selected")),
+        }
+        for item in (out.get("holdings") or [])
+        if isinstance(item, dict) and item.get("symbol")
+    ]
+    recommendation = [c for c in candidates if c["selected"]]
+
     return {
         "strategy_id": out.get("strategy_id") or "",
         "mode": out.get("mode") or "",
         "asof": out.get("asof"),
+        "candidates": candidates,
+        "recommendation": recommendation,
         "universe_note": out.get("universe_note") or "",
         "warnings": list(out.get("warnings") or []),
         "disclaimer": out.get("disclaimer") or "",

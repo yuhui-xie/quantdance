@@ -23,35 +23,51 @@ class SharedBacktestResult:
     rebalances: list[dict[str, Any]]
 
 
-def build_close_panel(
+def _build_price_panel(
     series_by_symbol: Mapping[str, pd.Series | pd.DataFrame],
+    column: str,
 ) -> pd.DataFrame:
-    """构建 index=交易日、columns=标的的收盘价宽表。"""
+    """构建 index=交易日、columns=标的的 ``column`` 价格宽表（通用）。
+
+    ``column`` 取 ``close`` / ``open`` 等 K 线列。仅当标的 DataFrame 含该列时才纳入；
+    不足的数据沿时间向前填充（ffill），避免估值/成交在个别停牌日按 NaN→0 失真。
+    """
     frames: dict[str, pd.Series] = {}
     for symbol, obj in series_by_symbol.items():
         if isinstance(obj, pd.Series):
             series = obj.copy()
             series.index = pd.to_datetime(series.index, errors="coerce").strftime("%Y-%m-%d")
             frames[symbol] = pd.to_numeric(series, errors="coerce")
-        elif isinstance(obj, pd.DataFrame) and not obj.empty and "close" in obj:
+        elif isinstance(obj, pd.DataFrame) and not obj.empty and column in obj:
             if "date" in obj:
                 index = pd.to_datetime(obj["date"], errors="coerce").dt.strftime("%Y-%m-%d")
                 frames[symbol] = pd.Series(
-                    pd.to_numeric(obj["close"], errors="coerce").values,
+                    pd.to_numeric(obj[column], errors="coerce").values,
                     index=index,
                 )
             else:
-                series = pd.to_numeric(obj["close"], errors="coerce")
+                series = pd.to_numeric(obj[column], errors="coerce")
                 series.index = pd.to_datetime(obj.index, errors="coerce").strftime("%Y-%m-%d")
                 frames[symbol] = series
     if not frames:
-        raise ValueError("收盘价面板为空")
+        raise ValueError(f"{column}价面板为空")
     panel = pd.DataFrame(frames).sort_index()
-    # 交易日历取所有标的的并集。某些标在日历尾部（如部分数据源的当日/停牌日）
-    # 没有对应 K 线，需沿时间向前填充最后收盘价，否则该日持仓会被按 NaN→0 估值，
-    # 造成组合净值在最后一个未完全覆盖的交易日被错误清零。
     panel = panel.ffill()
     return panel[~panel.index.isna()]
+
+
+def build_close_panel(
+    series_by_symbol: Mapping[str, pd.Series | pd.DataFrame],
+) -> pd.DataFrame:
+    """构建 index=交易日、columns=标的的收盘价宽表。"""
+    return _build_price_panel(series_by_symbol, "close")
+
+
+def build_open_panel(
+    series_by_symbol: Mapping[str, pd.Series | pd.DataFrame],
+) -> pd.DataFrame:
+    """构建 index=交易日、columns=标的的开盘价宽表（供 EXECUTION_TIMING 用）。"""
+    return _build_price_panel(series_by_symbol, "open")
 
 
 def _lot_shares(cash: float, price: float, lot_size: int) -> int:
@@ -77,12 +93,23 @@ def run_shared_backtest(
     stop_loss_tier_anchor: Literal["cost", "peak"] = "peak",
     position_policy: PositionManagementPolicy | None = None,
     rebalance_mode: str = "full",
+    execution_timing: Literal["same_day_close", "next_day_open", "next_day_close"] = "next_day_open",
+    open_panel: pd.DataFrame | None = None,
 ) -> SharedBacktestResult:
-    """按日期目标映射执行共享账户回测；仅映射中出现的交易日进行换仓。"""
+    """按日期目标映射执行共享账户回测；仅映射中出现的交易日进行换仓。
+
+    ``targets_by_date`` 的键是**决策日**（内容已在决策日以 asof 收盘价算好，无未来信息）。
+    ``execution_timing`` 决定这些目标何时成交：
+    ``same_day_close``=决策日收盘 / ``next_day_open``=下一交易日开盘（默认，更贴近现实）/
+    ``next_day_close``=下一交易日收盘。next_day 模式会把目标实际成交日顺延一个交易日，
+    成交价格取对应面板（开盘成交取 ``open_panel``，收盘成交取 ``close_panel``）。
+    """
     if close_panel.empty:
         raise ValueError("close_panel 为空")
     if initial_cash <= 0:
         raise ValueError("initial_cash 必须为正")
+    if execution_timing not in ("same_day_close", "next_day_open", "next_day_close"):
+        raise ValueError(f"未知 execution_timing: {execution_timing}")
     risk = RiskControl(
         take_profit_arm_pct=take_profit_arm_pct,
         take_profit_exit_pct=take_profit_exit_pct,
@@ -96,13 +123,40 @@ def run_shared_backtest(
 
     calendar = [str(day)[:10] for day in close_panel.index]
     calendar_set = set(calendar)
-    targets = {
+
+    # 决策日 → 目标（内容已在决策日算好，仅过滤到交易日历）。
+    decision_by_day = {
         str(day)[:10]: list(symbols)
         for day, symbols in targets_by_date.items()
         if str(day)[:10] in calendar_set
     }
-    if not targets:
+    if not decision_by_day:
         raise ValueError("目标日期与交易日历无交集")
+
+    # 决策日 → 实际成交日 & 成交价格面板。next_day 模式把成交日顺延下一交易日。
+    if execution_timing == "same_day_close":
+        fill_panel, next_day = close_panel, False
+    elif execution_timing == "next_day_open":
+        if open_panel is None:
+            raise ValueError("execution_timing=next_day_open 需要传入 open_panel")
+        fill_panel, next_day = open_panel, True
+    else:  # next_day_close
+        fill_panel, next_day = close_panel, True
+
+    if next_day:
+        exec_date_of = {
+            day: calendar[idx + 1] if idx + 1 < len(calendar) else day
+            for idx, day in enumerate(calendar)
+        }
+    else:
+        exec_date_of = {day: day for day in calendar}
+
+    # 同一成交日若被多个决策命中（理论上逐月调仓不会），取最晚决策为准。
+    targets: dict[str, list[str]] = {}
+    for decision_day in sorted(decision_by_day):
+        targets[exec_date_of[decision_day]] = decision_by_day[decision_day]
+    if not targets:
+        raise ValueError("目标执行日期与交易日历无交集")
 
     cash = float(initial_cash)
     positions: dict[str, int] = {}
@@ -115,10 +169,10 @@ def run_shared_backtest(
     equity_values: list[float] = []
     previous_target: tuple[str, ...] | None = None
 
-    def sell(day: str, symbol: str, reason: str) -> None:
+    def sell(day: str, symbol: str, reason: str, panel: pd.DataFrame) -> None:
         nonlocal cash
         shares = positions.get(symbol, 0)
-        price = close_panel.loc[day].get(symbol)
+        price = panel.loc[day].get(symbol)
         if shares <= 0 or price is None or not np.isfinite(float(price)) or float(price) <= 0:
             return
         price = float(price)
@@ -144,11 +198,11 @@ def run_shared_backtest(
         if manager:
             manager.record_sell(symbol)
 
-    def sell_fraction(day: str, symbol: str, fraction: float, reason: str) -> None:
+    def sell_fraction(day: str, symbol: str, fraction: float, reason: str, panel: pd.DataFrame) -> None:
         """分批止损：按建仓基准的 fraction 比例卖出一档仓位，不足一手则清仓。"""
         nonlocal cash
         shares = positions.get(symbol, 0)
-        price = close_panel.loc[day].get(symbol)
+        price = panel.loc[day].get(symbol)
         if shares <= 0 or price is None or not np.isfinite(float(price)) or float(price) <= 0:
             return
         price = float(price)
@@ -182,9 +236,9 @@ def run_shared_backtest(
             if manager:
                 manager.record_sell(symbol)
 
-    def buy(day: str, symbol: str, budget: float, reason: str = "rebalance") -> bool:
+    def buy(day: str, symbol: str, budget: float, panel: pd.DataFrame, reason: str = "rebalance") -> bool:
         nonlocal cash
-        price = close_panel.loc[day].get(symbol)
+        price = panel.loc[day].get(symbol)
         if price is None or not np.isfinite(float(price)) or float(price) <= 0:
             return False
         execution_price = float(price) * (1.0 + max(slippage, 0.0))
@@ -248,7 +302,7 @@ def run_shared_backtest(
                 target = target[: manager.policy.max_positions]
                 for symbol in list(positions):
                     if symbol not in target:
-                        sell(day, symbol, "rebalance")
+                        sell(day, symbol, "rebalance", fill_panel)
                         sold_today.add(symbol)
                 positions = {s: n for s, n in positions.items() if n > 0}
 
@@ -260,14 +314,14 @@ def run_shared_backtest(
                 manager.update_peak(symbol, float(price))
                 reason = manager.exit_reason(symbol, float(price), cost)
                 if reason:
-                    sell(day, symbol, reason)
+                    sell(day, symbol, reason, close_panel)
                     sold_today.add(symbol)
             positions = {s: n for s, n in positions.items() if n > 0}
 
             if target is not None:
                 for symbol in target:
                     if positions.get(symbol, 0) <= 0 and symbol not in sold_today:
-                        if buy(day, symbol, min(manager.initial_budget, cash), "initial_entry"):
+                        if buy(day, symbol, min(manager.initial_budget, cash), fill_panel, "initial_entry"):
                             opened_today.add(symbol)
             for symbol in list(positions):
                 if symbol in opened_today:
@@ -279,7 +333,7 @@ def run_shared_backtest(
                     symbol, price=float(price), shares=positions[symbol], available_cash=cash
                 )
                 if budget > 0:
-                    buy(day, symbol, budget, "pyramid_add")
+                    buy(day, symbol, budget, close_panel, "pyramid_add")
         else:
             if day not in targets:
                 for symbol in list(positions):
@@ -296,9 +350,9 @@ def run_shared_backtest(
                     if action is None:
                         continue
                     if action.kind == "fraction":
-                        sell_fraction(day, symbol, action.fraction, action.reason)
+                        sell_fraction(day, symbol, action.fraction, action.reason, close_panel)
                     else:
-                        sell(day, symbol, action.reason)
+                        sell(day, symbol, action.reason, close_panel)
                 positions = {s: n for s, n in positions.items() if n > 0}
             else:
                 if target_changed:
@@ -308,7 +362,7 @@ def run_shared_backtest(
                         target_set = set(target or [])
                         for symbol in list(positions):
                             if symbol not in target_set:
-                                sell(day, symbol, "rebalance")
+                                sell(day, symbol, "rebalance", fill_panel)
                         positions = {s: n for s, n in positions.items() if n > 0}
                         new_symbols = [
                             s for s in (target or []) if positions.get(s, 0) <= 0
@@ -316,15 +370,15 @@ def run_shared_backtest(
                         if new_symbols:
                             budget = cash / len(new_symbols)
                             for symbol in new_symbols:
-                                buy(day, symbol, budget)
+                                buy(day, symbol, budget, fill_panel)
                     else:
                         for symbol in list(positions):
-                            sell(day, symbol, "rebalance")
+                            sell(day, symbol, "rebalance", fill_panel)
                         positions = {s: n for s, n in positions.items() if n > 0}
                         if target:
                             budget = cash / len(target)
                             for symbol in target:
-                                buy(day, symbol, budget)
+                                buy(day, symbol, budget, fill_panel)
 
         if target is not None:
             rebalances.append({

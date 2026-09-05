@@ -502,11 +502,14 @@ def _cmd_screen(args: argparse.Namespace) -> int:
 
 
 def _cmd_pick(args: argparse.Namespace) -> int:
-    """横截面策略按指定日期直接挑出标的（如 ETF），默认 JSON 落盘。
+    """横截面策略按日期直接挑出标的（如 ETF），默认 JSON 落盘。
 
     复用 ``run_cross_section_screen``：以 ``--asof`` 作为截面日，解析当时已存在的
     股票池、加载行情面板、调用策略 ``select()``，把完整排序候选（含 selected 标记）
     与选中结果落成 JSON，方便脚本消费。
+
+    ``--asof`` 可省略：此时不锁定截面日，由 ``run_cross_section_screen`` 自动取
+    最新可用交易日（= 当前推荐该持有的标的），并据实际 asof 命名输出文件。
     """
     spec = get_cross_section_strategy(args.strategy_id)
     if spec is None:
@@ -514,8 +517,6 @@ def _cmd_pick(args: argparse.Namespace) -> int:
             f"未知横截面策略: {args.strategy_id}（用 backtest --list-strategies 查看）"
         )
     asof = (args.asof or "").strip()
-    if not asof:
-        raise ValueError("请提供 --asof 截面日期（YYYY-MM-DD）")
 
     strategy_params: dict[str, Any] = {}
     if args.params:
@@ -529,14 +530,16 @@ def _cmd_pick(args: argparse.Namespace) -> int:
     body: dict[str, Any] = {
         "mode": "screen",
         "strategy_id": spec.id,
-        "start_date": asof,
-        "end_date": asof,
         "strategy_params": strategy_params,
         "max_universe": args.max_universe or 500,
         "max_workers": args.max_workers or 8,
         "use_cache": not args.no_cache,
         "force_refresh": args.force_refresh,
     }
+    # asof 可选：提供则锁定截面日；省略则留空，由 screen 自动取最新可用交易日。
+    if asof:
+        body["start_date"] = asof
+        body["end_date"] = asof
     if args.universe:
         body["universe"] = args.universe
     if args.symbols:
@@ -549,7 +552,8 @@ def _cmd_pick(args: argparse.Namespace) -> int:
     if hasattr(out, "model_dump"):
         out = out.model_dump(mode="json")
 
-    output = args.output or Path("out") / f"pick_{spec.id}_{asof}.json"
+    resolved_asof = asof or str(out.get("asof") or "")[:10] or "latest"
+    output = args.output or Path("out") / f"pick_{spec.id}_{resolved_asof}.json"
     _write_json(out, output=output, as_json=args.json)
 
     if not args.json:
@@ -1111,7 +1115,10 @@ def _build_pick_cmd(sub: argparse._SubParsersAction[argparse.ArgumentParser]) ->
         required=True,
         help="横截面策略 id，如 etf_rotation / etf_filter",
     )
-    p.add_argument("--asof", help="截面日期 YYYY-MM-DD（必填）")
+    p.add_argument(
+        "--asof",
+        help="截面日期 YYYY-MM-DD（可省略；缺省自动取最新可用交易日作为截面）",
+    )
     p.add_argument(
         "--universe",
         help="股票池：内置预设（etf / etf_asof / etf_core 等）或 config/*_pool.json 前缀",

@@ -320,6 +320,10 @@ a.sym-link:hover { color: #81d4fa; border-bottom-color: #81d4fa; }
 </header>
 <div class="wrap">
   <div class="stats" id="stats"></div>
+  <div class="panel reco" id="recoPanel">
+    <h2>当前推荐 <span class="reco-sub" style="font-weight:400;color:var(--muted);font-size:12px"></span></h2>
+    <div id="recoBody"><div class="empty">加载中…</div></div>
+  </div>
   <div class="panel">
     <h2>净值曲线（滚轮缩放 · 拖拽平移 · 点击调仓查看详情）</h2>
     <div class="chart-toolbar">
@@ -558,6 +562,34 @@ function renderStats() {
   document.getElementById("stats").innerHTML = items.map(([label, value, c]) =>
     `<div class="stat"><div class="label">${label}</div><div class="value ${c}">${value}</div></div>`
   ).join("");
+}
+
+function renderRecommendation() {
+  const asof = DATA.asof || "-";
+  const cands = DATA.candidates || [];
+  const nSel = cands.filter(c => c.selected).length;
+  const sub = document.querySelector("#recoPanel .reco-sub");
+  if (sub) sub.textContent = `基于最后可用交易日 ${asof} · 全部候选按得分排名`;
+  const body = document.getElementById("recoBody");
+  if (!cands.length) {
+    body.innerHTML = `<div class="empty">无候选标的。</div>`;
+    return;
+  }
+  const head = `<tr><th>选</th><th>排名</th><th>代码</th><th>名称</th><th>收盘</th><th>得分</th></tr>`;
+  const rows = cands.map(c => {
+    const cls = c.selected ? ' style="background:rgba(102,187,106,.14)"' : "";
+    return `<tr${cls}><td>${c.selected ? "✓" : ""}</td><td>${num(c.rank, 0)}</td>
+      <td>${symLink(c.symbol, c.name)}</td><td>${c.name || ""}</td>
+      <td>${num(c.close, 3)}</td><td>${num(c.score, 3)}</td></tr>`;
+  }).join("");
+  body.innerHTML = `<div class="scroll" style="max-height:360px;overflow:auto;border:1px solid var(--border);border-radius:6px">
+    <table style="width:100%;border-collapse:collapse;font-size:13px">
+      <thead style="position:sticky;top:0;background:var(--panel)"><tr style="text-align:left;color:var(--muted)">
+        <th style="padding:6px 8px">选</th><th style="padding:6px 8px">排名</th>
+        <th style="padding:6px 8px">代码</th><th style="padding:6px 8px">名称</th>
+        <th style="padding:6px 8px">收盘</th><th style="padding:6px 8px">得分</th>
+      </tr></thead><tbody>${rows}</tbody></table></div>
+    <div style="color:var(--muted);margin-top:6px;font-size:12px">✓ = 当前推荐持有（共 ${nSel} 只）</div>`;
 }
 
 function triUp(x, y, s) {
@@ -1520,6 +1552,7 @@ function boot() {
   if (DATA.disclaimer) notes.push(DATA.disclaimer);
   document.getElementById("footerNote").textContent = notes.join(" · ");
   renderStats();
+  renderRecommendation();
   renderChart();
   renderPeriodList();
   renderSymbolList();

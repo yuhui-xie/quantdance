@@ -15,7 +15,7 @@ from pydantic import BaseModel
 
 from app.backtest_aggregate import equal_weight_equity_curve
 from app.backtest.benchmarks import attach_hs300_benchmark
-from app.backtest.shared_engine import build_close_panel, run_shared_backtest
+from app.backtest.shared_engine import build_close_panel, build_open_panel, run_shared_backtest
 from app.backtest_engine import run_from_signals
 from app.data_sources.em_fundamentals import load_fundamentals_panel
 from app.data_sources.financial_reports import load_financials_panel
@@ -223,6 +223,23 @@ def _latest_asof(
     return max(counts, key=lambda day: (counts[day], day))
 
 
+def _nominal_decision_date(requested_month: str, params: BaseModel) -> str:
+    """在目标月份尚无行情数据时，给出该月名义决策日的日历日期。
+
+    仅用于报告标注（真实行情日历无法生成该日）。monthly 按决策锚点取该月
+    月初（anchor=start）或月末（anchor=end）的日历日，其他频率回退到月初。
+    """
+    frequency = str(getattr(params, "decision_frequency", "monthly"))
+    anchor = str(getattr(params, "decision_anchor", "end") or "end")
+    year, month = int(requested_month[:4]), int(requested_month[5:7])
+    if frequency == "monthly" and anchor == "end":
+        import calendar as _calendar
+
+        last_day = _calendar.monthrange(year, month)[1]
+        return f"{requested_month}-{last_day:02d}"
+    return f"{requested_month}-01"
+
+
 def run_cross_section_screen(
     request: BacktestRequest,
     spec: CrossSectionStrategySpec,
@@ -317,6 +334,8 @@ def run_cross_section_backtest(
         )
 
     close_panel = build_close_panel(clipped)
+    execution_timing = getattr(request, "execution_timing", "next_day_open")
+    open_panel = build_open_panel(clipped) if execution_timing == "next_day_open" else None
     context = CrossSectionContext(panel=panel, names=names)
     decision_dates = [
         day
@@ -335,6 +354,29 @@ def run_cross_section_backtest(
         selection_by_date[asof] = details
         if progress is not None:
             progress(done, total_dates, str(asof))
+
+    # 尾部“当前推荐”决策：end_date 所在月份尚无行情数据时的兜底。
+    # 月度决策锚定在每月首个/末个交易日；若 end_date 所在月（如 2026-09）还没有
+    # 任何交易数据，真实行情日历无法生成该月决策日，报告会停在上一有数据的月份
+    # （如 08-03）。此时追加一个名义决策日（该月锚定交易日），其选股以最新可用
+    # 交易日为截面（即“<= 最新数据日”），使报告末尾展示的是当前该持有的标的。
+    # 名义日期不在真实行情日历上，run_shared_backtest 会自然跳过其换仓执行，
+    # 只影响报告末尾的 asof 与最终持仓展示。
+    tail_note: str | None = None
+    calendar_days = [str(day)[:10] for day in close_panel.index]
+    last_data_month = calendar_days[-1][:7] if calendar_days else ""
+    requested_month = (end or "").strip()[:7]
+    if requested_month and last_data_month and requested_month > last_data_month:
+        nominal = _nominal_decision_date(requested_month, params)
+        compute_asof = _latest_asof(panel, None)
+        tail_targets, tail_details = spec.select(compute_asof, context, params)
+        decision_dates.append(nominal)
+        targets_by_date[nominal] = tail_targets
+        selection_by_date[nominal] = tail_details
+        tail_note = (
+            f"end_date {end} 所在月份 {requested_month} 尚无交易数据，报告末尾以最新"
+            f"可用交易日 {compute_asof} 计算一次“当前推荐”决策（名义决策日 {nominal}）。"
+        )
 
     policy_config = getattr(request, "position_management", None)
     policy = (
@@ -358,12 +400,16 @@ def run_cross_section_backtest(
         stop_loss_tier_anchor=request.stop_loss_tier_anchor,
         position_policy=policy,
         rebalance_mode=getattr(request, "rebalance_mode", "full"),
+        execution_timing=execution_timing,
+        open_panel=open_panel,
     )
     latest = decision_dates[-1]
     warnings = list(spec.warnings)
     if filter_note:
         note = f"{note}（{filter_note}）"
         warnings.append(filter_note)
+    if tail_note:
+        warnings.append(tail_note)
     if warn := deprecated_decision_interval_warning(request):
         warnings.append(warn)
     out = {
