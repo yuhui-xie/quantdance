@@ -13,7 +13,7 @@
 「整月」= 买在当月首日收盘、卖在下月首日收盘（恰好把下月首日的强势日作为末段）。
 
 用法（backend/ 下）：
-    .venv/Scripts/python.exe -m examples.cross_section.experiment_hold_month_start
+    .venv/Scripts/python.exe -m experiment.experiment_hold_month_start
 """
 from __future__ import annotations
 

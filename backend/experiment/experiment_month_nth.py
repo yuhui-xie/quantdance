@@ -5,9 +5,9 @@
 decision_anchor=start），n 越大调仓越靠当月月中/月末。
 
 用法（在 backend/ 下）：
-    .venv/Scripts/python.exe -m examples.cross_section.experiment_month_nth
+    .venv/Scripts/python.exe -m experiment.experiment_month_nth
     # 或指定基线请求 + 股票池（第二个参数覆盖 universe）：
-    .venv/Scripts/python.exe -m examples.cross_section.experiment_month_nth examples/cross_section/backtest_shared_etf_rotation.json etf_core
+    .venv/Scripts/python.exe -m experiment.experiment_month_nth examples/cross_section/backtest_shared_etf_rotation.json etf_core
 
 脚本复用 runner 的 run_backtest_request，行情走 K 线缓存（use_cache=True），
 重复跑只需重新执行选股与撮合。

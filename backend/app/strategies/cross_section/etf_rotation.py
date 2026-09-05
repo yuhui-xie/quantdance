@@ -15,6 +15,10 @@
 ``require_positive_score`` 开启时只保留得分>0 的候选，某调仓日全部不满足则持现金。
 ``rotate_threshold=1.0``（默认）关闭轮动惰性、纯按得分调仓。周期默认每自然月首个
 交易日，等权持有 top-N。
+
+可选短期过热压制：``short_term_damp_coef>0`` 时最终得分 = z(长窗 slope_days 斜率) −
+系数 × z(短窗 short_term_slope_days 斜率)，扣减近端急拉者追高；``coef=0``（默认）等价
+纯长窗斜率 z。
 """
 
 from __future__ import annotations
@@ -87,6 +91,26 @@ class EtfRotationParams(DecisionFrequencyParams):
         le=504,
         description="归一化收盘价线性回归窗口（斜率趋势的交易日数）",
     )
+    short_term_slope_days: int = Field(
+        20,
+        ge=2,
+        le=252,
+        description=(
+            "短窗斜率回看（检测短期过热）：短窗斜率明显强于池内平均即近端急拉，配合"
+            "short_term_damp_coef 从最终得分中扣减，压制追高。仅 short_term_damp_coef>0 "
+            "时生效。"
+        ),
+    )
+    short_term_damp_coef: float = Field(
+        0.0,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "短期过热压制系数。>0 时最终得分 = z(长窗 slope_days 斜率) − 该系数 × "
+            "z(短窗 short_term_slope_days 斜率)：扣减近期斜率远强于长期者的得分，压制"
+            "短期过热。0 = 关闭（默认，得分退化为纯长窗斜率 z，向后兼容）。典型 0.2。"
+        ),
+    )
     min_score: float = Field(
         0.0,
         description="配合 require_positive_score=True 时的分数下限（score≥min_score）",
@@ -144,6 +168,19 @@ class EtfRotationParams(DecisionFrequencyParams):
     recent_gain_days: int = Field(
         10, ge=2, le=250, description="近期涨幅回看交易日数"
     )
+    max_gain_pct: float | None = Field(
+        None,
+        ge=0,
+        description=(
+            "更长区间累计简单涨幅上限（%），对近 gain_days 日（如 40/60）收盘累计涨幅设限，"
+            "用于压制已从更早起点涨幅过大（远离启动位）的标的；None 关闭。与 "
+            "max_recent_gain_pct（近 10 日、防急拉追高）叠加使用时，形成"
+            "近端(短)+中段(长)两道涨速门槛。"
+        ),
+    )
+    gain_days: int = Field(
+        40, ge=2, le=504, description="长窗累计涨幅上限的回看交易日数"
+    )
     exclude_limit: bool = True
     exclude_suspended: bool = True
     limit_pct_threshold: float = Field(9.5, ge=1.0, le=30.0)
@@ -155,8 +192,8 @@ def select_etf_rotation(
     params: EtfRotationParams,
 ) -> tuple[list[str], list[dict[str, Any]]]:
     candidates: list[dict[str, Any]] = []
-    # 打分需至少 slope_days 根 K 线；各可选过滤的更长回看在其内部单独守卫。
-    required_bars = params.slope_days
+    # 打分需至少 max(slope_days, 短窗) 根 K 线；各可选过滤的更长回看在其内部单独守卫。
+    required_bars = max(params.slope_days, params.short_term_slope_days)
 
     for symbol, payload in ctx.panel.items():
         value_df = payload.get("value")
@@ -202,11 +239,22 @@ def select_etf_rotation(
             gain = recent_gain(closes, params.recent_gain_days)
             if gain is None or gain * 100.0 > params.max_recent_gain_pct:
                 continue
+        if params.max_gain_pct is not None:
+            if n_bars < params.gain_days + 1:
+                continue
+            gain = recent_gain(closes, params.gain_days)
+            if gain is None or gain * 100.0 > params.max_gain_pct:
+                continue
 
-        # 打分生值：归一化收盘价回归斜率×R²（生值保留量级，可超 1，供核查）
+        # 打分生值：长/短窗归一化收盘价回归斜率×R²（生值保留量级，可超 1，供核查）
         slope_raw = slope_momentum(closes, params.slope_days)
         if slope_raw is None or not np.isfinite(slope_raw):
             continue
+        slope_short: float | None = None
+        if params.short_term_damp_coef > 0:
+            slope_short = slope_momentum(closes, params.short_term_slope_days)
+            if slope_short is None or not np.isfinite(slope_short):
+                continue
 
         candidates.append(
             {
@@ -214,19 +262,28 @@ def select_etf_rotation(
                 "name": ctx.names.get(symbol, ""),
                 "asof": str(asof)[:10],
                 "close": close,
-                "score": slope_raw,  # 下方改为横截面 z 值
+                "score": slope_raw,  # 下方改为最终（可扣减）横截面 z 值
                 "slope_raw": slope_raw,
+                "slope_short": slope_short,
                 "slope_score": slope_raw,
             }
         )
 
-    # 得分 = 收盘价斜率的横截面 z 标准化（均值0、标准差1，z 值可 >1）
     if not candidates:
         return [], []
+    # 最终得分：长窗斜率 z。short_term_damp_coef>0 时再扣减 短窗斜率 z × 系数，压制
+    # 近期斜率远强于长期（短期过热）的标的追高；z 均为当日池内横截面（均值0、标准差1）。
     z_slope = zscore([c["slope_raw"] for c in candidates])
-    for idx, cand in enumerate(candidates):
-        cand["slope_score"] = z_slope[idx]
-        cand["score"] = z_slope[idx]
+    if params.short_term_damp_coef > 0:
+        z_short = zscore([float(c["slope_short"]) for c in candidates])
+        damp = params.short_term_damp_coef
+        for idx, cand in enumerate(candidates):
+            cand["slope_score"] = float(z_slope[idx]) - damp * float(z_short[idx])
+            cand["score"] = cand["slope_score"]
+    else:
+        for idx, cand in enumerate(candidates):
+            cand["slope_score"] = float(z_slope[idx])
+            cand["score"] = float(z_slope[idx])
 
     # require_positive_score：只保留得分>0（高于池内平均）的候选。某调仓日全部候选
     # 都不满足 → 无候选 → 本轮持现金，而非买入得分仍为负的最弱标的。默认关闭以保持

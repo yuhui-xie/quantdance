@@ -11,9 +11,9 @@
 只需在网格里写 ``"decision_frequency": ["weekly", ...]`` 即可扫描。
 
 用法（在 ``backend/`` 下）：
-    .venv/Scripts/python.exe -m examples.cross_section.tune_params \
+    .venv/Scripts/python.exe -m experiment.tune_params \
         examples/cross_section/backtest_shared_etf_rotation.json \
-        examples/cross_section/grid_etf_rotation_freq.json \
+        experiment/grid_etf_rotation_freq.json \
         [--output out/tune.json] [--metric sharpe] [--top 30] [--quiet]
 
 位置参数：
