@@ -11,7 +11,9 @@ from pydantic import BaseModel, Field, model_validator
 # etf_dynamic / etf_asof 为 etf 的别名，带 asof 时按 K 线覆盖重构「当时已存在」的动态池。
 _KNOWN_UNIVERSES = frozenset(
     {"all_a", "hs300", "zz500", "zz399101", "zz1000", "gz2000", "star50", "star_board",
-     "etf", "etf_dynamic", "etf_asof"}
+     "etf", "etf_dynamic", "etf_asof",
+     # 全市场"当前"清单别名（不做 as-of 过滤），供动态行业池发现的多时点回测用。
+     "etf_market", "etf_all"}
 )
 _CONFIG_DIR = Path(__file__).resolve().parents[1] / "config"
 

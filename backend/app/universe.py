@@ -140,6 +140,13 @@ def resolve_universe_rows(
         if asof_s:
             return fetch_etf_universe_at(asof_s, max_universe, seed=seed)
         return fetch_etf_universe(max_universe, seed=seed)
+    # 全市场"当前"清单别名：etf_market / etf_all 不做 as-of 过滤，返回当前全市场
+    # ETF 快照。多时点回测/动态行业池发现用——面板一次性载入全市场全历史，由策略
+    # select() 在每个决策日按 date<=asof 判定存在性、自然纳入新上市标的（与 config
+    # 池 asof_filter_config=False 同构，避免 2020 起步被永久截断成"仅 start 前上市"）。
+    if selected in {"etf_market", "etf_all"}:
+        rows, _fetch_note = fetch_etf_universe(max_universe, seed=seed)
+        return rows, f"{_fetch_note}（成员由策略逐决策日 as-of 发现）"
     if selected.startswith("config:"):
         rows, note = _load_config_pool(selected.split(":", 1)[1])
         return _maybe_asof_filter_config(

@@ -25,6 +25,18 @@
 amount_baseline_days 日均成交额 ) )`` —— 用成交额(amount)刻画近端量能相对自身近期基线
 是否异常扩张，横截面 z 标准化后对当日池内近期相对放量者扣分，避免买入刚异常放量的 ETF；
 ``coef=0``（默认）关闭，保持向后兼容。
+
+可选**动态行业池发现（消除池成员前视）**：``pool_discovery=True``（配合 universe=
+"etf_market" 一次性载入全市场全历史面板）时，不再用固定 config 池，而是每个决策日按
+asof 从全市场按 38 个有序方向重新发现候选池——排除货币/债券/无法细分，要求上市满
+``discover_min_listing_days``、近 ``discover_amount_days`` 个交易日内有效成交日 ≥
+``discover_min_valid_days``；每方向按历史日均成交额取 ≤ ``discover_per_direction`` 只、
+方向内部按 ``discover_corr_days`` 日收益做 ``discover_corr_threshold`` 上限的去冗余
+（代表性、可交易、彼此低相关），再分层填充（先各方向第1名…）封顶 ``discover_max_pool``。
+再把发现的成员交给上方动量斜率 z 排序选 top_n。发现/相关性窗口只读 ``date<=asof``，
+无前视，可自然纳入每月新上市标的。详见
+``app.strategies.cross_section.industry_pool.discover_industry_pool``。默认关闭=沿用静态
+config 池，向后兼容。
 """
 
 from __future__ import annotations
@@ -47,6 +59,7 @@ from app.strategies.cross_section.common import (
 from app.factors.cross_section import zscore
 from app.factors.momentum import price_history, slope_momentum
 from app.strategies.cross_section.decision import DecisionFrequencyParams
+from app.strategies.cross_section.industry_pool import discover_industry_pool
 
 
 # ctx.cache 中保存上一调仓日持仓 symbol 列表的键；用于跨决策日的轮动惰性比较。
@@ -280,6 +293,77 @@ class EtfRotationParams(DecisionFrequencyParams):
     exclude_suspended: bool = True
     limit_pct_threshold: float = Field(9.5, ge=1.0, le=30.0)
 
+    # ---- 动态行业池发现（可选，默认关闭；向后兼容）----
+    # 开启后不再用固定 config 池，而是每个决策日按 asof 从全市场 etf 面板（需
+    # universe="etf_market" 一次性载入全市场全历史）按 38 个有序方向重新发现候选池：
+    # 排除货币/债券/无法细分，要求上市满 discover_min_listing_days、近
+    # discover_amount_days 个交易日内有效成交日 ≥ discover_min_valid_days；每个方向按
+    # 历史日均成交额排序取 ≤ discover_per_direction 只（同方向内部按 corr 去冗余），
+    # 再分层填充（先各方向第1名、再第2名…）封顶 discover_max_pool。再交给上方动量斜率
+    # z 排序选 top_n 实际持有。发现/相关性窗口只读 date<=asof，无前视。
+    pool_discovery: bool = Field(
+        False,
+        description=(
+            "开启动态行业池发现：每决策日按 asof 从全市场 etf 面板按 38 方向重新发现"
+            "候选池(流动性排序+每方向≤K+方向内低相关+分层封顶)，再交给动量斜率 z 选 "
+            "top_n。需配合 universe='etf_market'。默认关闭=沿用静态 config 池，向后兼容。"
+        ),
+    )
+    discover_min_listing_days: int = Field(
+        182,
+        ge=30,
+        description=(
+            "候选池成员上市时长门槛：首根K线距 asof 至少这么多自然日（182≈满6个月）。"
+        ),
+    )
+    discover_amount_days: int = Field(
+        120,
+        ge=30,
+        le=504,
+        description=(
+            "候选流动性判定回看窗口：近 N 个交易日(≤asof)内须有 ≥discover_min_valid_days "
+            "个有效成交日，并以其中日均成交额(amount，缺列回退 volume)作为同方向内排序依据。"
+        ),
+    )
+    discover_min_valid_days: int = Field(
+        60,
+        ge=1,
+        le=504,
+        description=(
+            "近 discover_amount_days 个交易日中须含的最少有效成交日数（60/120≈半年约60个"
+            "成交日，剔除长期停牌/新上市不足额标的）。"
+        ),
+    )
+    discover_per_direction: int = Field(
+        3,
+        ge=1,
+        le=20,
+        description="每个方向(细分行业)最多保留的候选 ETF 数量。",
+    )
+    discover_max_pool: int = Field(
+        90,
+        ge=10,
+        le=1000,
+        description=(
+            "分层填充后的池总上限：先各方向第1名、再第2名…按方向顺序填满至此封顶。"
+        ),
+    )
+    discover_corr_days: int = Field(
+        60,
+        ge=10,
+        le=250,
+        description="方向内部相关性计算的日收益回看窗口(≤asof)。",
+    )
+    discover_corr_threshold: float = Field(
+        0.7,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "方向内相关性上限：候选与同方向任一已接受成员日收益相关 ≥ 此值则拒绝，"
+            "只保留彼此低相关的代表。"
+        ),
+    )
+
 
 def select_etf_rotation(
     asof: str,
@@ -296,7 +380,30 @@ def select_etf_rotation(
             params.amount_recent_days + params.amount_baseline_days,
         )
 
+    # 动态行业池发现（可选）：开启时先算出本决策日的候选成员集，仅对这些成员打分，
+    # 否则沿用整个 ctx.panel。发现只读 date<=asof，无前视。
+    pool_members: set[str] | None = None
+    if params.pool_discovery:
+        pool_members = set(
+            discover_industry_pool(
+                ctx.panel,
+                ctx.names,
+                asof,
+                min_listing_days=params.discover_min_listing_days,
+                window_days=params.discover_amount_days,
+                min_valid_days=params.discover_min_valid_days,
+                per_direction=params.discover_per_direction,
+                max_total=params.discover_max_pool,
+                corr_days=params.discover_corr_days,
+                corr_threshold=params.discover_corr_threshold,
+            )
+        )
+        if not pool_members:
+            return [], []
+
     for symbol, payload in ctx.panel.items():
+        if pool_members is not None and symbol not in pool_members:
+            continue
         value_df = payload.get("value")
         if value_df is None or value_df.empty:
             continue
