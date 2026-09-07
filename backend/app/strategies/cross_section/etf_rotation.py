@@ -28,7 +28,8 @@ amount_baseline_days 日均成交额 ) )`` —— 用成交额(amount)刻画近�
 
 可选**动态行业池发现（消除池成员前视）**：``pool_discovery=True``（配合 universe=
 "etf_market" 一次性载入全市场全历史面板）时，不再用固定 config 池，而是每个决策日按
-asof 从全市场按 38 个有序方向重新发现候选池——排除货币/债券/无法细分，要求上市满
+asof 从全市场按 9 大类（细分方向为主、大类兜底）重新发现候选池——排除货币/除5年国债外债券/无法
+细分/其它跨境(仅留恒生国企与纳斯达克)，要求上市满
 ``discover_min_listing_days``、近 ``discover_amount_days`` 个交易日内有效成交日 ≥
 ``discover_min_valid_days``；每方向按历史日均成交额取 ≤ ``discover_per_direction`` 只、
 方向内部按 ``discover_corr_days`` 日收益做 ``discover_corr_threshold`` 上限的去冗余
@@ -295,8 +296,9 @@ class EtfRotationParams(DecisionFrequencyParams):
 
     # ---- 动态行业池发现（可选，默认关闭；向后兼容）----
     # 开启后不再用固定 config 池，而是每个决策日按 asof 从全市场 etf 面板（需
-    # universe="etf_market" 一次性载入全市场全历史）按 38 个有序方向重新发现候选池：
-    # 排除货币/债券/无法细分，要求上市满 discover_min_listing_days、近
+    # universe="etf_market" 一次性载入全市场全历史）按 9 大类（细分方向为主、大类兜底）重新发现候选池：
+    # 排除货币/除5年国债外债券/无法细分/其它跨境(仅留恒生国企与纳斯达克)，要求上市满
+    # discover_min_listing_days、近
     # discover_amount_days 个交易日内有效成交日 ≥ discover_min_valid_days；每个方向按
     # 历史日均成交额排序取 ≤ discover_per_direction 只（同方向内部按 corr 去冗余），
     # 再分层填充（先各方向第1名、再第2名…）封顶 discover_max_pool。再交给上方动量斜率
@@ -304,7 +306,7 @@ class EtfRotationParams(DecisionFrequencyParams):
     pool_discovery: bool = Field(
         False,
         description=(
-            "开启动态行业池发现：每决策日按 asof 从全市场 etf 面板按 38 方向重新发现"
+            "开启动态行业池发现：每决策日按 asof 从全市场 etf 面板按 9 大类(细分方向为主、大类兜底)重新发现"
             "候选池(流动性排序+每方向≤K+方向内低相关+分层封顶)，再交给动量斜率 z 选 "
             "top_n。需配合 universe='etf_market'。默认关闭=沿用静态 config 池，向后兼容。"
         ),
