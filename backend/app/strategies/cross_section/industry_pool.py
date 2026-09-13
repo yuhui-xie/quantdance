@@ -189,12 +189,13 @@ _ALLOWLIST_TOKENS: tuple[str, ...] = (
 def _is_allowlisted(name: str | None) -> bool:
     """命中白名单的目标 ETF（须优先于通用排除词放行）才 True。"""
     n = (name or "").upper()
-    return any(w in n for w in _ALLOWLIST_TOKENS)
+    theme = _classification_text(name)
+    return any(w in n for w in _ALLOWLIST_TOKENS) or _is_board_nasdaq(name)
 
 
 def _exclude_name(name: str | None) -> bool:
     """命中货币/债券(除5年国债)/现金/其它跨境等非目标关键词则 True（此类品种不入动态池）。"""
-    n = (name or "").upper()
+    n = _classification_text(name)
     if _is_allowlisted(name):
         return False
     for kw in _EXCLUDE_TOKENS:
@@ -202,6 +203,15 @@ def _exclude_name(name: str | None) -> bool:
             return True
     return False
 
+def _classification_text(name: str | None) -> str:
+    nomralized = re.sub(r"\s+", "", name or "").upper()
+    if "ETF" in nomralized:
+        return nomralized.split("ETF", 1)[0]
+    return nomralized
+
+def _is_board_nasdaq(name: str) -> bool:
+    theme = _classification_text(name)
+    return re.fullmatch(f"(?:纳斯达克|纳指)(?:100)?(?:指数)?", theme) is not None
 
 def _allowlisted_direction(name: str | None) -> str | None:
     """白名单放行的跨境/债券品种固定归其所属方向（不被其它 A 股细分词抢先）。
@@ -210,10 +220,10 @@ def _allowlisted_direction(name: str | None) -> str | None:
     医药桶；恒生国企/5年国债同理。此短路在扫描 SUB_RULES 前执行，保证跨域放行品种永远落回
     防御及跨境/债券自身桶。
     """
-    n = (name or "").upper()
+    n = _classification_text(name)
     if "恒生国企" in n or "恒生中国企业" in n:
         return "恒生国企"
-    if "纳斯达克" in n or "纳指" in n:
+    if _is_board_nasdaq(name):
         return "纳斯达克"
     if "5年期国债" in n or "5年国债" in n:
         return "5年国债"
@@ -228,15 +238,15 @@ def classify_industry(name: str | None) -> str | None:
     避免被先扫到的 A 股细分词吞走；否则按 SUB_RULES 首个命中即定。未命中者返回 None——发现
     阶段跳过，即"无法细分"品种被排除。
     """
+    alloallowlisted = _allowlisted_direction(name)
+    if alloallowlisted is not None:
+        return alloallowlisted
     if _exclude_name(name):
         return None
-    if _is_allowlisted(name):
-        return _allowlisted_direction(name)
-    n = (name or "").upper()
+    normalized = _classification_text(name)
     for cat, kws in SUB_RULES:
-        for kw in kws:
-            if kw.upper() in n:
-                return cat
+        if any(kw.upper() in normalized for kw in kws):
+            return cat
     return None
 
 
