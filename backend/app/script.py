@@ -47,10 +47,27 @@ def _open_file_with_default_app(path: Path) -> None:
         print(f"图表已保存，但自动打开失败: {exc}")
 
 
-def _print_backtest_progress(done: int, total: int, current: str = "") -> None:
-    """把逐票/逐决策日进度写到 stderr，回车刷新、不污染 stdout 结果。"""
+def _clear_progress_line() -> None:
+    """清掉可能残留的 \\r 原地刷新行，避免与后续永久行叠在一起。"""
+    sys.stderr.write("\r" + " " * 78 + "\r")
+
+
+def _print_backtest_progress(
+    done: int, total: int, current: str = "", kind: str = "symbol"
+) -> None:
+    """把逐票/逐决策日进度写到 stderr，不污染 stdout 结果。
+
+    高分并发的逐票/加载阶段（kind=load/symbol）用 ``\\r`` 原地刷新单行，避免上千只标的
+    刷屏；决策日（kind=decision）数量少（月频一年 12 行）且是核查重点，逐行永久打印。
+    """
     pct = (done / total * 100.0) if total else 100.0
-    sys.stderr.write(f"\r回测进度: {done}/{total} ({pct:5.1f}%) {current:<12}")
+    if kind == "decision":
+        _clear_progress_line()
+        sys.stderr.write(f"[{done:>3}/{total}] {current}\n")
+        sys.stderr.flush()
+        return
+    label = "加载行情" if kind == "load" else "回测进度"
+    sys.stderr.write(f"\r{label}: {done}/{total} ({pct:5.1f}%) {current:<12}")
     if done >= total:
         sys.stderr.write("\n")
     sys.stderr.flush()
@@ -240,7 +257,7 @@ def _load_output_options(args: argparse.Namespace) -> dict[str, Any]:
 
 def _resolve_backtest_output_options(
     args: argparse.Namespace,
-) -> tuple[Path | None, bool, Path | None, Path | None, int | None]:
+) -> tuple[Path | None, bool, Path | None, Path | None, int | None, Path | None, bool]:
     output_options = _load_output_options(args)
 
     json_option = output_options.get("json", False)
@@ -263,7 +280,13 @@ def _resolve_backtest_output_options(
         raw = output_options.get("report_price_top_k")
         if raw is not None:
             report_price_top_k = int(raw) if str(raw).strip() else None
-    return output, as_json, report, report_top_k, report_price_top_k
+    # 决策日池 dump：默认开启（横截面策略才有内容），--no-pool-dump 关闭，
+    # 显式路径（CLI 或 output_options.pool_dump）优先于关闭开关。
+    pool_dump = getattr(args, "pool_dump", None) or _path_from_output_option(
+        output_options.get("pool_dump"), "pool_dump"
+    )
+    pool_dump_enabled = pool_dump is not None or not getattr(args, "no_pool_dump", False)
+    return output, as_json, report, report_top_k, report_price_top_k, pool_dump, pool_dump_enabled
 
 
 def _resolve_json_output_options(args: argparse.Namespace) -> tuple[Path | None, bool]:
@@ -441,7 +464,15 @@ def _cmd_backtest(args: argparse.Namespace) -> int:
             spec = ALL_STRATEGIES[sid]
             print(f"{spec.id}\t{spec.name}\t{spec.description}")
         return 0
-    output, as_json, report, report_top_k, report_price_top_k = _resolve_backtest_output_options(args)
+    (
+        output,
+        as_json,
+        report,
+        report_top_k,
+        report_price_top_k,
+        pool_dump,
+        pool_dump_enabled,
+    ) = _resolve_backtest_output_options(args)
     body = _resolve_backtest_body(args)
     shared = body.strategy_id in {
         sid for sid, spec in ALL_STRATEGIES.items() if hasattr(spec, "select")
@@ -449,8 +480,30 @@ def _cmd_backtest(args: argparse.Namespace) -> int:
     if not shared and report is not None and body.mode in {"universe", "single"} and not body.include_price:
         # 逐票指标随 price overlay 返回；报告需要这些序列来绘制指标图。
         body = body.model_copy(update={"include_price": True})
-    out = run_backtest_request(body, progress=_print_backtest_progress)
+    # 决策日池由策略经 ctx.cache 登记、执行器回调返回；只有横截面策略会写入内容。
+    pool_by_date: dict[str, Any] = {}
+    out = run_backtest_request(
+        body,
+        progress=_print_backtest_progress,
+        pool_sink=pool_by_date.update if (shared and pool_dump_enabled) else None,
+    )
     _write_json(out, output=output, as_json=as_json)
+    if pool_by_date:
+        pool_path = pool_dump or Path("out") / (
+            f"pool_{body.strategy_id}_{body.mode}_"
+            f"{(body.start_date or 'na')[:10]}_{(body.end_date or 'na')[:10]}.json"
+        )
+        _write_json(
+            {
+                "strategy_id": body.strategy_id,
+                "mode": body.mode,
+                "start_date": (body.start_date or "")[:10] or None,
+                "end_date": (body.end_date or "")[:10] or None,
+                "pool_by_date": pool_by_date,
+            },
+            output=pool_path,
+            as_json=False,
+        )
     if report is not None:
         from app.cli_backtest_report import render_backtest_html
 
@@ -548,7 +601,8 @@ def _cmd_pick(args: argparse.Namespace) -> int:
         body["seed"] = args.seed
 
     request = BacktestRequest.model_validate(body)
-    out = run_cross_section_screen(request, spec)
+    # 不落池：pick 的输出本就是含 selected 标记的完整候选超集。
+    out = run_cross_section_screen(request, spec, progress=_print_backtest_progress)
     if hasattr(out, "model_dump"):
         out = out.model_dump(mode="json")
 
@@ -958,6 +1012,22 @@ def _build_backtest_cmd(sub: argparse._SubParsersAction[argparse.ArgumentParser]
         metavar="N",
         default=None,
         help="从行情缓存补拉 K 线的股票数；0 或省略=全部，正数=仅前 N 名",
+    )
+    p.add_argument(
+        "--pool-dump",
+        type=Path,
+        metavar="FILE.json",
+        default=None,
+        help=(
+            "决策日池成员 JSON 落盘路径（默认 out/pool_<strategy>_<mode>_"
+            "<start>_<end>.json，横截面策略默认开启）"
+        ),
+    )
+    p.add_argument(
+        "--no-pool-dump",
+        action="store_true",
+        dest="no_pool_dump",
+        help="关闭决策日池成员落盘（横截面策略默认会写一份到 out/）",
     )
     p.add_argument("--list-strategies", action="store_true")
     p.add_argument("--mode", choices=("single", "universe", "screen", "per_stock"), default=None)

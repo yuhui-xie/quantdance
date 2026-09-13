@@ -3,13 +3,39 @@
 from __future__ import annotations
 
 from datetime import date
-from typing import Any
+from typing import Any, Iterable
 
 import pandas as pd
 
 from app.data_sources.em_fundamentals import asof_fundamental_row
 from app.data_sources.market_data import normalize_a_share_symbol
 from app.strategies.base import CrossSectionContext
+
+# ctx.cache 中按决策日保存"该日候选池成员"的键；策略调用 record_decision_pool 写入，
+# 回测执行器读取后交给 CLI 落盘（便于核查动态行业池发现等中间结果）。
+POOL_BY_DATE_CACHE_KEY = "decision_pool_by_date"
+
+
+def record_decision_pool(
+    ctx: CrossSectionContext,
+    asof: str,
+    symbols: Iterable[str],
+    *,
+    source: str = "eligibility",
+) -> None:
+    """登记某决策日的候选池成员，供回测执行器落盘为 JSON。
+
+    只存 symbol：标的名称由执行器用权威的 names 映射在落盘时补齐，避免策略侧重复维护。
+    按决策日覆盖写入（同一 asof 重复调用只会刷新，不会累积），``source`` 标明该池的来源
+    （``pool_discovery``＝动态行业池发现结果，``eligibility``＝通过基础可用性闸门的候选）。
+    """
+    by_date: dict[str, dict[str, Any]] = ctx.cache.setdefault(
+        POOL_BY_DATE_CACHE_KEY, {}
+    )
+    by_date[str(asof)[:10]] = {
+        "source": source,
+        "members": sorted({str(s) for s in symbols}),
+    }
 
 
 def is_st_stock(name: str | None) -> bool:

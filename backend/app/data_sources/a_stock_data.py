@@ -30,7 +30,10 @@ from app.data_sources.tencent_finance_sdk import (
 # 旧缓存可能含 ETF 拆分日的虚假价格断层，必须重建。
 # v4→v5：折算同时覆盖拆细（suogu>1）与合并（suogu<1），去掉 suogu>1 限制，
 # 旧缓存可能漏掉 ETF 合并（缩股）日的虚假价格断层，必须重建。
-_KLINE_CACHE_VERSION = 5
+# v5→v6：除权记录日期对齐到「该日或之后的第一个交易日」。旧实现按日期直接 join，
+# 除权日非交易日（周末/节假日/停牌）的记录被静默丢弃，如 159922 的折算记录在周日
+# 2024-12-01，导致 2024-12-02 留下 -60% 虚假断层且此前历史价格高估 2.5 倍，必须重建。
+_KLINE_CACHE_VERSION = 6
 
 
 class AStockDataError(Exception):
@@ -236,12 +239,27 @@ class AStockDataSDK:
         rows: list[MarketKlineBar],
     ) -> None:
         old_payload = self._read_cache("klines", period, f"{symbol}.json") or {}
-        old_rows = self._normalize_cache_rows(old_payload.get("rows"))
-        old_count = old_payload.get("requested_count", 0)
-        try:
-            requested_count = max(count, int(old_count))
-        except (TypeError, ValueError):
-            requested_count = count
+        # 旧行只有在「同为当前格式版本 + 同为当前复权口径 + 同为今天拉取」时才可沿用：
+        # 1) 版本/口径不同的旧行（含无 version 字段的历史文件）必须丢弃。读路径已按版本
+        #    作废它们，写路径若仍 merge 保留并盖上当前 version，等于把旧口径的行洗成新版本，
+        #    版本升级机制被架空（实测 sh603027：v1 未复权行被保留，2017 年 -48% 断层仍在）。
+        # 2) 前复权因子以**最新一根 K 线**为 1 向前累乘，锚点日落在前次拉取之后时，旧行的
+        #    因子整段失效；跨日沿用会在接缝处留下虚假跳变（实测 sh603027 在 n-200 处）。
+        same_era = (
+            old_payload.get("version") == _KLINE_CACHE_VERSION
+            and old_payload.get("adjust") == _KLINE_ADJUST
+            and old_payload.get("cached_at") == self._today()
+        )
+        if same_era:
+            old_rows = self._normalize_cache_rows(old_payload.get("rows"))
+            try:
+                requested_count = max(count, int(old_payload.get("requested_count", 0)))
+            except (TypeError, ValueError):
+                requested_count = count
+        else:
+            # 丢弃旧行时不能沿用旧的 requested_count：它记录的是行数覆盖量，
+            # 虚高会让 `_cached_klines` 的 `requested_count < count` 守卫误判缓存够用。
+            old_rows, requested_count = [], count
         merged_rows = self._merge_rows_by_key(old_rows, list(rows), "datetime")
         self._write_cache(
             {

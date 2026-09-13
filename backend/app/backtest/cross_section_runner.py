@@ -6,8 +6,13 @@ from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Callable, Mapping
 
-# 进度回调：done / total / current（标的或决策日）
-ProgressCallback = Callable[[int, int, str], None]
+# 进度回调：done / total / current（标的或决策日）/ kind
+# kind="load"（加载行情，高并发、原地刷新）| "decision"（决策日，逐行永久打印）
+# | "symbol"（逐票回测，高并发、原地刷新）
+ProgressCallback = Callable[[int, int, str, str], None]
+
+# 落盘回调：接收 {asof: {"source": ..., "members": [...]}} 形式的决策日池字典
+PoolSink = Callable[[dict[str, Any]], None]
 
 import numpy as np
 import pandas as pd
@@ -35,6 +40,7 @@ from app.schemas import (
     BacktestUniverseSummary,
 )
 from app.strategies.base import CrossSectionContext, CrossSectionStrategySpec
+from app.strategies.cross_section.common import POOL_BY_DATE_CACHE_KEY
 from app.universe import resolve_universe_rows
 
 def params_for_cross_section(
@@ -46,6 +52,40 @@ def params_for_cross_section(
         return spec.params_model.model_validate(raw)
     except Exception as exc:
         raise ValueError(f"{spec.id} 策略参数无效: {exc}") from exc
+
+
+def execution_clipped_panel(
+    clipped: dict[str, pd.DataFrame],
+    spec: CrossSectionStrategySpec,
+) -> dict[str, pd.DataFrame]:
+    """返回供成交/估值使用的价格面板：`close` 列统一为**前复权**口径。
+
+    两条数据分支的 `close` 口径原本不一致：
+
+    - 日线分支（`needs_fundamentals=False`）：来自 `fetch_a_share_daily`，已是前复权；
+    - 基本面分支：来自东财估值面板，`close` 是**不复权**真实成交价，而同一行
+      `pct_change` 却是复权口径。
+
+    共享账户回测用 `close` 面板给持仓估值、按价成交，不复权口径会在每个除权日凭空记一笔
+    跳空亏损（分红没进账户、送转直接当暴跌），而收益口径（`pct_change`）又是复权的——
+    同一次回测里入场价与收益来自两种口径。这里统一为前复权，与日线分支一致。
+
+    注意只改这份**副本**：`panel[symbol]["value"]` 仍是原始面板，策略自身的价格区间过滤
+    （`min_price`/`max_price`）与股息率（按真实现金分红 / 当时实际股价）继续用不复权价。
+    """
+    if not spec.needs_fundamentals:
+        return clipped
+    out: dict[str, pd.DataFrame] = {}
+    for symbol, value in clipped.items():
+        if "close_qfq" not in value.columns:
+            raise MarketDataError(
+                f"{spec.id} 的估值面板缺少 close_qfq（前复权收盘价）列，无法按统一口径回测；"
+                "请确认面板来自 em_fundamentals（会由 pct_change 还原该列）"
+            )
+        out[symbol] = value.assign(
+            close=pd.to_numeric(value["close_qfq"], errors="coerce")
+        )
+    return out
 
 
 def deprecated_decision_interval_warning(request: BacktestRequest) -> str | None:
@@ -137,6 +177,7 @@ def _load_panel(
     request: BacktestRequest,
     *,
     spec: CrossSectionStrategySpec,
+    progress: ProgressCallback | None = None,
 ) -> dict[str, dict[str, pd.DataFrame]]:
     if not spec.needs_fundamentals:
         panel: dict[str, dict[str, pd.DataFrame]] = {}
@@ -166,18 +207,34 @@ def _load_panel(
             value["pct_change"] = value["close"].pct_change() * 100.0
             return symbol, value.dropna(subset=["date", "close"])
 
+        total = len(symbols)
         with ThreadPoolExecutor(max_workers=min(request.max_workers, len(symbols))) as pool:
             futures = [pool.submit(load_daily, symbol) for symbol in symbols]
-            for future in as_completed(futures):
+            # 失败/空数据也要计入进度，否则进度条会卡在未完成状态。
+            for done, future in enumerate(as_completed(futures), start=1):
                 try:
                     symbol, value = future.result()
                 except (MarketDataError, ValueError):
+                    if progress is not None:
+                        progress(done, total, "", "load")
                     continue
                 if not value.empty:
                     panel[symbol] = {"value": value}
+                if progress is not None:
+                    progress(done, total, symbol, "load")
         if not panel:
             raise MarketDataError("未能加载任何日线行情数据")
         return panel
+
+    # 上游回调是逐票单参数；这里用计数器包一层，转成统一的 (done, total, current, kind) 签名。
+    def _counting_progress(total: int) -> Callable[[str], None]:
+        counter = {"done": 0}
+
+        def _one(current: str) -> None:
+            counter["done"] += 1
+            progress(counter["done"], total, current, "load")  # type: ignore[misc]
+
+        return _one
 
     panel = load_fundamentals_panel(
         symbols,
@@ -185,6 +242,7 @@ def _load_panel(
         force_refresh=request.force_refresh,
         max_workers=request.max_workers,
         include_dividend=spec.needs_dividend,
+        progress=_counting_progress(len(symbols)) if progress is not None else None,
     )
     if not panel:
         raise MarketDataError("未能加载任何基本面数据")
@@ -194,6 +252,7 @@ def _load_panel(
             use_cache=request.use_cache,
             force_refresh=request.force_refresh,
             max_workers=min(4, max(1, request.max_workers)),
+            progress=_counting_progress(len(panel)) if progress is not None else None,
         )
         for symbol, payload in panel.items():
             payload["financials"] = financials.get(
@@ -201,6 +260,34 @@ def _load_panel(
                 pd.DataFrame(columns=["report_date", "notice_date"]),
             )
     return panel
+
+
+def emit_pool_by_date(
+    cache: Mapping[str, Any],
+    names: Mapping[str, str],
+    pool_sink: PoolSink | None,
+) -> None:
+    """把策略经 record_decision_pool 登记的决策日池成员交给落盘回调。
+
+    策略侧只存了 symbol（见 common.record_decision_pool），这里用权威的 names 映射补齐
+    名称，让落盘内容自带可读性。没有任何登记时静默跳过，不产生空产物。
+    """
+    if pool_sink is None:
+        return
+    by_date = cache.get(POOL_BY_DATE_CACHE_KEY)
+    if not by_date:
+        return
+    payload: dict[str, Any] = {}
+    for asof, entry in sorted(by_date.items()):
+        members = entry.get("members", [])
+        payload[asof] = {
+            "source": entry.get("source", ""),
+            "count": len(members),
+            "members": [
+                {"symbol": symbol, "name": names.get(symbol, "")} for symbol in members
+            ],
+        }
+    pool_sink(payload)
 
 
 def _latest_asof(
@@ -243,6 +330,8 @@ def _nominal_decision_date(requested_month: str, params: BaseModel) -> str:
 def run_cross_section_screen(
     request: BacktestRequest,
     spec: CrossSectionStrategySpec,
+    progress: ProgressCallback | None = None,
+    pool_sink: PoolSink | None = None,
 ) -> BacktestSharedResponse:
     params = params_for_cross_section(spec, request)
     if spec.requires_symbols and not request.symbols:
@@ -254,7 +343,7 @@ def run_cross_section_screen(
     )
     symbols = [row["symbol"] for row in universe]
     names = {row["symbol"]: row.get("name") or "" for row in universe}
-    panel = _load_panel(symbols, request, spec=spec)
+    panel = _load_panel(symbols, request, spec=spec, progress=progress)
     filter_note = ""
     if request.fundamental_filter:
         universe, filter_note = _apply_universe_fundamental_filter(
@@ -264,7 +353,9 @@ def run_cross_section_screen(
         names = {row["symbol"]: row.get("name") or "" for row in universe}
     requested = (request.end_date or "").strip()[:10]
     asof = _latest_asof(panel, requested or None)
-    _, details = spec.select(asof, CrossSectionContext(panel=panel, names=names), params)
+    context = CrossSectionContext(panel=panel, names=names)
+    _, details = spec.select(asof, context, params)
+    emit_pool_by_date(context.cache, names, pool_sink)
     warnings = list(spec.warnings)
     if filter_note:
         note = f"{note}（{filter_note}）"
@@ -293,6 +384,7 @@ def run_cross_section_backtest(
     request: BacktestRequest,
     spec: CrossSectionStrategySpec,
     progress: ProgressCallback | None = None,
+    pool_sink: PoolSink | None = None,
 ) -> BacktestSharedResponse:
     """运行一个横截面策略；策略选择只在其决策日调用一次。"""
     start = (request.start_date or "").strip()
@@ -312,7 +404,7 @@ def run_cross_section_backtest(
     )
     symbols = [row["symbol"] for row in universe]
     names = {row["symbol"]: row.get("name") or "" for row in universe}
-    panel = _load_panel(symbols, request, spec=spec)
+    panel = _load_panel(symbols, request, spec=spec, progress=progress)
     filter_note = ""
     if request.fundamental_filter:
         universe, filter_note = _apply_universe_fundamental_filter(
@@ -333,9 +425,23 @@ def run_cross_section_backtest(
             f"区间内有效股票不足（{len(clipped)} < top_n={top_n}），请扩大股票池或放宽过滤"
         )
 
-    close_panel = build_close_panel(clipped)
     execution_timing = getattr(request, "execution_timing", "next_day_open")
-    open_panel = build_open_panel(clipped) if execution_timing == "next_day_open" else None
+    # 成交/估值统一走前复权口径（详见 execution_clipped_panel）。
+    exec_clipped = execution_clipped_panel(clipped, spec)
+    close_panel = build_close_panel(exec_clipped)
+    if execution_timing == "next_day_open":
+        if spec.needs_fundamentals:
+            # 东财估值面板只有收盘价，没有开盘价；此前会在 build_open_panel 里抛出
+            # 无从下手的「open价面板为空」。这里给出可执行的提示，不做静默降级
+            # （降级成收盘价成交等于偷偷改掉成交时点语义）。
+            raise ValueError(
+                f"{spec.id} 使用东财估值面板（不含开盘价），无法按 execution_timing="
+                "next_day_open 成交；请改用 same_day_close 或 next_day_close，"
+                "或换用基于 TDX 日线的策略。"
+            )
+        open_panel = build_open_panel(exec_clipped)
+    else:
+        open_panel = None
     context = CrossSectionContext(panel=panel, names=names)
     decision_dates = [
         day
@@ -353,7 +459,15 @@ def run_cross_section_backtest(
         targets_by_date[asof] = targets
         selection_by_date[asof] = details
         if progress is not None:
-            progress(done, total_dates, str(asof))
+            picked = ",".join(targets[:5]) or "空仓"
+            # 文案在 runner 拼：``通过筛选`` 的只数只有这里有（来自 details），且它比
+            # 动态行业池发现出的池小，措辞需与 dump 里的池成员区分开。
+            progress(
+                done,
+                total_dates,
+                f"{str(asof)[:10]} 选中 {picked} | 通过筛选 {len(details)} 只",
+                "decision",
+            )
 
     # 尾部“当前推荐”决策：end_date 所在月份尚无行情数据时的兜底。
     # 月度决策锚定在每月首个/末个交易日；若 end_date 所在月（如 2026-09）还没有
@@ -377,6 +491,13 @@ def run_cross_section_backtest(
             f"end_date {end} 所在月份 {requested_month} 尚无交易数据，报告末尾以最新"
             f"可用交易日 {compute_asof} 计算一次“当前推荐”决策（名义决策日 {nominal}）。"
         )
+        # 池登记按真实截面日 compute_asof 写入，但报告/换仓都按名义日 nominal 索引；
+        # 补一个别名，否则 dump 的日期与决策日对不上。
+        by_date = context.cache.get(POOL_BY_DATE_CACHE_KEY)
+        if by_date and compute_asof in by_date:
+            by_date.setdefault(nominal, by_date[compute_asof])
+
+    emit_pool_by_date(context.cache, names, pool_sink)
 
     policy_config = getattr(request, "position_management", None)
     policy = (
@@ -477,6 +598,7 @@ def run_cross_section_per_stock_backtest(
     request: BacktestRequest,
     spec: CrossSectionStrategySpec,
     progress: ProgressCallback | None = None,
+    pool_sink: PoolSink | None = None,
 ) -> BacktestUniverseResponse:
     """横截面策略的独立资金逐票回测：每只股票用 select 结果作为买卖信号。
 
@@ -499,7 +621,7 @@ def run_cross_section_per_stock_backtest(
     )
     symbols = [row["symbol"] for row in universe]
     names = {row["symbol"]: row.get("name") or "" for row in universe}
-    panel = _load_panel(symbols, request, spec=spec)
+    panel = _load_panel(symbols, request, spec=spec, progress=progress)
     filter_note = ""
     if request.fundamental_filter:
         universe, filter_note = _apply_universe_fundamental_filter(
@@ -522,7 +644,7 @@ def run_cross_section_per_stock_backtest(
         raise MarketDataError("区间内无有效股票数据")
 
     # ---- 决策日与选股 ----
-    close_panel = build_close_panel(clipped)
+    close_panel = build_close_panel(execution_clipped_panel(clipped, spec))
     calendar = close_panel.index.tolist()
     context = CrossSectionContext(panel=panel, names=names)
     decision_dates = [
@@ -539,9 +661,20 @@ def run_cross_section_per_stock_backtest(
         params = params.model_copy(update={"top_n": relaxed_top_n})
 
     targets_by_date: dict[str, set[str]] = {}
-    for asof in decision_dates:
-        targets, _ = spec.select(asof, context, params)
+    total_dates = len(decision_dates)
+    for done, asof in enumerate(decision_dates, start=1):
+        targets, details = spec.select(asof, context, params)
         targets_by_date[asof] = set(targets)
+        if progress is not None:
+            picked = ",".join(targets[:5]) or "空仓"
+            progress(
+                done,
+                total_dates,
+                f"{str(asof)[:10]} 选中 {picked} | 通过筛选 {len(details)} 只",
+                "decision",
+            )
+
+    emit_pool_by_date(context.cache, names, pool_sink)
 
     decision_dates_sorted = sorted(targets_by_date.keys())
 
@@ -620,7 +753,7 @@ def run_cross_section_per_stock_backtest(
             item = futures[future]
             result_by_symbol[item["symbol"]] = future.result()
             if progress is not None:
-                progress(done, total, item["symbol"])
+                progress(done, total, item["symbol"], "symbol")
     completed = [result_by_symbol[item["symbol"]] for item in universe]
 
     runs = [item[0] for item in completed]

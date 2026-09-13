@@ -92,7 +92,10 @@ python -m app.script backtest --mode universe --universe hs300 \
 | `force_refresh` | 是否强制重新拉取并覆盖缓存 |
 | `max_workers` | 并行拉取估值/财报的线程数 |
 | `strategy_params` | 该横截面策略专属参数，见对应策略文档；决策频率由 `decision_frequency`（`daily`/`weekly`/`biweekly`/`monthly`）+ `decision_every_n`（步长）统一控制，`decision_anchor`（`start`/`end`）控制 monthly 锚在月初/月末，`daily` 下 `decision_warmup` 控制冷启动，`prosperity_resonance` 另用 `hysteresis_rank_threshold` 防抖 |
-| `output_options.*` | `output` / `plot` / `json`；另支持 `report`（交互 HTML，含调仓买卖与区间收益；未写时若有 `plot` 则自动派生同名 `.html`）。`report_top_k`（正整数，universe 模式）限制 HTML 内嵌的逐票明细图数量：仅前 N 名保留可点击的净值/K 线/指标图，排行榜仍保留全部标的指标；省略或 0 表示全部。`report_top_k` 越小，报告生成越快、HTML 越小（500 只全量内嵌需序列化数百万个点，是大池子报告慢的主因）。`report_price_top_k`（正整数）限制从行情缓存补拉 K 线的股票数：省略或 0=全部（默认），正数=仅前 N 名；补拉越多需访问数据源越久，建议大池子按需调小 |
+| `output_options.*` | `output` / `plot` / `json`；另支持 `report`（交互 HTML，含调仓买卖与区间收益；未写时若有 `plot` 则自动派生同名 `.html`）。`report_top_k`（正整数，universe 模式）限制 HTML 内嵌的逐票明细图数量：仅前 N 名保留可点击的净值/K 线/指标图，排行榜仍保留全部标的指标；省略或 0 表示全部。`report_top_k` 越小，报告生成越快、HTML 越小（500 只全量内嵌需序列化数百万个点，是大池子报告慢的主因）。`report_price_top_k`（正整数）限制从行情缓存补拉 K 线的股票数：省略或 0=全部（默认），正数=仅前 N 名；补拉越多需访问数据源越久，建议大池子按需调小。`pool_dump`（路径）指定决策日池成员 JSON 的落盘路径，见下 |
+| `output_options.pool_dump` | 决策日池成员 JSON 的落盘路径。**默认开启**：横截面策略每次回测都会写一份到 `out/pool_<strategy>_<mode>_<start>_<end>.json`（可被 CLI `--pool-dump FILE.json` 覆盖、`--no-pool-dump` 关闭）。内容为 `{asof: {source, count, members:[{symbol,name}]}}`——`source=pool_discovery` 表示该日由 `discover_industry_pool` 从全市场发现（见 `etf-rotation-strategy.md` §2.1 的动态行业池），`source=eligibility` 表示该日通过全部闸门、进入打分的候选集合。时序策略无此产物 |
+
+**终端进度**：回测过程写 stderr——加载行情与逐票回测为单行原地刷新（`加载行情: 823/1681 (48.9%) 512480`，海量标的不刷屏），**每个决策日打印一行永久输出**（`[  3/36] 2024-06-03 选中 512880,512480 | 通过筛选 42 只`），便于滚动回看调仓轨迹。stdout 只留结果本身，`--json` 可安全重定向。
 
 #### 基本面过滤股票池（`fundamental_filter`）
 
@@ -223,6 +226,10 @@ python -m app.script backtest --list-strategies
 cd backend
 python -m app.script backtest --strategy small_cap_zz399101 --mode screen --json
 python -m app.script backtest --request examples/backtest_shared_small_cap_zz399101.json
+# 决策日池默认落盘到 out/pool_<strategy>_<mode>_<start>_<end>.json；不需要时关闭
+python -m app.script backtest --request examples/backtest_shared_small_cap_zz399101.json --no-pool-dump
+# 或指定落盘路径
+python -m app.script backtest --strategy etf_rotation --pool-dump out/etf_pool_trace.json
 ```
 
 ## 三、如何选择与组合策略

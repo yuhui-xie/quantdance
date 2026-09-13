@@ -359,7 +359,9 @@ def _continue_holding(
         i = bars.end_index(asof_s)
         if i < 0:
             continue
-        close = bars.close[i]
+        # 持有期收益用**前复权**价：入场价与当前价必须同口径，否则持有期间的一次除权
+        # 会被当成暴跌直接触发止损（entry_prices 同样存前复权价）。
+        close = bars.close_qfq[i]
         if not np.isfinite(close) or close <= 0:
             continue
         entry = state["entry_prices"].get(sym)
@@ -424,8 +426,9 @@ def select_new_stock_ice_reversal(
     ctx.cache[_STATE_KEY] = {
         "entry_asof": asof_s,
         "basket": targets,
+        # 与持有期收益同口径（前复权），避免除权被误判为止损/止盈。
         "entry_prices": {
-            sym: float(bars_map[sym].close[bars_map[sym].end_index(asof_s)])
+            sym: float(bars_map[sym].close_qfq[bars_map[sym].end_index(asof_s)])
             for sym in targets
         },
         "hold_count": 0,

@@ -179,6 +179,29 @@ amount 0.05→0.2 单调升 Sharpe(1.67→1.83)且回撤恒 24.8%，但那段增
 OOS(2025-26) 几乎中性，故取 0.1（捕获大部分全程增益、回撤中性、不追 train 主导的 0.2），
 详见 `experiment/etf-rotation-findings.md` §10。
 
+### 过程可观测性（进度 + 决策日池落盘）
+
+回测过程输出到 stderr：加载全市场行情时是单行原地刷新（`加载行情: 823/1681 ...`），
+**每个决策日打印一行永久输出**，可滚动回看每个调仓日选了什么、当日候选有多少：
+
+```
+[  1/36] 2020-01-02 选中 159915 | 通过筛选 20 只
+[  2/36] 2020-02-03 选中 512880,159915 | 通过筛选 21 只
+```
+
+**决策日池默认落盘**到 `out/pool_etf_rotation_universe_<start>_<end>.json`，内容是
+`{asof: {source, count, members:[{symbol,name}]}}`，用于核查「那天到底圈进了哪些 ETF」：
+
+- `source=pool_discovery`：开启 `pool_discovery=True` 时，该日由
+  `discover_industry_pool` 从全市场发现出的池成员（§2.1；空池也会登记——空池正说明该日
+  无合格标的，是最需要看到的诊断信息）；
+- `source=eligibility`：未开动态发现时，该日通过全部过滤闸门、进入打分的候选集合，
+  与报告中该日展示的候选表一致。
+
+注意区分二者口径：进度行里的「通过筛选 N 只」是**打分后**的候选数，而
+`pool_discovery` 的 `count` 是**发现阶段**的池大小（前者通常更小）。落盘用
+`--no-pool-dump` 关闭，`--pool-dump FILE.json` 指定路径。
+
 ## 5. 报告中的指标对比
 
 共享资金交互报告（`backtest --report` / `output_options.report`，`.html`）针对本策略提供

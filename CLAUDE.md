@@ -44,6 +44,8 @@ python -m app.script pick --strategy etf_rotation --asof 2024-05-06 --symbols 51
 
 回测请求由 `backend/examples/*.json` 驱动（`--request`），也支持全部 CLI 参数覆盖。结果默认打印摘要；追加 `--json` 打印完整结果，`--output out/x.json` 落盘，`--report path` 存交互 HTML（仅此一种可视化产物，无静态图）。`output_options.*` 可放进请求 JSON（见 `docs/strategy-guide.md` 的字段表）。
 
+回测进度写到 stderr（加载行情/逐票为单行原地刷新，每个决策日打印一行永久输出），stdout 只留结果。横截面策略**默认**把每个决策日的池成员落盘到 `out/pool_<strategy>_<mode>_<start>_<end>.json`（`--no-pool-dump` 关闭，`--pool-dump FILE.json` 指定路径，请求 JSON 用 `output_options.pool_dump`）；策略经 `common.record_decision_pool` 登记、执行器 `emit_pool_by_date` 落盘。
+
 ## 架构
 
 ### 两类回测语义（核心概念，务必区分）

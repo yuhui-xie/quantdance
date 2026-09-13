@@ -12,8 +12,16 @@ import pandas as pd
 
 @dataclass(frozen=True, slots=True)
 class ValueBars:
+    """东财估值面板的 numpy 视图。
+
+    `close` 是**不复权**真实成交价（用于价格区间过滤、股息率等「当时的实际价格」语义），
+    `close_qfq` 是由 `pct_change` 还原的**前复权**价格（用于跨除权日的收益 / 均线 / 分位
+    等形态计算，与 `fetch_a_share_daily` 同口径）。跨除权日混用两者会凭空产生跳空。
+    """
+
     dates: np.ndarray  # str YYYY-MM-DD，已按升序
     close: np.ndarray
+    close_qfq: np.ndarray
     pct_change: np.ndarray
     market_cap: np.ndarray
     pe_ttm: np.ndarray
@@ -49,6 +57,10 @@ def value_bars_from_df(value_df: pd.DataFrame) -> ValueBars | None:
     return ValueBars(
         dates=dates,
         close=_col("close"),
+        # 估值面板经 em_fundamentals._normalize_value_em 后必含 close_qfq；缺失只可能出现在
+        # 手工构造的面板，或日线分支（needs_fundamentals=False，其 close 本身就是前复权），
+        # 两种情况下退回 close 都是正确口径。
+        close_qfq=_col("close_qfq") if "close_qfq" in value_df.columns else _col("close"),
         pct_change=_col("pct_change"),
         market_cap=_col("market_cap"),
         pe_ttm=_col("pe_ttm"),

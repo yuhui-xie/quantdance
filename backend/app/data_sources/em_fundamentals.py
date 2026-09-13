@@ -19,6 +19,7 @@ _DIV_DIR = _CACHE_ROOT / "dividend"
 _VALUE_COLUMNS = (
     "date",
     "close",
+    "close_qfq",
     "pct_change",
     "market_cap",
     "float_market_cap",
@@ -72,6 +73,35 @@ def _first_col(df: pd.DataFrame, names: tuple[str, ...]) -> str | None:
     return None
 
 
+def _forward_adjusted_close(close: pd.Series, pct_change: pd.Series) -> pd.Series:
+    """由东财的「复权口径涨跌幅」还原**前复权**收盘价。
+
+    东财估值面板里两列口径不同：`pct_change`（当日涨跌幅）是**复权**口径，
+    而 `close`（当日收盘价）是**不复权**的真实成交价。同一行混用两者会凭空造出除权跳空
+    （实测 603027 在 2025-10-23：不复权收盘 11.53→8.92 即 -22.6%，同行 `pct_change`
+    却是 +1.48%）。
+
+    `pct_change` 累乘得到复权因子，再锚定「最后一行的原始收盘价 = 前复权收盘价」，
+    得到与 `fetch_a_share_daily`（TDX 前复权）同口径的序列。抽样 250 只标的逐日比对，
+    本式还原出的日收益与 TDX 前复权 K 线收益差异在 1e-12 量级（即完全一致）。
+
+    涨跌幅缺失（停牌 / 新股首日）按 0 处理：只影响当日，不改变其余 bar 的相对关系。
+
+    涨跌幅整列为空时无法还原（锚点因子不可用），抛 `MarketDataError` 而非退回原始价——
+    静默退回不复权价正是本次要消除的缺陷。
+    """
+    close_num = pd.to_numeric(close, errors="coerce")
+    ret = pd.to_numeric(pct_change, errors="coerce") / 100.0
+    factor = (1.0 + ret.fillna(0.0)).cumprod()
+    anchor_factor = float(factor.iloc[-1]) if len(factor) else float("nan")
+    anchor_close = float(close_num.iloc[-1]) if len(close_num) else float("nan")
+    if not np.isfinite(anchor_factor) or anchor_factor <= 0 or not np.isfinite(anchor_close):
+        raise MarketDataError(
+            "stock_value_em 无法还原前复权收盘价：涨跌幅或最新收盘价不可用"
+        )
+    return anchor_close * factor / anchor_factor
+
+
 def _normalize_value_em(raw: pd.DataFrame) -> pd.DataFrame:
     if raw is None or raw.empty:
         return pd.DataFrame(columns=list(_VALUE_COLUMNS))
@@ -106,7 +136,9 @@ def _normalize_value_em(raw: pd.DataFrame) -> pd.DataFrame:
     )
     out = out.dropna(subset=["date", "close", "market_cap"])
     out = out.sort_values("date").drop_duplicates("date", keep="last").reset_index(drop=True)
-    return out
+    # 前复权因子按日期顺序累乘，必须在排序去重之后计算。
+    out["close_qfq"] = _forward_adjusted_close(out["close"], out["pct_change"])
+    return out[list(_VALUE_COLUMNS)]
 
 
 def _resolve_ak_func(name: str) -> Callable[..., Any]:

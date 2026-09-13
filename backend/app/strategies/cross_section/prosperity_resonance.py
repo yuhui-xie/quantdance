@@ -252,8 +252,12 @@ def select_prosperity_resonance(
             continue
 
         # ── 第 2 层：趋势确认 ──
+        # 窗口内的动量 / 均线 / 偏离度统一用**前复权**价：东财 close 是不复权的，
+        # 窗口内一旦除权，未复权的跳空会被当成真实动量与均线拐点。
+        # 价格区间过滤（min_price/max_price）与报告展示仍用不复权 close。
         start_i = end_i + 1 - need_bars
-        closes = bars.close[start_i : end_i + 1]
+        closes = bars.close_qfq[start_i : end_i + 1]
+        close_qfq = float(closes[-1])
 
         # 窗口收益
         period_ret = simple_momentum(closes, params.lookback_days)
@@ -264,7 +268,7 @@ def select_prosperity_resonance(
 
         # 趋势均线
         trend_sma = sma_last(closes, params.trend_ma)
-        if trend_sma is None or close < trend_sma:
+        if trend_sma is None or close_qfq < trend_sma:
             continue
 
         # LLT 趋势方向
@@ -284,7 +288,7 @@ def select_prosperity_resonance(
         entry_sma = sma_last(closes, params.entry_ma)
         if entry_sma is None:
             continue
-        ma_dev = close / entry_sma - 1.0
+        ma_dev = close_qfq / entry_sma - 1.0
         if ma_dev < params.min_ma_deviation or ma_dev > params.max_ma_deviation:
             continue
 

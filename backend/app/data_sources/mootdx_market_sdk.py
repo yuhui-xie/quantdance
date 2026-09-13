@@ -478,15 +478,27 @@ class MootdxMarketSDK:
         否则 ETF 折算日在行情里留下虚假断层。
 
         数据来自 TDX 本地服务器（与原始 K 线同一来源），带 24h 缓存。
+
+        返回 None 表示**确认无除权除息记录**；取数本身失败则抛 MootdxMarketError。
+        两者必须区分：调用方拿不到记录时会按"无需复权"放行原始价，若把取数失败也
+        当成"无记录"，原始未复权价会被当作 qfq 一路写进缓存，且不报任何错。
         """
         code = symbol[2:] if str(symbol)[:2].lower() in ("sh", "sz", "bj") else symbol
         try:
             from mootdx.utils.adjust import get_xdxr  # 延迟导入，避免 import 副作用
 
             xdxr = get_xdxr(code)  # xdxr 接口只接受裸六位代码，带市场前缀会取不到数据
-        except Exception:
-            return None
-        if xdxr is None or getattr(xdxr, "empty", True) or "category" not in getattr(xdxr, "columns", ()):
+        except Exception as exc:
+            raise MootdxMarketError(
+                "source_error", f"获取除权除息记录失败: {exc}", symbol=symbol, cause=exc
+            ) from exc
+        if xdxr is None:
+            # mootdx 的 file_cache 在"无本地缓存 + 取数失败"时会落到 None，
+            # 这不是"没有除权记录"（那会返回空 DataFrame），必须按取数失败处理。
+            raise MootdxMarketError(
+                "source_error", "获取除权除息记录返回空对象（疑似取数失败）", symbol=symbol
+            )
+        if getattr(xdxr, "empty", True) or "category" not in getattr(xdxr, "columns", ()):
             return None
         info = xdxr[xdxr["category"].isin((1, 11))].copy()
         cols = [c for c in ("category", "fenhong", "peigu", "peigujia", "songzhuangu", "suogu") if c in info.columns]
@@ -503,6 +515,38 @@ class MootdxMarketSDK:
         info = info[~info.index.duplicated(keep="last")]
         return info
 
+    @staticmethod
+    def _align_xdxr_to_bars(info: pd.DataFrame, trading_days: pd.DatetimeIndex) -> pd.DataFrame:
+        """把除权记录的日期对齐到「该日或之后的第一个交易日」（仅保留落在 K 线窗口内的记录）。
+
+        TDX 的除权日**未必是交易日**：可能落在周末/节假日（如 ETF 159922 的份额折算记录
+        日期为周日 2024-12-01），也可能是标的当日停牌。而前复权因子只能挂在真实的 K 线
+        日期上 —— 原实现直接按日期 join，这类记录会被静默丢弃，该次除权完全不参与折算，
+        在"前复权"序列里留下一个虚假断层（159922 在 2024-12-02 留下 -60% 断层，
+        且 2024-12-02 之前的全部历史价格被高估 2.5 倍）。
+
+        对齐规则：
+        - 早于首根 K 线的记录丢弃 —— 前复权因子以最新一根为 1 向前累乘，窗口外的除权
+          不影响窗口内的**相对**因子；若把它们也顺延到首根 K 线，反而会污染整段窗口。
+        - 晚于末根 K 线的记录丢弃（尚无对应行情，无价可折）。
+        - 多条记录顺延到同一交易日时合并（159922 即为此例：周日 12-01 的折算记录与
+          12-02 的分红记录都落到 12-02）。可加字段求和，配股价取最大（配股不会撞车，
+          只有一条 peigu>0 时 max 即该条自身）。
+        """
+        if info.empty or len(trading_days) == 0:
+            return info.iloc[0:0]
+        pos = trading_days.searchsorted(info.index, side="left")
+        inside = (info.index >= trading_days[0]) & (pos < len(trading_days))
+        if not inside.any():
+            return info.iloc[0:0]
+        aligned = info.loc[inside].copy()
+        aligned.index = trading_days[pos[inside]]
+        if aligned.index.has_duplicates:
+            aligned = aligned.groupby(level=0).agg(
+                {c: ("max" if c == "peigujia" else "sum") for c in aligned.columns}
+            )
+        return aligned
+
     def _forward_adjust_bars(
         self, symbol: str, bars: list[MootdxKlineBar]
     ) -> list[MootdxKlineBar]:
@@ -512,6 +556,8 @@ class MootdxMarketSDK:
         preclose = (close[前]*10 - fenhong + peigu*peigujia) / (10 + peigu + songzhuangu)
         adj      = (preclose.next / close).fillna(1)[::-1].cumprod()   # 最新根因子=1
         复权价   = 原始价 * adj
+
+        除权记录先经 `_align_xdxr_to_bars` 对齐到交易日，避免除权日非交易日的记录被丢弃。
         """
         if not bars:
             return bars
@@ -524,11 +570,19 @@ class MootdxMarketSDK:
 
         df = pd.DataFrame({"close": [b["close"] for b in bars]}, index=pd.DatetimeIndex([_d(b) for b in bars]))
         df = df[~df.index.duplicated(keep="last")].sort_index()
+        info = self._align_xdxr_to_bars(info, df.index)
         data = df.join(info, how="left").fillna(0.0)
         data["preclose"] = (
             data["close"].shift(1) * 10 - data["fenhong"] + data["peigu"] * data["peigujia"]
         ) / (10 + data["peigu"] + data["songzhuangu"])
-        data["adj"] = (data["preclose"].shift(-1) / data["close"]).fillna(1.0)[::-1].cumprod()
+        # 单日因子 = 理论前收 / 该日收盘。缺失价（TDX 给 0 或空，`_to_float` 置 None）会被
+        # 上面的 fillna(0.0) 变成 0，一旦紧邻除权日就得到 ±inf。adj 是**反向 cumprod**，
+        # inf 会乘进它前面所有更早的 bar，把整段历史价格变成 ±inf 且不报错；`.fillna(1.0)`
+        # 只捞 NaN、捞不住 inf。这里先把非有限的单日因子降级为 1（即该步不复权），再累乘。
+        ratio = (data["preclose"].shift(-1) / data["close"]).replace(
+            [float("inf"), float("-inf")], 1.0
+        )
+        data["adj"] = ratio.fillna(1.0)[::-1].cumprod()
         adj_map = {d: a for d, a in zip(data.index, data["adj"])}
 
         out: list[MootdxKlineBar] = []

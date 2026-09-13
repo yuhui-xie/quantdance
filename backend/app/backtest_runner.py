@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Any, Callable
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -11,6 +11,8 @@ from pydantic import BaseModel
 
 from app.backtest_aggregate import equal_weight_equity_curve
 from app.backtest.cross_section_runner import (
+    PoolSink,
+    ProgressCallback,
     run_cross_section_backtest,
     run_cross_section_per_stock_backtest,
     run_cross_section_screen,
@@ -30,9 +32,6 @@ from app.strategies.base import (
 )
 from app.strategies.registry import get_registered_strategy, get_strategy
 from app.universe import resolve_universe_rows
-
-# 进度回调：done(已完成数) / total(总数) / current(当前标的或日期)
-ProgressCallback = Callable[[int, int, str], None]
 
 
 def params_for_strategy(body: BacktestRequest, spec: StrategySpec) -> BaseModel:
@@ -196,7 +195,7 @@ def run_backtest_universe_request(
             item = futures[future]
             result_by_symbol[item["symbol"]] = future.result()
             if progress is not None:
-                progress(done, total, item["symbol"])
+                progress(done, total, item["symbol"], "symbol")
     completed = [result_by_symbol[item["symbol"]] for item in universe]
 
     runs = [item[0] for item in completed]
@@ -254,6 +253,7 @@ def run_backtest_universe_request(
 def run_backtest_request(
     body: BacktestRequest,
     progress: ProgressCallback | None = None,
+    pool_sink: PoolSink | None = None,
 ) -> dict[str, Any]:
     """
     执行回测，返回与 POST /api/backtest 相同的字典结构。
@@ -266,11 +266,17 @@ def run_backtest_request(
         if body.mode not in {"universe", "screen", "per_stock"}:
             raise ValueError("横截面策略仅支持 mode=universe、mode=screen 或 mode=per_stock")
         if body.mode == "per_stock":
-            response = run_cross_section_per_stock_backtest(body, registered, progress=progress)
+            response = run_cross_section_per_stock_backtest(
+                body, registered, progress=progress, pool_sink=pool_sink
+            )
         elif body.mode == "screen":
-            response = run_cross_section_screen(body, registered)
+            response = run_cross_section_screen(
+                body, registered, progress=progress, pool_sink=pool_sink
+            )
         else:
-            response = run_cross_section_backtest(body, registered, progress=progress)
+            response = run_cross_section_backtest(
+                body, registered, progress=progress, pool_sink=pool_sink
+            )
         return response.model_dump(mode="json")
 
     if body.mode == "screen":

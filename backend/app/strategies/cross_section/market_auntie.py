@@ -63,6 +63,8 @@ def select_market_auntie(
         if row is None:
             continue
 
+        # 这里刻意用**不复权**收盘价：股息率 = 现金分红(元/股) / 当时实际股价，
+        # 分子分母都是不复权口径。改为前复权价会低估股息率（见 value_bars.ValueBars）。
         close = float(row["close"])
         market_cap = row.get("market_cap")
         peg = row.get("peg")

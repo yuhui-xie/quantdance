@@ -219,7 +219,10 @@ def select_limit_up_pullback(
                 continue
 
         start_i = end_i + 1 - need_bars
-        closes = bars.close[start_i : end_i + 1]
+        # 窗口内的所有价格形态（区间收益、价格分位、均线、平台）都用**前复权**价：
+        # 东财 close 是不复权的，窗口内一旦除权，未复权的跳空会被当成真实下跌。
+        # 价格区间过滤 / 报告展示仍用不复权 close（见上方 close 变量）。
+        closes = bars.close_qfq[start_i : end_i + 1]
         pcts = bars.pct_change[start_i : end_i + 1]
 
         look_pct = pcts[-params.lookback_days :]

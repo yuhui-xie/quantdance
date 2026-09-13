@@ -218,6 +218,13 @@ def _read_stale_day_klines(symbol: str) -> list[dict[str, Any]]:
         payload = sdk._read_cache("klines", "day", f"{norm}.json")  # noqa: SLF001
         if not isinstance(payload, dict):
             return []
+        # 与 AStockDataSDK._cached_klines 保持同一套作废口径：格式版本或复权口径不符的
+        # 缓存一律不用。此处是"允许过期"的裸读，若不校验版本就会把旧口径的行当行情画进
+        # 报告（实测历史文件里有不复权的缓存，带 -48% 除权断层，图上就是凭空跳变）。
+        from app.data_sources.a_stock_data import _KLINE_ADJUST, _KLINE_CACHE_VERSION
+
+        if payload.get("version") != _KLINE_CACHE_VERSION or payload.get("adjust") != _KLINE_ADJUST:
+            return []
         rows = payload.get("rows")
         if not isinstance(rows, list):
             return []

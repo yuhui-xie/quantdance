@@ -55,6 +55,7 @@ from app.strategies.base import (
 from app.strategies.cross_section.common import (
     apply_score_threshold_rotation,
     asof_tradeable_row,
+    record_decision_pool,
 )
 
 from app.factors.cross_section import zscore
@@ -400,6 +401,8 @@ def select_etf_rotation(
                 corr_threshold=params.discover_corr_threshold,
             )
         )
+        # 空池也要登记：这正是调参时最需要看到的诊断信息（该日为何无标的可买）。
+        record_decision_pool(ctx, asof, pool_members, source="pool_discovery")
         if not pool_members:
             return [], []
 
@@ -493,6 +496,14 @@ def select_etf_rotation(
             }
         )
 
+    # 非动态发现模式下没有"发现的池"，登记的即本决策日通过全部闸门、进入打分的候选集合。
+    # 记在提前返回【之前】：候选为空（当日全被过滤掉）恰恰是最需要看到的诊断信息。
+    # 此处池成员与返回值 details 一致（详见下方 require_positive_score 后的复核登记）。
+    if pool_members is None:
+        record_decision_pool(
+            ctx, asof, (c["symbol"] for c in candidates), source="eligibility"
+        )
+
     if not candidates:
         return [], []
     # 基线分：长窗斜率 z。short_term_damp_coef>0 时扣减 短窗斜率 z × 系数，压制近期斜率
@@ -532,6 +543,12 @@ def select_etf_rotation(
             c for c in candidates
             if float(c["score"]) > 0 and float(c["score"]) >= params.min_score
         ]
+        # 该开关会缩小候选集，上面登记的池需复核一次，保证池成员 == details
+        # （进度行的"通过筛选 N 只"与 dump 的 count 随之自洽）。开关关闭时无需复核。
+        if pool_members is None:
+            record_decision_pool(
+                ctx, asof, (c["symbol"] for c in candidates), source="eligibility"
+            )
 
     candidates.sort(key=lambda item: (-item["score"], item["symbol"]))
 
