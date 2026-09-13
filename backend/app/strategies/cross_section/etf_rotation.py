@@ -61,7 +61,11 @@ from app.strategies.cross_section.common import (
 from app.factors.cross_section import zscore
 from app.factors.momentum import price_history, slope_momentum
 from app.strategies.cross_section.decision import DecisionFrequencyParams
-from app.strategies.cross_section.industry_pool import discover_industry_pool
+from app.strategies.cross_section.industry_pool import (
+    POOL_INDEX_CACHE_KEY,
+    build_industry_pool_index,
+    discover_industry_pool,
+)
 
 
 # ctx.cache 中保存上一调仓日持仓 symbol 列表的键；用于跨决策日的轮动惰性比较。
@@ -387,6 +391,13 @@ def select_etf_rotation(
     # 否则沿用整个 ctx.panel。发现只读 date<=asof，无前视。
     pool_members: set[str] | None = None
     if params.pool_discovery:
+        # ctx.panel 在一次回测内不变，索引只建一次并挂在 ctx.cache 上跨决策日复用：
+        # 否则每个决策日都要对全市场 ETF（约 1700 只）重扫全表 + 逐票排序去重，
+        # 单次发现即 15s 量级，81 个决策日就是数分钟。
+        index = ctx.cache.get(POOL_INDEX_CACHE_KEY)
+        if index is None:
+            index = build_industry_pool_index(ctx.panel, ctx.names)
+            ctx.cache[POOL_INDEX_CACHE_KEY] = index
         pool_members = set(
             discover_industry_pool(
                 ctx.panel,
@@ -399,6 +410,7 @@ def select_etf_rotation(
                 max_total=params.discover_max_pool,
                 corr_days=params.discover_corr_days,
                 corr_threshold=params.discover_corr_threshold,
+                index=index,
             )
         )
         # 空池也要登记：这正是调参时最需要看到的诊断信息（该日为何无标的可买）。

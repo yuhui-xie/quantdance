@@ -128,6 +128,23 @@
 而非买入当前最弱但得分仍为负的标的。该开关默认关闭以保持历史行为（始终在可用候选取
 top-N）。
 
+### 2.2 动态行业池发现（`pool_discovery`）
+
+`pool_discovery=True`（配合 `universe=etf_market`）时，每个调仓日不再用静态 config 池，
+而是从**全市场 ETF 面板**按 as-of 重新发现候选池：按 9 大类 / 细分方向分桶 → 每桶按历史
+日均成交额排序、桶内做日收益相关性去冗余（`discover_corr_threshold`，默认 0.7）→ 每方向
+至多 `discover_per_direction` 只 → 再按方向分层填充（先各方向第 1 名、再第 2 名…）封顶
+`discover_max_pool`。随后才交给动量斜率 z 排序选 `top_n`。剔除货币、除 5 年国债外的债券、
+无法细分、以及恒生国企/纳斯达克之外的跨境品种。**所有窗口只读 `date <= asof` 的行，无前视**。
+
+发现的中间结果按决策日落盘（见下方「过程可观测性」），`source=pool_discovery`。
+
+**性能**：`ctx.panel` 在一次回测内不变，故发现所需的面板索引只在首个决策日构建一次
+（`build_industry_pool_index`，约 1s），之后每个决策日只做二分切片 + 窗口统计，挂在
+`ctx.cache["industry_pool_index"]` 上跨决策日复用。实测 81 个决策日：**220.9s → 13.2s
+（约 16×）**，池成员与顺序不变。绕过缓存直接调 `discover_industry_pool`（不传 `index`）
+会在每次调用时重建索引，行为一致但慢——批量回测务必走 `select()` 这条路。
+
 ## 3. 调仓
 
 ### 3.1 轮动惰性（`rotate_threshold`）
@@ -193,7 +210,7 @@ OOS(2025-26) 几乎中性，故取 0.1（捕获大部分全程增益、回撤中
 `{asof: {source, count, members:[{symbol,name}]}}`，用于核查「那天到底圈进了哪些 ETF」：
 
 - `source=pool_discovery`：开启 `pool_discovery=True` 时，该日由
-  `discover_industry_pool` 从全市场发现出的池成员（§2.1；空池也会登记——空池正说明该日
+  `discover_industry_pool` 从全市场发现出的池成员（§2.2；空池也会登记——空池正说明该日
   无合格标的，是最需要看到的诊断信息）；
 - `source=eligibility`：未开动态发现时，该日通过全部过滤闸门、进入打分的候选集合，
   与报告中该日展示的候选表一致。

@@ -16,7 +16,8 @@
 
 无前视保证：所有流动性/相关性/上市判定窗口只读取 ``value_df`` 中 ``date <= asof`` 的行，
 且按 ``tail(days)`` 截断，绝不引用未来。发现阶段纯内存（复用 runner 一次性载入的全历史
-``ctx.panel``），不逐月重拉行情。
+``ctx.panel``），不逐月重拉行情。另见 :class:`IndustryPoolIndex`——把 panel 预计算成
+按日切片的下标索引，避免每个决策日重扫全表。
 
 本模块只依赖 stdlib 与 numpy/pandas，不依赖 ``app.strategies.base``，避免循环导入
 （同 asof_pool.py 约定）。
@@ -25,9 +26,10 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Mapping
 
+import numpy as np
 import pandas as pd
 
 # ---------------------------------------------------------------------------
@@ -250,91 +252,144 @@ def classify_industry(name: str | None) -> str | None:
 
 
 # ---------------------------------------------------------------------------
-# as-of 辅助：一律只读 value_df 中 date <= asof 的行。
+# 面板索引：把"逐决策日重扫全表"降为 O(log n + window)。
+#
+# discover_industry_pool 原本每个决策日都对每只 ETF 的整张 value_df 做
+# copy → astype(str).str[:10] → sort_values → drop_duplicates，而这三步的结果**只取决于
+# panel 本身，与 asof 无关**——81 个决策日里同一只票被重算 81 次，单次发现即达 15s 量级。
+#
+# 索引把每只票的「升序去重交易日 / 成交额 / 日收益」预转成已排序 ndarray（构建一次），
+# 于是每个 asof 只需一次 searchsorted 定位下标、再切片，语义与原实现逐点等价：
+#   * date 比较按 YYYY-MM-DD 字典序 = 按时间序（与原实现的字符串比较一致）；
+#   * 同日后取"最后一行"对应稳定排序后保留每组末位；
+#   * 成交额回退链 amount→volume、只对 >0 的有效日求均值；
+#   * 日收益 dropna 后再截尾，单位 % 转小数。
+#
+# panel 在一次回测内不变，故索引可跨决策日复用；调用方（etf_rotation）把它存进
+# ``ctx.cache[POOL_INDEX_CACHE_KEY]``。不传 index 时 discover_industry_pool 会即时构建
+# 一份，结果与旧实现逐点等价，只是每个决策日重建一次——批量回测务必传入复用。
 # ---------------------------------------------------------------------------
 
-
-def _asof_rows(value_df: pd.DataFrame, asof: str) -> pd.DataFrame:
-    """返回按日期升序、去重的 ≤ asof 行（date 取日期部分比较）。"""
-    v = value_df.copy()
-    if "date" not in v.columns:
-        return v.iloc[0:0]
-    v["_d"] = v["date"].astype(str).str[:10]
-    v = v[v["_d"] <= str(asof)[:10]]
-    v = v.sort_values("_d").drop_duplicates("_d", keep="last")
-    return v
+# ctx.cache 中存放本索引的键；供策略跨决策日复用，避免每日期重建。
+POOL_INDEX_CACHE_KEY = "industry_pool_index"
 
 
-def _listed_months(value_df: pd.DataFrame, asof: str, min_listing_days: int) -> bool:
-    """上市时长判定：首根 K 线距 asof 至少 min_listing_days 个自然日（近似满 N 个月）。
+@dataclass
+class IndustryPoolIndex:
+    """``panel`` 的一次性预计算索引；只存 ndarray，不持有 DataFrame。
 
-    "上市满 N 个月"用日历日近似；月数不整除时按 31 天保守化处理由调用方换算。
+    ``directions`` 只收录**可分类**（``classify_industry`` 命中）的标的——不可分类者
+    （货币/债券/其它跨境/无关键词）在发现阶段本就跳过，不进索引即省掉每日逐个判定。
+    各数组按 symbol 对齐：``dates``/``amounts`` 长度相同且按交易日升序去重，
+    ``pct_dates``/``pct_values`` 只含 ``pct_change`` 非缺失的那些交易日（已 /100 转小数）。
     """
-    rows = _asof_rows(value_df, asof)
-    if rows.empty:
-        return False
+
+    directions: dict[str, str] = field(default_factory=dict)
+    dates: dict[str, np.ndarray] = field(default_factory=dict)
+    amounts: dict[str, np.ndarray] = field(default_factory=dict)
+    pct_dates: dict[str, np.ndarray] = field(default_factory=dict)
+    pct_values: dict[str, np.ndarray] = field(default_factory=dict)
+
+
+def _asof_days(asof: str) -> np.datetime64:
+    """把 asof 解析成 ``datetime64[D]``；供 searchsorted 与日期差值使用。"""
     try:
-        first = pd.Timestamp(rows["_d"].iloc[0])
-        asof_ts = pd.Timestamp(str(asof)[:10])
-    except Exception:
-        return False
-    return int((asof_ts - first).days) >= min_listing_days
+        return np.datetime64(pd.Timestamp(str(asof)[:10]).date(), "D")
+    except Exception as exc:
+        raise ValueError(f"无效的 asof 日期: {asof!r}") from exc
 
 
-def _turnover_stats(
+def build_industry_pool_index(
+    panel: Mapping[str, Mapping[str, pd.DataFrame]],
+    names: Mapping[str, str],
+) -> IndustryPoolIndex:
+    """把 ``panel`` 预计算成 :class:`IndustryPoolIndex`（一次 O(总行数) 扫描）。
+
+    只处理 ``classify_industry(name)`` 命中的标的；不可分类者直接跳过。每只票：
+    解析 date（解析失败的 NaT 行丢弃，与原实现里 "NaT" 字符串大于任何 ISO 日期、
+    被 ``<= asof`` 过滤掉等价）、按时间稳定排序、同交易日保留末行，再切出
+    成交额（amount 缺失回退 volume，两者都缺则全 NaN）与有效日收益序列。
+    """
+    index = IndustryPoolIndex()
+    for symbol, payload in panel.items():
+        value_df = payload.get("value") if isinstance(payload, Mapping) else None
+        if value_df is None or getattr(value_df, "empty", True):
+            continue
+        direction = classify_industry(names.get(symbol))
+        if direction is None:
+            continue
+        if "date" not in value_df.columns:
+            continue
+
+        # 解析失败的 date 先剔除：原实现里它们会变成 "NaT" 字符串，因 "N" > "2" 而
+        # 通不过 `_d <= asof` 的字符串比较，同样进不了任何统计。
+        parsed = pd.to_datetime(value_df["date"], errors="coerce")
+        valid = parsed.notna().to_numpy()
+        if not valid.any():
+            continue
+        parsed = parsed[valid]
+        row_count = len(parsed)
+        order = np.argsort(parsed.to_numpy(), kind="stable")
+        days = parsed.to_numpy()[order].astype("datetime64[D]")
+        # 同交易日只保留排序后的末行（对应原 sort_values + drop_duplicates(keep="last")）。
+        keep = np.ones(row_count, dtype=bool)
+        if row_count > 1:
+            keep[:-1] = days[1:] != days[:-1]
+        days = days[keep]
+        if len(days) == 0:
+            continue
+        # 与 days 对齐的「原始行号」：其他列用它一次索引即可对齐到同一批交易日。
+        rows = np.flatnonzero(valid)[order][keep]
+
+        amount_col = next(
+            (c for c in ("amount", "volume") if c in value_df.columns), None
+        )
+        pct = _aligned_column(value_df, rows, "pct_change")
+        pct_ok = ~np.isnan(pct)
+
+        index.directions[symbol] = direction
+        index.dates[symbol] = days
+        index.amounts[symbol] = _aligned_column(value_df, rows, amount_col)
+        index.pct_dates[symbol] = days[pct_ok]
+        index.pct_values[symbol] = pct[pct_ok] / 100.0
+    return index
+
+
+def _aligned_column(
     value_df: pd.DataFrame,
-    asof: str,
-    window_days: int,
-) -> tuple[float | None, int]:
-    """近 ``window_days`` 个交易日(≤asof)的成交情况。
+    rows: np.ndarray,
+    column: str | None,
+) -> np.ndarray:
+    """取 ``column`` 并按 ``rows``（已升序去重的原始行号）对齐；缺列返回全 NaN。
 
-    返回 ``(历史日均成交额, 有效成交日数)``。只保留有正成交额/量的行（停牌/缺失不计为
-    成交日）。amount 缺失时回退 volume；两者都缺返回 (None, 0)。日均成交额仅对有效日
-    求均值，避免停牌日把流动性均值拉低。作为行业内排序依据（同行业同量纲比较安全）。
+    缺列返回 NaN 而非报错，与旧实现等价：成交额列缺失时该票的有效成交日为 0，被流动性
+    门槛挡掉；日收益列缺失时其日收益序列为空，相关判定按"样本不足"防御性接受。
     """
-    cols = ["date"]
-    col = None
-    for cand in ("amount", "volume"):
-        if cand in value_df.columns:
-            cols.append(cand)
-            col = cand
-            break
-    if col is None:
-        return None, 0
-    v = value_df[cols].copy()
-    v["_d"] = v["date"].astype(str).str[:10]
-    v = v[v["_d"] <= str(asof)[:10]]
-    v = v.sort_values("_d").drop_duplicates("_d", keep="last")
-    v[col] = pd.to_numeric(v[col], errors="coerce")
-    v = v.tail(window_days)
-    pos = v[v[col] > 0]
-    valid = int(len(pos))
-    if valid == 0:
-        return None, 0
-    avg = float(pos[col].mean())
-    return avg, valid
+    if column is None or column not in value_df.columns:
+        return np.full(len(rows), np.nan)
+    return pd.to_numeric(value_df[column], errors="coerce").to_numpy()[rows]
 
 
-def _asof_trailing_pct(value_df: pd.DataFrame, asof: str, days: int) -> pd.Series:
-    """截至 asof 最近 ``days`` 个交易日的日收益序列（小数），日期索引、按日排序。
+def _asof_trailing_pct_series(
+    index: IndustryPoolIndex,
+    symbol: str,
+    asof_d: np.datetime64,
+    days: int,
+) -> pd.Series:
+    """由索引重建截至 asof、最近 ``days`` 个有日收益交易的序列（小数，日期索引）。
 
-    复用面板现成 ``pct_change`` 列（单位 %，这里 /100），仅保留 ≤ asof。返回空 Series
-    表示无足够数据。相关去冗余专用，绝对值量纲与方向无关。
+    语义与旧实现的逐日 ``pct_change`` 切片一致，只是数据来自预计算数组。**仍返回 pandas
+    Series**：:func:`_corr_ok` 按 ``join='inner'`` 以日期对齐（不同标的停牌/上市日历不同），
+    保留 Series 才能让相关性判定与旧实现逐位一致——改写成裸 ndarray 后若图省事按位置
+    取尾对齐，真数据上会算错重叠窗口。
     """
-    if "pct_change" not in value_df.columns or "date" not in value_df.columns:
+    dates = index.pct_dates[symbol]
+    cutoff = int(np.searchsorted(dates, asof_d, side="right"))
+    if cutoff == 0:
         return pd.Series(dtype=float)
-    v = value_df[["date", "pct_change"]].copy()
-    v["_d"] = v["date"].astype(str).str[:10]
-    v = v[v["_d"] <= str(asof)[:10]]
-    v = v.sort_values("_d").drop_duplicates("_d", keep="last")
-    v["pct_change"] = pd.to_numeric(v["pct_change"], errors="coerce")
-    v = v.dropna(subset=["pct_change"])
-    if v.empty:
-        return pd.Series(dtype=float)
-    ret = (v["pct_change"].astype(float) / 100.0).set_axis(
-        pd.to_datetime(v["_d"])
-    )
-    return ret.tail(days)
+    tail_dates = dates[max(0, cutoff - days):cutoff]
+    tail_values = index.pct_values[symbol][max(0, cutoff - days):cutoff]
+    return pd.Series(tail_values, index=pd.to_datetime(tail_dates))
 
 
 def _corr_ok(
@@ -371,6 +426,7 @@ def discover_industry_pool(
     max_total: int = 90,
     corr_days: int = 60,
     corr_threshold: float = 0.7,
+    index: IndustryPoolIndex | None = None,
 ) -> list[str]:
     """在 asof 时点从全市场 ``panel`` 发现细分方向候选池，返回有序 symbol 列表。
 
@@ -386,22 +442,33 @@ def discover_industry_pool(
        再第 3 名……直到总数达 ``max_total``（默认 90），保证"每个方向第 1 名优先进入"。
 
     无任何可分类/可交易候选时返回空列表。
+
+    ``index`` 为 :func:`build_industry_pool_index` 预计算的面板索引：panel 在一次回测内
+    不变，跨决策日复用它可把每次发现从"重扫全表 + 逐票排序去重"降到按 asof 二分切片
+    （实测单次 15.9s → ~0.03s，池结果不变）。**不传则在本函数内即时构建**，行为与旧实现
+    逐点等价，只是每个决策日重建一次——批量回测应传入复用。
     """
+    pool_index = (
+        index if index is not None else build_industry_pool_index(panel, names)
+    )
+    asof_d = _asof_days(asof)
+
     by_dir: dict[str, list[tuple[str, float, pd.Series]]] = {}
-    for symbol, payload in panel.items():
-        value_df = payload.get("value") if isinstance(payload, Mapping) else None
-        if value_df is None or getattr(value_df, "empty", True):
+    for symbol, direction in pool_index.directions.items():
+        days = pool_index.dates[symbol]
+        # ≤ asof 的行数；days 已升序去重，searchsorted 直接给出截至位。
+        cutoff = int(np.searchsorted(days, asof_d, side="right"))
+        if cutoff == 0:
             continue
-        name = names.get(symbol)
-        direction = classify_industry(name)
-        if direction is None:
+        # 上市时长：首根 K 线距 asof 的自然日数（原用日历日近似"满 N 个月"）。
+        if int((asof_d - days[0]).astype("int64")) < min_listing_days:
             continue
-        if not _listed_months(value_df, asof, min_listing_days):
+        window = pool_index.amounts[symbol][max(0, cutoff - window_days):cutoff]
+        positive = window[window > 0]  # NaN 比较为 False，自动排除停牌/缺失日
+        if len(positive) < min_valid_days:
             continue
-        avg, valid = _turnover_stats(value_df, asof, window_days)
-        if avg is None or valid < min_valid_days:
-            continue
-        pct = _asof_trailing_pct(value_df, asof, corr_days)
+        avg = float(positive.mean())
+        pct = _asof_trailing_pct_series(pool_index, symbol, asof_d, corr_days)
         by_dir.setdefault(direction, []).append((symbol, avg, pct))
 
     # 每方向：按历史日均成交额降序 + 贪心去冗余，至多 per_direction 只。
