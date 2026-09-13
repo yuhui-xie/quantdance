@@ -4,7 +4,7 @@
 固定清单，回测早期年份沿用"期末才知谁流动性最好"的代表，构成成员层面的前视/幸存者
 偏差（单只打分数值本身用 asof 截断、无前视）。本模块把"逐决策日重新发现池成员"抽成
 共享能力：在调仓日 asof，仅用 ≤ asof 的 K 线与成交额，把当时已上市、满足流动性门槛
-的细分方向 ETF 选成"每个方向 ≤3 只、行业内做日收益相关性去冗余、再分层填充上限 90"
+的细分方向 ETF 选成"每个方向 ≤2 只、行业内做日收益相关性去冗余、再分层填充上限 90"
 的候选子池。
 
 方向 = 9 个大类、大类内再拆细分方向（细分为主、大类兜底）的候选桶。大类及顺序：
@@ -92,7 +92,7 @@ _SUB_SPECIFIC: list[tuple[str, tuple[str, ...]]] = [
     ("半导体", ("半导体", "芯片", "集成电路", "晶圆", "半导体设备", "半导体材料")),
     ("人工智能", ("人工智能", "AI", "AIGC", "算力")),
     ("云计算", ("云计算", "云服务", "云50", "数据中心")),
-    ("通信", ("通信", "5G", "5g", "通信设备", "电信", "光通信", "光模块", "信息")),
+    ("通信", ("通信", "5G", "5g", "通信设备", "电信", "光通信", "光模块")),
     ("计算机", ("计算机", "软件", "信息技术", "信创", "网络安全", "信息安全", "数字经济", "信息")),
     ("消费电子", ("消费电子", "电子")),
     # 医药
@@ -130,7 +130,7 @@ _SUB_SPECIFIC: list[tuple[str, tuple[str, ...]]] = [
     ("基建", ("基建", "建筑", "一带一路", "城乡建设")),
     ("机器人", ("机器人", "智能制造", "智能机器", "机床", "高端制造")),
     ("电力", ("电力", "电网", "公用事业", "水电")),
-    ("环保", ("环保", "环境", "水务", "燃气", "碳中和")),
+    ("环保", ("环保", "环境", "水务", "燃气")),
     # 防御及跨境（红利低波 先于 红利；跨境仅恒生国企与纳斯达克；黄金/红利/恒生/纳指互斥词）
     ("黄金", ("黄金", "贵金属", "白银", "上海金")),
     ("红利低波", ("红利低波", "低波红利", "低波动")),
@@ -170,10 +170,10 @@ _EXCLUDE_TOKENS: tuple[str, ...] = (
     # 其它跨境 / 无法归入恒生国企或纳斯达克的海外市场（德国医药/日经/标普/港股红利等）。
     # "港股"/"恒生" 是泛指词，须放行白名单里的 恒生国企/纳斯达克（_is_allowlisted 先行放行）
     "QDII", "德国", "日本", "日经", "标普", "美股", "美国", "道琼斯", "法国", "欧洲",
-    "欧股", "越南", "印度", "韩国", "中韩", "新加坡", "泰国", 
+    "欧股", "越南", "印度", "韩国", "中韩", "新加坡", "泰国", "东南亚", "巴西", "沙特"
     "全球", "海外", "跨境", "境外"
     "新兴市场", "亚太", "港股", "港股通", "恒生", "恒生科技", "恒生互联网", "中概", "恒指",
-    "港币", "香港", "沪港深", "纳斯达克", "纳指"
+    "港币", "香港", "沪港深", "纳斯达克", "纳指",
 )
 
 
@@ -188,8 +188,7 @@ _ALLOWLIST_TOKENS: tuple[str, ...] = (
 
 def _is_allowlisted(name: str | None) -> bool:
     """命中白名单的目标 ETF（须优先于通用排除词放行）才 True。"""
-    n = (name or "").upper()
-    theme = _classification_text(name)
+    n = _classification_text(name)
     return any(w in n for w in _ALLOWLIST_TOKENS) or _is_board_nasdaq(name)
 
 
@@ -204,14 +203,14 @@ def _exclude_name(name: str | None) -> bool:
     return False
 
 def _classification_text(name: str | None) -> str:
-    nomralized = re.sub(r"\s+", "", name or "").upper()
-    if "ETF" in nomralized:
-        return nomralized.split("ETF", 1)[0]
-    return nomralized
+    normalized = re.sub(r"\s+", "", name or "").upper()
+    if "ETF" in normalized:
+        return normalized.split("ETF", 1)[0]
+    return normalized
 
 def _is_board_nasdaq(name: str) -> bool:
     theme = _classification_text(name)
-    return re.fullmatch(f"(?:纳斯达克|纳指)(?:100)?(?:指数)?", theme) is not None
+    return re.fullmatch(r"(?:纳斯达克|纳指)(?:100)?(?:指数)?", theme) is not None
 
 def _allowlisted_direction(name: str | None) -> str | None:
     """白名单放行的跨境/债券品种固定归其所属方向（不被其它 A 股细分词抢先）。
@@ -238,9 +237,9 @@ def classify_industry(name: str | None) -> str | None:
     避免被先扫到的 A 股细分词吞走；否则按 SUB_RULES 首个命中即定。未命中者返回 None——发现
     阶段跳过，即"无法细分"品种被排除。
     """
-    alloallowlisted = _allowlisted_direction(name)
-    if alloallowlisted is not None:
-        return alloallowlisted
+    allowlisted = _allowlisted_direction(name)
+    if allowlisted is not None:
+        return allowlisted
     if _exclude_name(name):
         return None
     normalized = _classification_text(name)
@@ -368,7 +367,7 @@ def discover_industry_pool(
     min_listing_days: int = 182,
     window_days: int = 120,
     min_valid_days: int = 60,
-    per_direction: int = 3,
+    per_direction: int = 2,
     max_total: int = 90,
     corr_days: int = 60,
     corr_threshold: float = 0.7,
@@ -408,7 +407,7 @@ def discover_industry_pool(
     # 每方向：按历史日均成交额降序 + 贪心去冗余，至多 per_direction 只。
     picked: dict[str, list[str]] = {}
     for direction, bucket in by_dir.items():
-        bucket.sort(key=lambda t: -t[1])
+        bucket.sort(key=lambda item: (-item[1], item[0]))
         accepted: list[str] = []
         accepted_pct: dict[str, pd.Series] = {}
         for symbol, _avg, pct in bucket:
@@ -449,7 +448,7 @@ def industry_pool_meta() -> dict[str, object]:
         "excluded": "cash/money + all bonds except 5yTreasury + unclassifiable + non-HSCEI/Nasdaq cross-border",
         "listing_min": "6 months",
         "valid_days": ">=60 within recent 120 sessions",
-        "selection": "per-direction liquidity sort + intra-direction corr prune, per-dir<=3",
+        "selection": "per-direction liquidity sort + intra-direction corr prune, per-dir<=2",
         "fill": "layered by direction rank, direction order in DIRECTION_ORDER, total cap 90",
         "reused_by": ("etf_rotation (pool_discovery)",),
     }
