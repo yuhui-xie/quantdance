@@ -338,7 +338,7 @@ class EtfRotationParams(DecisionFrequencyParams):
         ),
     )
     discover_per_direction: int = Field(
-        3,
+        2,
         ge=1,
         le=20,
         description="每个方向(细分行业)最多保留的候选 ETF 数量。",

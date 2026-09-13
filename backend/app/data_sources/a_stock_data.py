@@ -420,6 +420,13 @@ class AStockDataSDK:
                 return cached
             raise AStockDataError(exc.code, exc.message, symbol=norm, source="mootdx", cause=exc) from exc
         out = [self._kline_to_market(row) for row in rows]
+        if not out:
+            # 取数为空绝不写缓存：一次源故障（如节点失效）会把成百上千个缓存文件
+            # 改写成 `rows: []`，且故障被静默吞掉、只在最上层才暴露。这里直接抛，
+            # 由调用方按数据源错误处理（批量回测逐票跳过，单票回测报错退出）。
+            raise AStockDataError(
+                "empty_response", "K 线返回空结果", symbol=norm, source="mootdx"
+            )
         self._write_klines_cache(norm, period, count, out)
         return out
 
