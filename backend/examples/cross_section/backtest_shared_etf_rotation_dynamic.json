@@ -41,10 +41,14 @@
     "discover_min_listing_days": 182,
     "discover_amount_days": 120,
     "discover_min_valid_days": 60,
-    "discover_per_direction": 3,
+    "discover_per_direction": 2,
     "discover_max_pool": 90,
     "discover_corr_days": 60,
-    "discover_corr_threshold": 0.7
+    "discover_corr_threshold": 0.7,
+    "rsrs_gate": true,
+    "rsrs_regression_days": 18,
+    "rsrs_zscore_days": 120,
+    "rsrs_threshold": -0.5
   },
   "output_options": {
     "output": "out/backtest_shared_etf_rotation_dynamic.json",

@@ -38,6 +38,13 @@ asof 从全市场按 9 大类（细分方向为主、大类兜底）重新发现
 无前视，可自然纳入每月新上市标的。详见
 ``app.strategies.cross_section.industry_pool.discover_industry_pool``。默认关闭=沿用静态
 config 池，向后兼容。
+
+可选 **RSRS 门控（持仓后的最后一道闸门）**：``rsrs_gate=True`` 时，对**已经选出**的
+top-N 逐票计算 RSRS —— 近 ``rsrs_regression_days``（默认 18）日 high~low 最小二乘回归得
+斜率 beta 与 R²，取最近 ``rsrs_zscore_days``（默认 120）个 beta 做时序标准分 z，合成
+``rsrs = z × R² × beta``；``rsrs <= rsrs_threshold``（默认 -0.5）者本轮**不买入**，该仓位
+留现金（不顺位递补给下一名）。K 线不足（< 137 根）或 high/low 缺列时无法判定，按放行
+处理。默认关闭，向后兼容。见 :mod:`app.factors.rsrs`。
 """
 
 from __future__ import annotations
@@ -60,6 +67,7 @@ from app.strategies.cross_section.common import (
 
 from app.factors.cross_section import zscore
 from app.factors.momentum import price_history, slope_momentum
+from app.factors.rsrs import rsrs
 from app.strategies.cross_section.decision import DecisionFrequencyParams
 from app.strategies.cross_section.industry_pool import (
     POOL_INDEX_CACHE_KEY,
@@ -299,6 +307,43 @@ class EtfRotationParams(DecisionFrequencyParams):
     exclude_suspended: bool = True
     limit_pct_threshold: float = Field(9.5, ge=1.0, le=30.0)
 
+    # ---- RSRS 门控（可选，默认关闭；在选出 top-N 之后逐票否决）----
+    # 对已经选出的持仓再算一次 RSRS（high~low 回归斜率 beta 的时序标准分 × R² × beta，
+    # 见 app/factors/rsrs.py），不达标者本轮不买入、其仓位留现金。是"事后否决"而非
+    # "候选过滤"：被否决的名额不会顺位递补给下一名（与用户口径一致）。
+    rsrs_gate: bool = Field(
+        False,
+        description=(
+            "开启 RSRS 门控：对选出的 top-N 持仓逐一计算 RSRS = z(beta) × R² × beta"
+            "（beta 为近 rsrs_regression_days 日 high~low 回归斜率，z 为近 "
+            "rsrs_zscore_days 个 beta 的时序标准分），rsrs ≤ rsrs_threshold 者本轮不买入"
+            "（仓位留现金、不顺位递补）。数据不足 137 根 K 线时无法判定，按放行处理。"
+            "默认关闭。"
+        ),
+    )
+    rsrs_regression_days: int = Field(
+        18,
+        ge=2,
+        le=120,
+        description="RSRS 的 high~low 回归窗口（交易日数，经典口径 18）。仅 rsrs_gate=True 时生效。",
+    )
+    rsrs_zscore_days: int = Field(
+        120,
+        ge=10,
+        le=500,
+        description=(
+            "RSRS 标准分窗口：取最近这么多根 K 线的滚动 beta 做时序标准分（经典口径 120）。"
+            "仅 rsrs_gate=True 时生效。"
+        ),
+    )
+    rsrs_threshold: float = Field(
+        -0.5,
+        description=(
+            "RSRS 门控阈值：rsrs > 该值才允许持有，否则本轮不买入（默认 -0.5）。"
+            "仅 rsrs_gate=True 时生效。"
+        ),
+    )
+
     # ---- 动态行业池发现（可选，默认关闭；向后兼容）----
     # 开启后不再用固定 config 池，而是每个决策日按 asof 从全市场 etf 面板（需
     # universe="etf_market" 一次性载入全市场全历史）按 9 大类（细分方向为主、大类兜底）重新发现候选池：
@@ -494,6 +539,17 @@ def select_etf_rotation(
             if amount_log_ratio is None:
                 continue
 
+        # RSRS 门控生值：high~low 回归斜率 beta 的时序标准分 × R² × beta。仅 rsrs_gate
+        # 开启时计算；K 线不足（< 回归窗 + 标准分窗 − 1）或 high/low 缺列时为 None，
+        # 门控按"无法判定 → 放行"处理（不因数据短就挡掉新上市 ETF）。
+        rsrs_value = None
+        if params.rsrs_gate:
+            rsrs_value = rsrs(
+                history,
+                regression_days=params.rsrs_regression_days,
+                zscore_days=params.rsrs_zscore_days,
+            )
+
         candidates.append(
             {
                 "symbol": symbol,
@@ -505,6 +561,10 @@ def select_etf_rotation(
                 "slope_short": slope_short,
                 "slope_score": slope_raw,
                 "amount_log_ratio": amount_log_ratio,
+                "rsrs": rsrs_value.value if rsrs_value is not None else None,
+                "rsrs_beta": rsrs_value.beta if rsrs_value is not None else None,
+                "rsrs_r2": rsrs_value.r_squared if rsrs_value is not None else None,
+                "rsrs_z": rsrs_value.zscore if rsrs_value is not None else None,
             }
         )
 
@@ -581,6 +641,24 @@ def select_etf_rotation(
         cache_key=CACHE_KEY,
     )
 
+    # ---- RSRS 门控（可选）：对已选出的 top-N 逐票否决 ----
+    # 是"选出之后再否决"而非"候选过滤"：被否决的名额不顺位递补给下一名，而是留现金
+    # （top_n=1 时该调仓日即空仓）。rsrs 为 None（K 线不足/缺 high-low 列）时按放行处理。
+    # 门控结果写回轮动惰性缓存，让下个决策日的"当前持仓"= 本轮真实买入的标的。
+    if params.rsrs_gate:
+        by_symbol = {c["symbol"]: c for c in candidates}
+        for cand in candidates:
+            value = cand["rsrs"]
+            cand["rsrs_pass"] = value is None or float(value) > params.rsrs_threshold
+        allowed = [
+            symbol
+            for symbol in selected
+            if by_symbol.get(symbol, {}).get("rsrs_pass", True)
+        ]
+        if len(allowed) != len(selected):
+            selected = allowed
+            ctx.cache[CACHE_KEY] = list(selected)
+
     selected_set = set(selected)
     for item in candidates:
         item["selected"] = item["symbol"] in selected_set
@@ -593,8 +671,8 @@ STRATEGY = CrossSectionStrategySpec(
     description=(
         "在 ETF 池（默认 config/etf_core_pool.json 精选池）中选择归一化收盘价回归"
         "斜率（×R²）横截面 z 值最强的标的，每月首个交易日等权调仓；可选叠加原始趋势/"
-        "波动率/近期涨幅过滤、得分>0 现金规则，以及短期过热/近期异常放量（量价综合）"
-        "两类压制项"
+        "波动率/近期涨幅过滤、得分>0 现金规则、短期过热/近期异常放量（量价综合）两类"
+        "压制项，以及选出后按 RSRS(z(beta)×R²×beta) 阈值否决买入的 RSRS 门控"
     ),
     params_model=EtfRotationParams,
     select=select_etf_rotation,
