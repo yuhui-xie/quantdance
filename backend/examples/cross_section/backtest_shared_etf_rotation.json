@@ -35,7 +35,11 @@
     "short_term_damp_coef": 0.1,
     "amount_recent_days": 5,
     "amount_baseline_days": 10,
-    "amount_surge_damp_coef": 0.1
+    "amount_surge_damp_coef": 0.1,
+    "trend_exit_check": true,
+    "trend_exit_slope_days": 40,
+    "trend_exit_ma_days": 40,
+    "trend_exit_check_weeks": 2
 
   },
   "output_options": {

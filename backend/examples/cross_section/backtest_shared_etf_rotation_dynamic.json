@@ -48,7 +48,11 @@
     "rsrs_gate": true,
     "rsrs_regression_days": 18,
     "rsrs_zscore_days": 120,
-    "rsrs_threshold": -0.5
+    "rsrs_threshold": -0.5,
+    "trend_exit_check": true,
+    "trend_exit_slope_days": 40,
+    "trend_exit_ma_days": 40,
+    "trend_exit_check_weeks": 2
   },
   "output_options": {
     "output": "out/backtest_shared_etf_rotation_dynamic.json",
