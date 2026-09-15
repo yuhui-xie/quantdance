@@ -45,11 +45,28 @@ top-N 逐票计算 RSRS —— 近 ``rsrs_regression_days``（默认 18）日 hi
 ``rsrs = z × R² × beta``；``rsrs <= rsrs_threshold``（默认 -0.5）者本轮**不买入**，该仓位
 留现金（不顺位递补给下一名）。K 线不足（< 137 根）或 high/low 缺列时无法判定，按放行
 处理。默认关闭，向后兼容。见 :mod:`app.factors.rsrs`。
+
+可选**双周趋势退出（持仓中的防御性出场）**：``trend_exit_check=True`` 时，在月度调仓
+**之间**插入检查点——每 ``trend_exit_check_weeks``（默认 2）个 **ISO 周**的**最后一个
+交易日**，对**当前持仓**逐笔判定：同时满足「近 ``trend_exit_slope_days``（默认 40）日
+归一化收盘价回归斜率 ≤ 0」与「收盘价 < 近 ``trend_exit_ma_days``（默认 40）日均价」者
+**卖出**（成交时点由请求级 ``execution_timing`` 决定，``next_day_open`` 即下个交易日开盘），
+**不补位**、该仓位留现金直到下个月度决策日再入场。与 ``rsrs_gate`` 相反，这是"持有之后"
+的出场：RSRS 门控决定"本轮买不买"，本项决定"已经在手的还留不留"。
+K 线不足 ``max(trend_exit_slope_days, trend_exit_ma_days)`` 根、面板缺失或停牌导致取不到
+足够收盘价时**无法判定 → 按持有处理**（与 RSRS 门控「None 放行」同一约定）。默认关闭，
+向后兼容。
+
+两个使用注意（详见 ``docs/etf-rotation-strategy.md`` §2.4）：检查日会在 ``rebalances``
+里留下周期记录（即使当日无成交），报告的周期表/热力图列与调仓次数随之增加；``top_n>1``
+且 ``rebalance_mode="full"``（默认）时，部分退出会触发整仓等权重建（幸存者被卖出再买回），
+需要 ``rebalance_mode="incremental"`` 才能只交易差异。跨 53 周的 ISO 年份（如 2020）
+相邻检查点可能间隔 3 个自然周，沿用 ``_weekly_trading_days`` 的偶数周锚定口径。
 """
 
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Any, Literal, Sequence
 
 import numpy as np
 import pandas as pd
@@ -68,7 +85,11 @@ from app.strategies.cross_section.common import (
 from app.factors.cross_section import zscore
 from app.factors.momentum import price_history, slope_momentum
 from app.factors.rsrs import rsrs
-from app.strategies.cross_section.decision import DecisionFrequencyParams
+from app.strategies.cross_section.decision import (
+    DecisionFrequencyParams,
+    decision_dates_by_frequency,
+    periodic_decision_dates,
+)
 from app.strategies.cross_section.industry_pool import (
     POOL_INDEX_CACHE_KEY,
     build_industry_pool_index,
@@ -78,6 +99,10 @@ from app.strategies.cross_section.industry_pool import (
 
 # ctx.cache 中保存上一调仓日持仓 symbol 列表的键；用于跨决策日的轮动惰性比较。
 CACHE_KEY = "etf_rotation_prev_holdings"
+
+# ctx.cache 中保存本次回测的决策日表：{"rebalance": {月度调仓日}, "checks": {双周检查日}}。
+# select() 据此区分「调仓日」与「仅检查日」，见 select_etf_rotation 顶部路由。
+SCHEDULE_CACHE_KEY = "etf_rotation_schedule"
 
 
 def annualized_volatility(closes: np.ndarray, lookback: int) -> float | None:
@@ -256,6 +281,48 @@ class EtfRotationParams(DecisionFrequencyParams):
             "得分轮动；越接近 0 惰性越强（0 时几乎永不调仓）。"
         ),
     )
+    # ---- 双周趋势退出（可选，默认关闭；仅在月度调仓【之间】生效）----
+    # 与 rsrs_gate（买入前否决）相反：这是持有中的出场。检查日只评估当前持仓，
+    # 触发者卖出且不顺位递补，现金保留到下个月度决策日。
+    trend_exit_check: bool = Field(
+        False,
+        description=(
+            "开启双周趋势退出检查：在月度调仓之间的每个检查日（每 trend_exit_check_weeks "
+            "个 ISO 周的最后一个交易日），对当前持仓逐笔判定——同时满足「近 "
+            "trend_exit_slope_days 日归一化收盘价回归斜率≤0」与「收盘价 < 近 "
+            "trend_exit_ma_days 日均价」者卖出（成交时点由 execution_timing 决定，"
+            "next_day_open 即下个交易日开盘），不补位、留现金到下个月度决策日。"
+            "K 线不足或取不到足够收盘价时无法判定，按持有处理。默认关闭。"
+        ),
+    )
+    trend_exit_slope_days: int = Field(
+        40,
+        ge=2,
+        le=504,
+        description=(
+            "双周趋势退出的斜率窗口：近 N 日归一化收盘价线性回归斜率（×R²）≤0 即判定"
+            "「趋势不向上」；仅 trend_exit_check=True 时生效。"
+        ),
+    )
+    trend_exit_ma_days: int = Field(
+        40,
+        ge=2,
+        le=504,
+        description=(
+            "双周趋势退出的均线窗口：收盘价低于近 N 日简单均价即判定「跌破均线」；"
+            "与斜率条件同时成立才卖出。仅 trend_exit_check=True 时生效。"
+        ),
+    )
+    trend_exit_check_weeks: int = Field(
+        2,
+        ge=1,
+        le=8,
+        description=(
+            "检查频率：每 N 个 ISO 周的最后一个交易日检查一次（2=双周，默认）。"
+            "锚定偶数 ISO 周，与回测起始日无关。仅 trend_exit_check=True 时生效。"
+        ),
+    )
+
     # ---- 绝对趋势/风险/过热过滤（默认关闭，逐条可选启用）----
     require_raw_trend: bool = Field(
         False,
@@ -417,11 +484,139 @@ class EtfRotationParams(DecisionFrequencyParams):
     )
 
 
+def select_trend_exit(
+    asof: str,
+    ctx: CrossSectionContext,
+    params: EtfRotationParams,
+) -> tuple[list[str], list[dict[str, Any]]]:
+    """双周趋势退出检查日：只评估当前持仓，返回幸存者作为本轮目标。
+
+    与常规调仓日的 ``select`` 不同，这里不重新打分、不引入新标的——只回答"在手的还留不留"：
+    对当前持仓逐笔判定，同时满足「近 ``trend_exit_slope_days`` 日归一化收盘价回归斜率≤0」
+    与「收盘价 < 近 ``trend_exit_ma_days`` 日均价」者从目标中剔除（引擎按请求级
+    ``execution_timing`` 成交，``next_day_open`` 即下个交易日开盘），其余原样保留。
+    被剔除的仓位留现金、不补位，直到下个月度决策日再参与选股。
+    """
+    # ★顺序承重★：引擎以 tuple 比较判断目标是否变化（shared_engine 的 target_changed），
+    # 返回顺序必须与上一轮写入 targets 的顺序一致——否则一个【没有触发退出】的检查日也会
+    # 被判为"目标变化"，在 rebalance_mode="full" 下触发一次全仓卖出+等权重建。
+    # 故必须按 ctx.cache[CACHE_KEY] 的原顺序遍历，幸存者自然保序，不得按得分重排。
+    held = list(ctx.cache.get(CACHE_KEY) or [])
+    if not held:
+        return [], []
+    need = max(params.trend_exit_slope_days, params.trend_exit_ma_days, 2)
+    survivors: list[str] = []
+    details: list[dict[str, Any]] = []
+    for symbol in held:
+        payload = ctx.panel.get(symbol)
+        value_df = payload.get("value") if payload else None
+        close: float | None = None
+        slope: float | None = None
+        ma: float | None = None
+        gap: float | None = None
+        triggered = False
+        if value_df is not None and not value_df.empty:
+            history = price_history(value_df, asof)
+            closes = (
+                history["close"].astype(float).to_numpy()
+                if len(history)
+                else np.array([])
+            )
+            if len(closes) >= need:
+                close = float(closes[-1])
+                ma = float(closes[-params.trend_exit_ma_days:].mean())
+                slope = slope_momentum(closes, params.trend_exit_slope_days)
+                if slope is not None and np.isfinite(slope) and np.isfinite(ma):
+                    gap = close - ma
+                    # slope_momentum = 10000×斜率×R²（R²≥0），故其符号即回归斜率符号
+                    # ⇒「斜率≤0」等价于区间整体不向上（require_raw_trend 用同一恒等式）。
+                    triggered = slope <= 0.0 and close < ma
+        # 无法判定（K 线不足 / 面板缺失 / 停牌取不到足够收盘价）→ 按【持有】处理，
+        # 与 rsrs_gate 的「None 放行」同一约定：不因数据短就卖出手上的仓位。
+        if not triggered:
+            survivors.append(symbol)
+        details.append(
+            {
+                "symbol": symbol,
+                "name": ctx.names.get(symbol, ""),
+                "asof": str(asof)[:10],
+                "close": close,
+                # exit_* 前缀与打分字段（score/slope_raw…）区分：报告按"非 meta 的数值
+                # 字段"自动透传并渲染列，前缀让检查日与调仓日的列一眼可辨。
+                "exit_slope": slope,
+                "exit_ma": ma,
+                "exit_ma_gap": gap,
+                # 数值化（1.0/0.0）便于报告着色；1.0 即本轮卖出。
+                "exit_triggered": 1.0 if triggered else 0.0,
+                # rank/selected 必须显式给：报告末尾的"当前推荐"面板依赖它们，而它们在
+                # _SELECTION_META 里、不会被通用数值透传（缺了会渲染成"零持仓"）。
+                "selected": not triggered,
+            }
+        )
+    for idx, row in enumerate(details):
+        row["rank"] = idx + 1
+
+    # 写回持仓缓存：下个检查日的"当前持仓"、以及下个月度决策日的轮动惰性都以此为准
+    # （已卖出的标的自然从"惯性保留"里消失，不会死守）。
+    ctx.cache[CACHE_KEY] = list(survivors)
+    record_decision_pool(ctx, asof, survivors, source="trend_exit")
+    return survivors, details
+
+
+def etf_rotation_decision_dates(
+    calendar: Sequence[str],
+    ctx: CrossSectionContext,
+    params: EtfRotationParams,
+) -> list[str]:
+    """决策日 = 周期调仓日 ∪ 双周趋势退出检查日（后者仅 trend_exit_check=True 时追加）。
+
+    检查日锚定每 ``trend_exit_check_weeks`` 个 **ISO 周**的**最后一个交易日**，复用统一的
+    ``decision_dates_by_frequency``（与 ``biweekly`` 频率同一口径），与回测起始日解耦。
+    决策日归属表挂到 ``ctx.cache``，供 :func:`select_etf_rotation` 区分调用哪种语义。
+    """
+    rebalance = periodic_decision_dates(calendar, ctx, params)
+    checks: list[str] = []
+    if params.trend_exit_check:
+        checks = decision_dates_by_frequency(
+            calendar,
+            frequency="weekly",
+            every_n=max(1, int(params.trend_exit_check_weeks)),
+        )
+        # 跳过首个调仓日【之前】的检查点：那时还没有持仓，检查无意义；且引擎对
+        # 「day in targets」无条件记一条 rebalance，会在报告里留下一个领先的空周期。
+        first = min(rebalance) if rebalance else ""
+        if first:
+            checks = [day for day in checks if day > first]
+    # cache 跨决策日保留（runner 复用同一 context），select 据此路由。关闭时 checks 为空，
+    # 路由分支永不命中 ⇒ 与历史行为完全一致。
+    ctx.cache[SCHEDULE_CACHE_KEY] = {
+        "rebalance": set(rebalance),
+        "checks": set(checks),
+    }
+    return sorted(set(rebalance) | set(checks))
+
+
 def select_etf_rotation(
     asof: str,
     ctx: CrossSectionContext,
     params: EtfRotationParams,
 ) -> tuple[list[str], list[dict[str, Any]]]:
+    # ---- 双周趋势退出检查日路由 ----
+    # 检查日只做"持仓还留不留"，不做选股。schedule 由 decision_dates 写入；mode=screen /
+    # pick 路径不调用 decision_dates（runner 直接调 select），此时 cache 里没有该键，
+    # 必须回落到常规选股——否则 `asof in None` 会抛 TypeError 打挂 screen/pick。
+    schedule = ctx.cache.get(SCHEDULE_CACHE_KEY)
+    if params.trend_exit_check and isinstance(schedule, dict):
+        asof_key = str(asof)[:10]
+        pending = schedule.get("checks") or set()
+        if asof_key in pending and asof_key not in (schedule.get("rebalance") or set()):
+            # 消费掉：同一日期只路由一次。runner 在决策日循环之后还会用最新的任意交易日
+            # 再调一次 select 产出报告末尾的"当前推荐"，若那天恰好是偶数 ISO 周末，
+            # 消费机制保证它回落到常规选股而不是被误当成检查日。
+            pending.discard(asof_key)
+            schedule["checks"] = pending
+            return select_trend_exit(asof_key, ctx, params)
+
     candidates: list[dict[str, Any]] = []
     # 打分需至少 max(slope_days, 短窗) 根 K 线；量价综合开启时还须近+基线窗足额；
     # 各可选过滤的更长回看在其内部单独守卫。
@@ -672,10 +867,12 @@ STRATEGY = CrossSectionStrategySpec(
         "在 ETF 池（默认 config/etf_core_pool.json 精选池）中选择归一化收盘价回归"
         "斜率（×R²）横截面 z 值最强的标的，每月首个交易日等权调仓；可选叠加原始趋势/"
         "波动率/近期涨幅过滤、得分>0 现金规则、短期过热/近期异常放量（量价综合）两类"
-        "压制项，以及选出后按 RSRS(z(beta)×R²×beta) 阈值否决买入的 RSRS 门控"
+        "压制项，选出后按 RSRS(z(beta)×R²×beta) 阈值否决买入的 RSRS 门控，以及月度调仓"
+        "之间按双周检查 40 日斜率≤0 且跌破 40 日均线即卖出的双周趋势退出"
     ),
     params_model=EtfRotationParams,
     select=select_etf_rotation,
+    decision_dates=etf_rotation_decision_dates,
     default_universe="etf_core",
     requires_symbols=False,
     needs_fundamentals=False,

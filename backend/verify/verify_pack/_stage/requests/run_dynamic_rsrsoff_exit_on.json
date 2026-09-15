@@ -19,12 +19,12 @@
     "decision_frequency": "monthly",
     "decision_anchor": "start",
     "top_n": 1,
-    "min_score": 0.00,
+    "min_score": 0.0,
     "require_positive_score": true,
     "rotate_threshold": 1.0,
     "require_raw_trend": true,
     "raw_trend_days": 40,
-    "max_annualized_vol": 0.40,
+    "max_annualized_vol": 0.4,
     "vol_lookback": 20,
     "max_recent_gain_pct": 10.0,
     "recent_gain_days": 10,
@@ -45,7 +45,7 @@
     "discover_max_pool": 90,
     "discover_corr_days": 60,
     "discover_corr_threshold": 0.7,
-    "rsrs_gate": true,
+    "rsrs_gate": false,
     "rsrs_regression_days": 18,
     "rsrs_zscore_days": 120,
     "rsrs_threshold": -0.5,
@@ -55,8 +55,7 @@
     "trend_exit_check_weeks": 2
   },
   "output_options": {
-    "output": "out/backtest_shared_etf_rotation_dynamic.json",
-    "report": "out/backtest_shared_etf_rotation_dynamic.html",
-    "json": true
+    "output": "out/_pack/result_dynamic_rsrsoff_exit_on.json",
+    "pool_dump": "out/_pack/pool_dynamic_rsrsoff_exit_on.json"
   }
 }

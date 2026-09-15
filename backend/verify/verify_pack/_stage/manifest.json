@@ -1,0 +1,989 @@
+{
+  "env": {
+    "cache_env": {
+      "QUANTDANCE_A_STOCK_DATA_CACHE": "(unset)",
+      "QUANTDANCE_A_STOCK_DATA_CACHE_DIR": "(unset)"
+    },
+    "generated_at_utc": "2026-09-15T17:03:30+00:00",
+    "git_branch": "master",
+    "git_rev": "ee2a58febc320d6f03a0be53b29b5c7f8f2e633c",
+    "git_status_porcelain": "M backend/app/backtest/templates/backtest_shared.html\n M backend/app/strategies/cross_section/etf_rotation.py\n M backend/examples/cross_section/backtest_shared_etf_rotation.json\n M backend/examples/cross_section/backtest_shared_etf_rotation_dynamic.json\n M docs/etf-rotation-strategy.md",
+    "hostname": "WIN-77OG5AIS9FJ",
+    "kline_cache_version": "6",
+    "numpy": "2.4.4",
+    "pandas": "3.0.2",
+    "platform": "Windows-11-10.0.22621-SP0",
+    "pydantic": "2.12.5",
+    "python": "3.13.2"
+  },
+  "files": {
+    "data_fingerprint.json": {
+      "sha256_16": "ad6739034f36270e"
+    },
+    "pools/dynamic_exit_off.json": {
+      "sha256_16": "3958cb77415384ca"
+    },
+    "pools/dynamic_exit_off_pinned.json": {
+      "sha256_16": "db4e4d8c263069d3"
+    },
+    "pools/dynamic_exit_on.json": {
+      "sha256_16": "8d1f6009e786edc1"
+    },
+    "pools/dynamic_exit_on_pinned.json": {
+      "sha256_16": "b8447dcc76c34c72"
+    },
+    "pools/dynamic_rsrsoff_exit_off.json": {
+      "sha256_16": "3958cb77415384ca"
+    },
+    "pools/dynamic_rsrsoff_exit_on.json": {
+      "sha256_16": "b1e040e8e0e768e2"
+    },
+    "pools/main_exit_off.json": {
+      "sha256_16": "756dea5280e9c0b1"
+    },
+    "pools/main_exit_off_pinned.json": {
+      "sha256_16": "05a41dc580ae28ae"
+    },
+    "pools/main_exit_on.json": {
+      "sha256_16": "6014a73f6466ecd4"
+    },
+    "pools/main_exit_on_pinned.json": {
+      "sha256_16": "c9fe388f1bd504a9"
+    },
+    "requests/committed_etf_rotation.json": {
+      "sha256_16": "157d527dfad649bc"
+    },
+    "requests/committed_etf_rotation_dynamic.json": {
+      "sha256_16": "5cc491e53a2a0c34"
+    },
+    "requests/run_dynamic_exit_off.json": {
+      "sha256_16": "84ae8d99cf34671e"
+    },
+    "requests/run_dynamic_exit_off_pinned.json": {
+      "sha256_16": "12c38f475ca74704"
+    },
+    "requests/run_dynamic_exit_on.json": {
+      "sha256_16": "861ec629a2b8e045"
+    },
+    "requests/run_dynamic_exit_on_pinned.json": {
+      "sha256_16": "4719f4aa384250a5"
+    },
+    "requests/run_dynamic_rsrsoff_exit_off.json": {
+      "sha256_16": "393103adba4fb71c"
+    },
+    "requests/run_dynamic_rsrsoff_exit_on.json": {
+      "sha256_16": "51aac0b60e5015ca"
+    },
+    "requests/run_main_exit_off.json": {
+      "sha256_16": "4386bbdabc3ff088"
+    },
+    "requests/run_main_exit_off_pinned.json": {
+      "sha256_16": "7626ad0a18ff9f37"
+    },
+    "requests/run_main_exit_on.json": {
+      "sha256_16": "7de948829de8923e"
+    },
+    "requests/run_main_exit_on_pinned.json": {
+      "sha256_16": "fd251cd6ea69e2b5"
+    },
+    "results/dynamic_exit_off.json": {
+      "sha256_16": "a5496c0d5766fe6d"
+    },
+    "results/dynamic_exit_off_pinned.json": {
+      "sha256_16": "3b4ac657d604874f"
+    },
+    "results/dynamic_exit_on.json": {
+      "sha256_16": "bce44e7dbace2672"
+    },
+    "results/dynamic_exit_on_pinned.json": {
+      "sha256_16": "7aaf9d6165544174"
+    },
+    "results/dynamic_rsrsoff_exit_off.json": {
+      "sha256_16": "db9292e276487150"
+    },
+    "results/dynamic_rsrsoff_exit_on.json": {
+      "sha256_16": "412e1a62e2f520dd"
+    },
+    "results/main_exit_off.json": {
+      "sha256_16": "66b6c037bb06144a"
+    },
+    "results/main_exit_off_pinned.json": {
+      "sha256_16": "0eef46fbf0a0e5e3"
+    },
+    "results/main_exit_on.json": {
+      "sha256_16": "8b23e6fc512cd286"
+    },
+    "results/main_exit_on_pinned.json": {
+      "sha256_16": "6838df6975847ddd"
+    },
+    "spotcheck/pick_etf_rotation_2024-05-06.json": {
+      "sha256_16": "087172296e64d916"
+    }
+  },
+  "repro_check": {
+    "decision_days_equal": true,
+    "equity_equal": true,
+    "max_relative_score_diff": 2.998944698739979e-13,
+    "metrics_equal": true,
+    "request": "req_main_exit_on_pinned.json",
+    "score_fields_differing": 530,
+    "targets_equal": true,
+    "trades_equal": true,
+    "verdict": "结果层完全可复现；仅候选分数有末位浮点噪声，未影响任何成交/持仓"
+  },
+  "runs": {
+    "dynamic_exit_off": {
+      "artifacts": {
+        "decisions_sha256_16": "2b464bca14c4053c",
+        "pool_sha256_16": "3958cb77415384ca",
+        "result_sha256_16": "a5496c0d5766fe6d"
+      },
+      "effective_window": {
+        "equity_points": 1626,
+        "first_equity_date": "2020-01-02",
+        "last_equity_date": "2026-09-15",
+        "requested_end": "2026-09-31",
+        "requested_start": "2020-01-01"
+      },
+      "execution_timing": "next_day_open",
+      "metrics": {
+        "annualized_return": 0.47969278646894287,
+        "closed_trades": 55.0,
+        "final_equity": 1382081.9668303963,
+        "max_drawdown": 0.19105034439340082,
+        "num_trades": 111.0,
+        "profit_factor": 7.884849685933184,
+        "return_drawdown_ratio": 67.10702202087637,
+        "sharpe": 1.692587252287258,
+        "total_return": 12.820819668303963,
+        "win_rate": 0.6181818181818182
+      },
+      "rebalance_mode": null,
+      "rebalances": 81,
+      "request": {
+        "commission": 0.0003,
+        "data_source": "a_stock_data",
+        "end_date": "2026-09-31",
+        "execution_timing": "next_day_open",
+        "force_refresh": false,
+        "initial_cash": 100000,
+        "lot_size": 100,
+        "max_universe": 2000,
+        "max_workers": 6,
+        "min_commission": 5.0,
+        "mode": "universe",
+        "output_options": {
+          "output": "out/_pack/result_dynamic_exit_off.json",
+          "pool_dump": "out/_pack/pool_dynamic_exit_off.json"
+        },
+        "slippage": 0.001,
+        "start_date": "2020-01-01",
+        "strategy_id": "etf_rotation",
+        "strategy_params": {
+          "amount_baseline_days": 10,
+          "amount_recent_days": 5,
+          "amount_surge_damp_coef": 0.1,
+          "decision_anchor": "start",
+          "decision_frequency": "monthly",
+          "discover_amount_days": 120,
+          "discover_corr_days": 60,
+          "discover_corr_threshold": 0.7,
+          "discover_max_pool": 90,
+          "discover_min_listing_days": 182,
+          "discover_min_valid_days": 60,
+          "discover_per_direction": 2,
+          "exclude_limit": true,
+          "exclude_suspended": true,
+          "limit_pct_threshold": 9.5,
+          "max_annualized_vol": 0.4,
+          "max_recent_gain_pct": 10.0,
+          "min_score": 0.0,
+          "pool_discovery": true,
+          "raw_trend_days": 40,
+          "recent_gain_days": 10,
+          "require_positive_score": true,
+          "require_raw_trend": true,
+          "rotate_threshold": 1.0,
+          "rsrs_gate": true,
+          "rsrs_regression_days": 18,
+          "rsrs_threshold": -0.5,
+          "rsrs_zscore_days": 120,
+          "short_term_damp_coef": 0.1,
+          "short_term_slope_days": 20,
+          "slope_days": 40,
+          "top_n": 1,
+          "trend_exit_check": false,
+          "vol_lookback": 20
+        },
+        "universe": "etf_market",
+        "use_cache": true
+      },
+      "strategy_id": "etf_rotation",
+      "trades": 111
+    },
+    "dynamic_exit_off_pinned": {
+      "artifacts": {
+        "decisions_sha256_16": "89b71ea49458b178",
+        "pool_sha256_16": "db4e4d8c263069d3",
+        "result_sha256_16": "3b4ac657d604874f"
+      },
+      "effective_window": {
+        "equity_points": 1624,
+        "first_equity_date": "2020-01-02",
+        "last_equity_date": "2026-09-11",
+        "requested_end": "2026-09-11",
+        "requested_start": "2020-01-01"
+      },
+      "execution_timing": "next_day_open",
+      "metrics": {
+        "annualized_return": 0.48444706138863913,
+        "closed_trades": 55.0,
+        "final_equity": 1406022.3668303965,
+        "max_drawdown": 0.19105034439340082,
+        "num_trades": 111.0,
+        "profit_factor": 7.884849685933184,
+        "return_drawdown_ratio": 68.36011581016069,
+        "sharpe": 1.7043469115155216,
+        "total_return": 13.060223668303964,
+        "win_rate": 0.6181818181818182
+      },
+      "rebalance_mode": null,
+      "rebalances": 81,
+      "request": {
+        "commission": 0.0003,
+        "data_source": "a_stock_data",
+        "end_date": "2026-09-11",
+        "execution_timing": "next_day_open",
+        "force_refresh": false,
+        "initial_cash": 100000,
+        "lot_size": 100,
+        "max_universe": 2000,
+        "max_workers": 6,
+        "min_commission": 5.0,
+        "mode": "universe",
+        "output_options": {
+          "output": "out/_pack/result_dynamic_exit_off_pinned.json",
+          "pool_dump": "out/_pack/pool_dynamic_exit_off_pinned.json"
+        },
+        "slippage": 0.001,
+        "start_date": "2020-01-01",
+        "strategy_id": "etf_rotation",
+        "strategy_params": {
+          "amount_baseline_days": 10,
+          "amount_recent_days": 5,
+          "amount_surge_damp_coef": 0.1,
+          "decision_anchor": "start",
+          "decision_frequency": "monthly",
+          "discover_amount_days": 120,
+          "discover_corr_days": 60,
+          "discover_corr_threshold": 0.7,
+          "discover_max_pool": 90,
+          "discover_min_listing_days": 182,
+          "discover_min_valid_days": 60,
+          "discover_per_direction": 2,
+          "exclude_limit": true,
+          "exclude_suspended": true,
+          "limit_pct_threshold": 9.5,
+          "max_annualized_vol": 0.4,
+          "max_recent_gain_pct": 10.0,
+          "min_score": 0.0,
+          "pool_discovery": true,
+          "raw_trend_days": 40,
+          "recent_gain_days": 10,
+          "require_positive_score": true,
+          "require_raw_trend": true,
+          "rotate_threshold": 1.0,
+          "rsrs_gate": true,
+          "rsrs_regression_days": 18,
+          "rsrs_threshold": -0.5,
+          "rsrs_zscore_days": 120,
+          "short_term_damp_coef": 0.1,
+          "short_term_slope_days": 20,
+          "slope_days": 40,
+          "top_n": 1,
+          "trend_exit_check": false,
+          "vol_lookback": 20
+        },
+        "universe": "etf_market",
+        "use_cache": true
+      },
+      "strategy_id": "etf_rotation",
+      "trades": 111
+    },
+    "dynamic_exit_on": {
+      "artifacts": {
+        "decisions_sha256_16": "b813781fe6a0ba4a",
+        "pool_sha256_16": "8d1f6009e786edc1",
+        "result_sha256_16": "bce44e7dbace2672"
+      },
+      "effective_window": {
+        "equity_points": 1626,
+        "first_equity_date": "2020-01-02",
+        "last_equity_date": "2026-09-15",
+        "requested_end": "2026-09-31",
+        "requested_start": "2020-01-01"
+      },
+      "execution_timing": "next_day_open",
+      "metrics": {
+        "annualized_return": 0.48769672771321093,
+        "closed_trades": 55.0,
+        "final_equity": 1432967.0191109716,
+        "max_drawdown": 0.17655196287372119,
+        "num_trades": 111.0,
+        "profit_factor": 9.24025773834314,
+        "return_drawdown_ratio": 75.49998297466546,
+        "sharpe": 1.7262427104099536,
+        "total_return": 13.329670191109717,
+        "win_rate": 0.6
+      },
+      "rebalance_mode": null,
+      "rebalances": 248,
+      "request": {
+        "commission": 0.0003,
+        "data_source": "a_stock_data",
+        "end_date": "2026-09-31",
+        "execution_timing": "next_day_open",
+        "force_refresh": false,
+        "initial_cash": 100000,
+        "lot_size": 100,
+        "max_universe": 2000,
+        "max_workers": 6,
+        "min_commission": 5.0,
+        "mode": "universe",
+        "output_options": {
+          "output": "out/_pack/result_dynamic_exit_on.json",
+          "pool_dump": "out/_pack/pool_dynamic_exit_on.json"
+        },
+        "slippage": 0.001,
+        "start_date": "2020-01-01",
+        "strategy_id": "etf_rotation",
+        "strategy_params": {
+          "amount_baseline_days": 10,
+          "amount_recent_days": 5,
+          "amount_surge_damp_coef": 0.1,
+          "decision_anchor": "start",
+          "decision_frequency": "monthly",
+          "discover_amount_days": 120,
+          "discover_corr_days": 60,
+          "discover_corr_threshold": 0.7,
+          "discover_max_pool": 90,
+          "discover_min_listing_days": 182,
+          "discover_min_valid_days": 60,
+          "discover_per_direction": 2,
+          "exclude_limit": true,
+          "exclude_suspended": true,
+          "limit_pct_threshold": 9.5,
+          "max_annualized_vol": 0.4,
+          "max_recent_gain_pct": 10.0,
+          "min_score": 0.0,
+          "pool_discovery": true,
+          "raw_trend_days": 40,
+          "recent_gain_days": 10,
+          "require_positive_score": true,
+          "require_raw_trend": true,
+          "rotate_threshold": 1.0,
+          "rsrs_gate": true,
+          "rsrs_regression_days": 18,
+          "rsrs_threshold": -0.5,
+          "rsrs_zscore_days": 120,
+          "short_term_damp_coef": 0.1,
+          "short_term_slope_days": 20,
+          "slope_days": 40,
+          "top_n": 1,
+          "trend_exit_check": true,
+          "trend_exit_check_weeks": 2,
+          "trend_exit_ma_days": 40,
+          "trend_exit_slope_days": 40,
+          "vol_lookback": 20
+        },
+        "universe": "etf_market",
+        "use_cache": true
+      },
+      "strategy_id": "etf_rotation",
+      "trades": 111
+    },
+    "dynamic_exit_on_pinned": {
+      "artifacts": {
+        "decisions_sha256_16": "ddc6b09989431801",
+        "pool_sha256_16": "b8447dcc76c34c72",
+        "result_sha256_16": "7aaf9d6165544174"
+      },
+      "effective_window": {
+        "equity_points": 1624,
+        "first_equity_date": "2020-01-02",
+        "last_equity_date": "2026-09-11",
+        "requested_end": "2026-09-11",
+        "requested_start": "2020-01-01"
+      },
+      "execution_timing": "next_day_open",
+      "metrics": {
+        "annualized_return": 0.4924900145966713,
+        "closed_trades": 55.0,
+        "final_equity": 1457789.6191109717,
+        "max_drawdown": 0.17655196287372119,
+        "num_trades": 111.0,
+        "profit_factor": 9.24025773834314,
+        "return_drawdown_ratio": 76.90594865162338,
+        "sharpe": 1.7381301879745255,
+        "total_return": 13.577896191109717,
+        "win_rate": 0.6
+      },
+      "rebalance_mode": null,
+      "rebalances": 247,
+      "request": {
+        "commission": 0.0003,
+        "data_source": "a_stock_data",
+        "end_date": "2026-09-11",
+        "execution_timing": "next_day_open",
+        "force_refresh": false,
+        "initial_cash": 100000,
+        "lot_size": 100,
+        "max_universe": 2000,
+        "max_workers": 6,
+        "min_commission": 5.0,
+        "mode": "universe",
+        "output_options": {
+          "output": "out/_pack/result_dynamic_exit_on_pinned.json",
+          "pool_dump": "out/_pack/pool_dynamic_exit_on_pinned.json"
+        },
+        "slippage": 0.001,
+        "start_date": "2020-01-01",
+        "strategy_id": "etf_rotation",
+        "strategy_params": {
+          "amount_baseline_days": 10,
+          "amount_recent_days": 5,
+          "amount_surge_damp_coef": 0.1,
+          "decision_anchor": "start",
+          "decision_frequency": "monthly",
+          "discover_amount_days": 120,
+          "discover_corr_days": 60,
+          "discover_corr_threshold": 0.7,
+          "discover_max_pool": 90,
+          "discover_min_listing_days": 182,
+          "discover_min_valid_days": 60,
+          "discover_per_direction": 2,
+          "exclude_limit": true,
+          "exclude_suspended": true,
+          "limit_pct_threshold": 9.5,
+          "max_annualized_vol": 0.4,
+          "max_recent_gain_pct": 10.0,
+          "min_score": 0.0,
+          "pool_discovery": true,
+          "raw_trend_days": 40,
+          "recent_gain_days": 10,
+          "require_positive_score": true,
+          "require_raw_trend": true,
+          "rotate_threshold": 1.0,
+          "rsrs_gate": true,
+          "rsrs_regression_days": 18,
+          "rsrs_threshold": -0.5,
+          "rsrs_zscore_days": 120,
+          "short_term_damp_coef": 0.1,
+          "short_term_slope_days": 20,
+          "slope_days": 40,
+          "top_n": 1,
+          "trend_exit_check": true,
+          "trend_exit_check_weeks": 2,
+          "trend_exit_ma_days": 40,
+          "trend_exit_slope_days": 40,
+          "vol_lookback": 20
+        },
+        "universe": "etf_market",
+        "use_cache": true
+      },
+      "strategy_id": "etf_rotation",
+      "trades": 111
+    },
+    "dynamic_rsrsoff_exit_off": {
+      "artifacts": {
+        "decisions_sha256_16": "f0753a9ade23ba19",
+        "pool_sha256_16": "3958cb77415384ca",
+        "result_sha256_16": "db9292e276487150"
+      },
+      "effective_window": {
+        "equity_points": 1626,
+        "first_equity_date": "2020-01-02",
+        "last_equity_date": "2026-09-15",
+        "requested_end": "2026-09-31",
+        "requested_start": "2020-01-01"
+      },
+      "execution_timing": "next_day_open",
+      "metrics": {
+        "annualized_return": 0.46170727802920863,
+        "closed_trades": 73.0,
+        "final_equity": 1273318.7008047132,
+        "max_drawdown": 0.3475862541124749,
+        "num_trades": 147.0,
+        "profit_factor": 4.146217481212156,
+        "return_drawdown_ratio": 33.75618819566555,
+        "sharpe": 1.464510888761858,
+        "total_return": 11.733187008047132,
+        "win_rate": 0.6027397260273972
+      },
+      "rebalance_mode": null,
+      "rebalances": 81,
+      "request": {
+        "commission": 0.0003,
+        "data_source": "a_stock_data",
+        "end_date": "2026-09-31",
+        "execution_timing": "next_day_open",
+        "force_refresh": false,
+        "initial_cash": 100000,
+        "lot_size": 100,
+        "max_universe": 2000,
+        "max_workers": 6,
+        "min_commission": 5.0,
+        "mode": "universe",
+        "output_options": {
+          "output": "out/_pack/result_dynamic_rsrsoff_exit_off.json",
+          "pool_dump": "out/_pack/pool_dynamic_rsrsoff_exit_off.json"
+        },
+        "slippage": 0.001,
+        "start_date": "2020-01-01",
+        "strategy_id": "etf_rotation",
+        "strategy_params": {
+          "amount_baseline_days": 10,
+          "amount_recent_days": 5,
+          "amount_surge_damp_coef": 0.1,
+          "decision_anchor": "start",
+          "decision_frequency": "monthly",
+          "discover_amount_days": 120,
+          "discover_corr_days": 60,
+          "discover_corr_threshold": 0.7,
+          "discover_max_pool": 90,
+          "discover_min_listing_days": 182,
+          "discover_min_valid_days": 60,
+          "discover_per_direction": 2,
+          "exclude_limit": true,
+          "exclude_suspended": true,
+          "limit_pct_threshold": 9.5,
+          "max_annualized_vol": 0.4,
+          "max_recent_gain_pct": 10.0,
+          "min_score": 0.0,
+          "pool_discovery": true,
+          "raw_trend_days": 40,
+          "recent_gain_days": 10,
+          "require_positive_score": true,
+          "require_raw_trend": true,
+          "rotate_threshold": 1.0,
+          "rsrs_gate": false,
+          "rsrs_regression_days": 18,
+          "rsrs_threshold": -0.5,
+          "rsrs_zscore_days": 120,
+          "short_term_damp_coef": 0.1,
+          "short_term_slope_days": 20,
+          "slope_days": 40,
+          "top_n": 1,
+          "trend_exit_check": false,
+          "vol_lookback": 20
+        },
+        "universe": "etf_market",
+        "use_cache": true
+      },
+      "strategy_id": "etf_rotation",
+      "trades": 147
+    },
+    "dynamic_rsrsoff_exit_on": {
+      "artifacts": {
+        "decisions_sha256_16": "65da0e107c39ef4d",
+        "pool_sha256_16": "b1e040e8e0e768e2",
+        "result_sha256_16": "412e1a62e2f520dd"
+      },
+      "effective_window": {
+        "equity_points": 1626,
+        "first_equity_date": "2020-01-02",
+        "last_equity_date": "2026-09-15",
+        "requested_end": "2026-09-31",
+        "requested_start": "2020-01-01"
+      },
+      "execution_timing": "next_day_open",
+      "metrics": {
+        "annualized_return": 0.4404268978639403,
+        "closed_trades": 73.0,
+        "final_equity": 1154115.250214805,
+        "max_drawdown": 0.3118783168987394,
+        "num_trades": 147.0,
+        "profit_factor": 3.6159555506487004,
+        "return_drawdown_ratio": 33.79892711672722,
+        "sharpe": 1.4275413749256802,
+        "total_return": 10.54115250214805,
+        "win_rate": 0.5753424657534246
+      },
+      "rebalance_mode": null,
+      "rebalances": 248,
+      "request": {
+        "commission": 0.0003,
+        "data_source": "a_stock_data",
+        "end_date": "2026-09-31",
+        "execution_timing": "next_day_open",
+        "force_refresh": false,
+        "initial_cash": 100000,
+        "lot_size": 100,
+        "max_universe": 2000,
+        "max_workers": 6,
+        "min_commission": 5.0,
+        "mode": "universe",
+        "output_options": {
+          "output": "out/_pack/result_dynamic_rsrsoff_exit_on.json",
+          "pool_dump": "out/_pack/pool_dynamic_rsrsoff_exit_on.json"
+        },
+        "slippage": 0.001,
+        "start_date": "2020-01-01",
+        "strategy_id": "etf_rotation",
+        "strategy_params": {
+          "amount_baseline_days": 10,
+          "amount_recent_days": 5,
+          "amount_surge_damp_coef": 0.1,
+          "decision_anchor": "start",
+          "decision_frequency": "monthly",
+          "discover_amount_days": 120,
+          "discover_corr_days": 60,
+          "discover_corr_threshold": 0.7,
+          "discover_max_pool": 90,
+          "discover_min_listing_days": 182,
+          "discover_min_valid_days": 60,
+          "discover_per_direction": 2,
+          "exclude_limit": true,
+          "exclude_suspended": true,
+          "limit_pct_threshold": 9.5,
+          "max_annualized_vol": 0.4,
+          "max_recent_gain_pct": 10.0,
+          "min_score": 0.0,
+          "pool_discovery": true,
+          "raw_trend_days": 40,
+          "recent_gain_days": 10,
+          "require_positive_score": true,
+          "require_raw_trend": true,
+          "rotate_threshold": 1.0,
+          "rsrs_gate": false,
+          "rsrs_regression_days": 18,
+          "rsrs_threshold": -0.5,
+          "rsrs_zscore_days": 120,
+          "short_term_damp_coef": 0.1,
+          "short_term_slope_days": 20,
+          "slope_days": 40,
+          "top_n": 1,
+          "trend_exit_check": true,
+          "trend_exit_check_weeks": 2,
+          "trend_exit_ma_days": 40,
+          "trend_exit_slope_days": 40,
+          "vol_lookback": 20
+        },
+        "universe": "etf_market",
+        "use_cache": true
+      },
+      "strategy_id": "etf_rotation",
+      "trades": 147
+    },
+    "main_exit_off": {
+      "artifacts": {
+        "decisions_sha256_16": "05d936766e30dad6",
+        "pool_sha256_16": "756dea5280e9c0b1",
+        "result_sha256_16": "66b6c037bb06144a"
+      },
+      "effective_window": {
+        "equity_points": 1626,
+        "first_equity_date": "2020-01-02",
+        "last_equity_date": "2026-09-15",
+        "requested_end": "2026-09-31",
+        "requested_start": "2020-01-01"
+      },
+      "execution_timing": "next_day_open",
+      "metrics": {
+        "annualized_return": 0.5687579154619886,
+        "closed_trades": 71.0,
+        "final_equity": 2044873.465008861,
+        "max_drawdown": 0.24818913694434425,
+        "num_trades": 143.0,
+        "profit_factor": 5.58500948171639,
+        "return_drawdown_ratio": 78.36255401641506,
+        "sharpe": 1.6915334929882202,
+        "total_return": 19.44873465008861,
+        "win_rate": 0.6338028169014085
+      },
+      "rebalance_mode": null,
+      "rebalances": 81,
+      "request": {
+        "commission": 0.0003,
+        "data_source": "a_stock_data",
+        "end_date": "2026-09-31",
+        "execution_timing": "next_day_open",
+        "force_refresh": false,
+        "initial_cash": 100000,
+        "lot_size": 100,
+        "max_workers": 6,
+        "min_commission": 5.0,
+        "mode": "universe",
+        "output_options": {
+          "output": "out/_pack/result_main_exit_off.json",
+          "pool_dump": "out/_pack/pool_main_exit_off.json"
+        },
+        "slippage": 0.001,
+        "start_date": "2020-01-01",
+        "strategy_id": "etf_rotation",
+        "strategy_params": {
+          "amount_baseline_days": 10,
+          "amount_recent_days": 5,
+          "amount_surge_damp_coef": 0.1,
+          "decision_anchor": "start",
+          "decision_frequency": "monthly",
+          "exclude_limit": true,
+          "exclude_suspended": true,
+          "limit_pct_threshold": 9.5,
+          "max_annualized_vol": 0.4,
+          "max_recent_gain_pct": 10.0,
+          "min_score": 0.0,
+          "raw_trend_days": 40,
+          "recent_gain_days": 10,
+          "require_positive_score": true,
+          "require_raw_trend": true,
+          "rotate_threshold": 1.0,
+          "short_term_damp_coef": 0.1,
+          "short_term_slope_days": 20,
+          "slope_days": 40,
+          "top_n": 1,
+          "trend_exit_check": false,
+          "vol_lookback": 20
+        },
+        "universe": "etf_core_sub",
+        "use_cache": true
+      },
+      "strategy_id": "etf_rotation",
+      "trades": 143
+    },
+    "main_exit_off_pinned": {
+      "artifacts": {
+        "decisions_sha256_16": "6ec2e92bbab99228",
+        "pool_sha256_16": "05a41dc580ae28ae",
+        "result_sha256_16": "0eef46fbf0a0e5e3"
+      },
+      "effective_window": {
+        "equity_points": 1624,
+        "first_equity_date": "2020-01-02",
+        "last_equity_date": "2026-09-11",
+        "requested_end": "2026-09-11",
+        "requested_start": "2020-01-01"
+      },
+      "execution_timing": "next_day_open",
+      "metrics": {
+        "annualized_return": 0.5739490243345042,
+        "closed_trades": 71.0,
+        "final_equity": 2080295.6650088609,
+        "max_drawdown": 0.24818913694434425,
+        "num_trades": 143.0,
+        "profit_factor": 5.58500948171639,
+        "return_drawdown_ratio": 79.78978006007318,
+        "sharpe": 1.7017111297315504,
+        "total_return": 19.80295665008861,
+        "win_rate": 0.6338028169014085
+      },
+      "rebalance_mode": null,
+      "rebalances": 81,
+      "request": {
+        "commission": 0.0003,
+        "data_source": "a_stock_data",
+        "end_date": "2026-09-11",
+        "execution_timing": "next_day_open",
+        "force_refresh": false,
+        "initial_cash": 100000,
+        "lot_size": 100,
+        "max_workers": 6,
+        "min_commission": 5.0,
+        "mode": "universe",
+        "output_options": {
+          "output": "out/_pack/result_main_exit_off_pinned.json",
+          "pool_dump": "out/_pack/pool_main_exit_off_pinned.json"
+        },
+        "slippage": 0.001,
+        "start_date": "2020-01-01",
+        "strategy_id": "etf_rotation",
+        "strategy_params": {
+          "amount_baseline_days": 10,
+          "amount_recent_days": 5,
+          "amount_surge_damp_coef": 0.1,
+          "decision_anchor": "start",
+          "decision_frequency": "monthly",
+          "exclude_limit": true,
+          "exclude_suspended": true,
+          "limit_pct_threshold": 9.5,
+          "max_annualized_vol": 0.4,
+          "max_recent_gain_pct": 10.0,
+          "min_score": 0.0,
+          "raw_trend_days": 40,
+          "recent_gain_days": 10,
+          "require_positive_score": true,
+          "require_raw_trend": true,
+          "rotate_threshold": 1.0,
+          "short_term_damp_coef": 0.1,
+          "short_term_slope_days": 20,
+          "slope_days": 40,
+          "top_n": 1,
+          "trend_exit_check": false,
+          "vol_lookback": 20
+        },
+        "universe": "etf_core_sub",
+        "use_cache": true
+      },
+      "strategy_id": "etf_rotation",
+      "trades": 143
+    },
+    "main_exit_on": {
+      "artifacts": {
+        "decisions_sha256_16": "80416df39fe9dd23",
+        "pool_sha256_16": "6014a73f6466ecd4",
+        "result_sha256_16": "8b23e6fc512cd286"
+      },
+      "effective_window": {
+        "equity_points": 1626,
+        "first_equity_date": "2020-01-02",
+        "last_equity_date": "2026-09-15",
+        "requested_end": "2026-09-31",
+        "requested_start": "2020-01-01"
+      },
+      "execution_timing": "next_day_open",
+      "metrics": {
+        "annualized_return": 0.5420601642677072,
+        "closed_trades": 71.0,
+        "final_equity": 1822651.7709583798,
+        "max_drawdown": 0.24816322726303666,
+        "num_trades": 143.0,
+        "profit_factor": 4.53446714142034,
+        "return_drawdown_ratio": 69.41607706981029,
+        "sharpe": 1.650425580216688,
+        "total_return": 17.2265177095838,
+        "win_rate": 0.6056338028169014
+      },
+      "rebalance_mode": null,
+      "rebalances": 248,
+      "request": {
+        "commission": 0.0003,
+        "data_source": "a_stock_data",
+        "end_date": "2026-09-31",
+        "execution_timing": "next_day_open",
+        "force_refresh": false,
+        "initial_cash": 100000,
+        "lot_size": 100,
+        "max_workers": 6,
+        "min_commission": 5.0,
+        "mode": "universe",
+        "output_options": {
+          "output": "out/_pack/result_main_exit_on.json",
+          "pool_dump": "out/_pack/pool_main_exit_on.json"
+        },
+        "slippage": 0.001,
+        "start_date": "2020-01-01",
+        "strategy_id": "etf_rotation",
+        "strategy_params": {
+          "amount_baseline_days": 10,
+          "amount_recent_days": 5,
+          "amount_surge_damp_coef": 0.1,
+          "decision_anchor": "start",
+          "decision_frequency": "monthly",
+          "exclude_limit": true,
+          "exclude_suspended": true,
+          "limit_pct_threshold": 9.5,
+          "max_annualized_vol": 0.4,
+          "max_recent_gain_pct": 10.0,
+          "min_score": 0.0,
+          "raw_trend_days": 40,
+          "recent_gain_days": 10,
+          "require_positive_score": true,
+          "require_raw_trend": true,
+          "rotate_threshold": 1.0,
+          "short_term_damp_coef": 0.1,
+          "short_term_slope_days": 20,
+          "slope_days": 40,
+          "top_n": 1,
+          "trend_exit_check": true,
+          "trend_exit_check_weeks": 2,
+          "trend_exit_ma_days": 40,
+          "trend_exit_slope_days": 40,
+          "vol_lookback": 20
+        },
+        "universe": "etf_core_sub",
+        "use_cache": true
+      },
+      "strategy_id": "etf_rotation",
+      "trades": 143
+    },
+    "main_exit_on_pinned": {
+      "artifacts": {
+        "decisions_sha256_16": "5de16eca6801987d",
+        "pool_sha256_16": "c9fe388f1bd504a9",
+        "result_sha256_16": "6838df6975847ddd"
+      },
+      "effective_window": {
+        "equity_points": 1624,
+        "first_equity_date": "2020-01-02",
+        "last_equity_date": "2026-09-11",
+        "requested_end": "2026-09-11",
+        "requested_start": "2020-01-01"
+      },
+      "execution_timing": "next_day_open",
+      "metrics": {
+        "annualized_return": 0.5471193927403646,
+        "closed_trades": 71.0,
+        "final_equity": 1854223.9709583798,
+        "max_drawdown": 0.24816322726303666,
+        "num_trades": 143.0,
+        "profit_factor": 4.53446714142034,
+        "return_drawdown_ratio": 70.68831229773691,
+        "sharpe": 1.6606895796303371,
+        "total_return": 17.542239709583797,
+        "win_rate": 0.6056338028169014
+      },
+      "rebalance_mode": null,
+      "rebalances": 247,
+      "request": {
+        "commission": 0.0003,
+        "data_source": "a_stock_data",
+        "end_date": "2026-09-11",
+        "execution_timing": "next_day_open",
+        "force_refresh": false,
+        "initial_cash": 100000,
+        "lot_size": 100,
+        "max_workers": 6,
+        "min_commission": 5.0,
+        "mode": "universe",
+        "output_options": {
+          "output": "out/_pack/result_main_exit_on_pinned.json",
+          "pool_dump": "out/_pack/pool_main_exit_on_pinned.json"
+        },
+        "slippage": 0.001,
+        "start_date": "2020-01-01",
+        "strategy_id": "etf_rotation",
+        "strategy_params": {
+          "amount_baseline_days": 10,
+          "amount_recent_days": 5,
+          "amount_surge_damp_coef": 0.1,
+          "decision_anchor": "start",
+          "decision_frequency": "monthly",
+          "exclude_limit": true,
+          "exclude_suspended": true,
+          "limit_pct_threshold": 9.5,
+          "max_annualized_vol": 0.4,
+          "max_recent_gain_pct": 10.0,
+          "min_score": 0.0,
+          "raw_trend_days": 40,
+          "recent_gain_days": 10,
+          "require_positive_score": true,
+          "require_raw_trend": true,
+          "rotate_threshold": 1.0,
+          "short_term_damp_coef": 0.1,
+          "short_term_slope_days": 20,
+          "slope_days": 40,
+          "top_n": 1,
+          "trend_exit_check": true,
+          "trend_exit_check_weeks": 2,
+          "trend_exit_ma_days": 40,
+          "trend_exit_slope_days": 40,
+          "vol_lookback": 20
+        },
+        "universe": "etf_core_sub",
+        "use_cache": true
+      },
+      "strategy_id": "etf_rotation",
+      "trades": 143
+    }
+  }
+}

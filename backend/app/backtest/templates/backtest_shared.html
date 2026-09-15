@@ -500,6 +500,8 @@ const FIELD_LABELS = {
   score: "综合得分", llt_slope: "LLT斜率", llt_r2: "LLT R²", vpt_slope: "VPT斜率",
   pct_change: "当日涨跌%", fwd_return: "持有期涨跌%", close: "收盘价", rank: "排名", float_market_cap: "流通市值",
   ma_value: "均线价",
+  // 双周趋势退出检查日（etf_rotation，source=trend_exit）的专属列
+  exit_slope: "40日斜率", exit_ma: "40日均线", exit_ma_gap: "距40日均线", exit_triggered: "趋势退出触发",
 };
 
 function fieldLabel(f) { return FIELD_LABELS[f] || f; }
