@@ -95,6 +95,7 @@ def run_shared_backtest(
     rebalance_mode: str = "full",
     execution_timing: Literal["same_day_close", "next_day_open", "next_day_close"] = "next_day_open",
     open_panel: pd.DataFrame | None = None,
+    check_only_days: Sequence[str] | None = None,
 ) -> SharedBacktestResult:
     """按日期目标映射执行共享账户回测；仅映射中出现的交易日进行换仓。
 
@@ -103,6 +104,11 @@ def run_shared_backtest(
     ``same_day_close``=决策日收盘 / ``next_day_open``=下一交易日开盘（默认，更贴近现实）/
     ``next_day_close``=下一交易日收盘。next_day 模式会把目标实际成交日顺延一个交易日，
     成交价格取对应面板（开盘成交取 ``open_panel``，收盘成交取 ``close_panel``）。
+
+    ``check_only_days`` 是**仅作检查、不换仓**的决策日（用决策日口径，引擎自行换算成交日）：
+    这类日子即使出现在 ``targets_by_date`` 里，若当天**一笔未成交**就不写 ``rebalances``
+    记录，避免报告里出现空白的“调仓”周期（如 ETF 轮动的双周趋势退出检查日）。``holdings``
+    仍逐决策日记录，净值与持仓展示不受影响。默认 ``None`` 表示所有决策日都记录。
     """
     if close_panel.empty:
         raise ValueError("close_panel 为空")
@@ -110,6 +116,7 @@ def run_shared_backtest(
         raise ValueError("initial_cash 必须为正")
     if execution_timing not in ("same_day_close", "next_day_open", "next_day_close"):
         raise ValueError(f"未知 execution_timing: {execution_timing}")
+    check_only = {str(day)[:10] for day in (check_only_days or ())}
     risk = RiskControl(
         take_profit_arm_pct=take_profit_arm_pct,
         take_profit_exit_pct=take_profit_exit_pct,
@@ -286,6 +293,7 @@ def run_shared_backtest(
 
     for day in calendar:
         row = close_panel.loc[day]
+        trades_before = len(trades)
         target: list[str] | None = None
         sold_today: set[str] = set()
         opened_today: set[str] = set()
@@ -387,13 +395,18 @@ def run_shared_backtest(
                                 buy(day, symbol, budget, fill_panel)
 
         if target is not None:
-            rebalances.append({
-                "date": day,
-                "decision_date": decision_of_exec.get(day, day),
-                "targets": target,
-                "weights": {s: 1.0 / len(target) for s in target} if target else {},
-                "cash": float(cash),
-            })
+            # 仅作检查的决策日（如双周趋势退出检查）当天零成交时不记 rebalance 行，否则报告
+            # 里会多出成串的空白“调仓”周期。用 decision_of_exec 取该成交日真正生效的决策日：
+            # next_day 模式下末位交易日会自映射，可能与前一决策日撞到同一成交日（后者覆盖）。
+            decision_day = decision_of_exec.get(day, day)
+            if not (decision_day in check_only and len(trades) == trades_before):
+                rebalances.append({
+                    "date": day,
+                    "decision_date": decision_day,
+                    "targets": target,
+                    "weights": {s: 1.0 / len(target) for s in target} if target else {},
+                    "cash": float(cash),
+                })
             holdings.append({
                 "date": day,
                 "positions": {s: int(n) for s, n in positions.items() if n > 0},

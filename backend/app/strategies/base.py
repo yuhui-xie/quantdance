@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Callable, Mapping, Sequence
+from typing import Any, Callable, Collection, Mapping, Sequence
 
 import numpy as np
 import pandas as pd
@@ -89,6 +89,12 @@ CrossSectionDecisionDates = Callable[
     [Sequence[str], CrossSectionContext, BaseModel],
     list[str],
 ]
+# 返回“仅作检查、不换仓”的决策日集合（决策日口径）；引擎对这些日子只在当天有成交时
+# 才记 rebalance 行。未提供该回调 ⇒ 所有决策日都记录（默认，向后兼容）。
+CrossSectionCheckDays = Callable[
+    [Sequence[str], CrossSectionContext, BaseModel],
+    Collection[str],
+]
 
 
 @dataclass(frozen=True)
@@ -110,3 +116,5 @@ class CrossSectionStrategySpec:
     needs_turnover: bool = False
     default_top_n: int = 10
     warnings: tuple[str, ...] = ()
+    # 可选：声明哪些决策日只是“检查日”而非换仓日（见 CrossSectionCheckDays）。
+    check_days: CrossSectionCheckDays | None = None

@@ -75,9 +75,30 @@ def _a_stock_data_bars_to_ohlcv(rows: list[MarketKlineBar]) -> pd.DataFrame:
     return out
 
 
+_A_STOCK_SDK: AStockDataSDK | None = None
+
+
+def _a_stock_sdk() -> AStockDataSDK:
+    """复用同一个 ``AStockDataSDK`` 实例（进程内单例）。
+
+    SDK 构造会做 TDX 选点建连（`MootdxMarketSDK.__init__` → `_connect_node`，网络
+    探活），实测约 0.28s/次；而 SDK 本身是按**长生命周期**设计的——`_node_ok_until`
+    节流探活、节点失效时 `_reseat_node` 自行换点。逐次新建实例等于把这份设计作废：
+    即使 K 线完全命中本地缓存，每次取数仍白付一次建连开销。
+
+    实测（1668 只 ETF 的 as-of 扫描路径）：每次新建约 0.32s，其中 0.28s 是建连、
+    真正的缓存读只有约 0.02s。逐票新建把整轮扫描拖到约 11 分钟。纯脚本、单线程，
+    共享实例无并发问题。
+    """
+    global _A_STOCK_SDK
+    if _A_STOCK_SDK is None:
+        _A_STOCK_SDK = AStockDataSDK()
+    return _A_STOCK_SDK
+
+
 def _a_stock_data_hist(symbol: str, count: int) -> pd.DataFrame:
     try:
-        rows = AStockDataSDK().get_klines(symbol, period="day", count=count)
+        rows = _a_stock_sdk().get_klines(symbol, period="day", count=count)
     except AStockDataError as e:
         raise MarketDataError(f"a_stock_data 行情不可用: {e}") from e
     return _a_stock_data_bars_to_ohlcv(rows)
@@ -140,7 +161,7 @@ def fetch_a_share_universe(
     n_take = max_universe
 
     try:
-        rows = AStockDataSDK().get_universe()
+        rows = _a_stock_sdk().get_universe()
     except AStockDataError as e:
         raise MarketDataError(f"a_stock_data A 股列表不可用: {e}") from e
 
@@ -182,7 +203,7 @@ def fetch_star_board_universe(
         raise ValueError("max_universe 至少为 1")
 
     try:
-        rows = AStockDataSDK().get_universe()
+        rows = _a_stock_sdk().get_universe()
     except AStockDataError as e:
         raise MarketDataError(f"a_stock_data A 股列表不可用: {e}") from e
 
@@ -626,58 +647,19 @@ def fetch_gz2000_universe(
     )
 
 
-def _parse_etf_df(
-    ak: Any,
-    func_name: str,
-    *,
-    func_args: tuple[str, ...] = (),
-    code_cols: tuple[str, ...],
-    name_cols: tuple[str, ...],
-    strip_prefix: bool = False,
-) -> list[dict[str, str]]:
-    """调用某个 akshare ETF 接口并解析为 [{"symbol","name"}]。
-
-    symbol 统一为 6 位数字代码；sina 的代码形如 "sz159998"，通过 strip_prefix 剥掉市场前缀。
-    接口缺失、返回空或解析后无有效代码时返回空列表（由调用方决定是否继续尝试下一数据源）。
-    """
-    func = getattr(ak, func_name, None)
-    if not callable(func):
-        return []
-    df = func(*func_args)
-    if not isinstance(df, pd.DataFrame) or df.empty:
-        return []
-
-    code_col = _first_existing_column(df, code_cols)
-    name_col = _first_existing_column(df, name_cols)
-    if code_col is None:
-        return []
-
-    rows: list[dict[str, str]] = []
-    seen: set[str] = set()
-    for _, row in df.iterrows():
-        code = str(row.get(code_col, "")).strip()
-        if strip_prefix:
-            code = code[-6:]  # "sz159998" -> "159998"
-        if not re.fullmatch(r"\d{6}", code):
-            continue
-        if code in seen:
-            continue
-        seen.add(code)
-        name = str(row.get(name_col, "")).strip() if name_col is not None else ""
-        rows.append({"symbol": code, "name": name})
-    return rows
-
-
 def fetch_etf_universe(
     max_universe: int = 500,
     *,
     seed: int | None = None,
 ) -> tuple[list[dict[str, str]], str]:
-    """通过 akshare 拉取场内 ETF 列表（fund_etf_spot_em）。
+    """通过 akshare 拉取场内 ETF 列表（新浪 fund_etf_category_sina，唯一数据源）。
+
+    只用新浪：不做多源兜底，接口失败直接抛 ``MarketDataError``，避免不同源的
+    代码/名称口径混进同一个池。
 
     返回 (ETF 列表, universe_note)，每项为 {"symbol": 六位代码, "name": 名称}。
-    ETF 代码为 6 位数字（沪 5xxxxx、深 15xxxx），行情走 a_stock_data/腾讯时由
-    normalize_symbol 按 5→SH、其余→SZ 自动映射市场。
+    新浪代码带市场前缀（"sz159998"/"sh510050"），此处剥成 6 位数字；行情走
+    a_stock_data/腾讯时由 normalize_symbol 按 5→SH、其余→SZ 自动映射市场。
     """
     if max_universe < 1:
         raise ValueError("max_universe 至少为 1")
@@ -687,38 +669,30 @@ def fetch_etf_universe(
     except Exception as e:  # pragma: no cover - 依赖环境分支
         raise MarketDataError(f"akshare 不可用，无法获取 ETF 列表: {e}") from e
 
-    # 多数据源备用链：东财实时 → 同花顺 → 新浪分类。单个失败自动尝试下一个，
-    # 全部失败才抛 MarketDataError（东财 fund_etf_spot_em 常被风控/限流）。
-    # 每项为 (接口名, 调用位置参数, 代码列候选, 名称列候选, 代码是否带 sh/sz 前缀)。
-    providers: tuple[tuple[str, tuple[str, ...], tuple[str, ...], tuple[str, ...], bool], ...] = (
-        ("fund_etf_spot_em", (), ("代码", "code", "symbol"), ("名称", "name"), False),
-        ("fund_etf_spot_ths", (), ("基金代码", "代码", "code", "symbol"), ("基金简称", "基金名称", "名称", "name"), False),
-        ("fund_etf_category_sina", ("ETF基金",), ("代码", "code"), ("名称", "name"), True),
-    )
+    try:
+        df = ak.fund_etf_category_sina(symbol="ETF基金")
+    except Exception as e:
+        raise MarketDataError(f"新浪 ETF 列表获取失败 (fund_etf_category_sina): {e}") from e
+    if not isinstance(df, pd.DataFrame) or df.empty:
+        raise MarketDataError("新浪 ETF 列表为空 (fund_etf_category_sina)")
 
-    errors: list[str] = []
+    code_col = _first_existing_column(df, ("代码", "code", "symbol"))
+    if code_col is None:
+        raise MarketDataError("新浪 ETF 列表缺少代码列 (fund_etf_category_sina)")
+    name_col = _first_existing_column(df, ("名称", "name"))
+
     rows: list[dict[str, str]] = []
-    for func_name, func_args, code_cols, name_cols, strip_prefix in providers:
-        try:
-            parsed = _parse_etf_df(
-                ak,
-                func_name,
-                func_args=func_args,
-                code_cols=code_cols,
-                name_cols=name_cols,
-                strip_prefix=strip_prefix,
-            )
-        except Exception as e:  # 单个数据源失败，记录后继续尝试下一个
-            errors.append(f"{func_name}: {e}")
+    seen: set[str] = set()
+    for _, row in df.iterrows():
+        code = str(row.get(code_col, "")).strip()[-6:]  # "sz159998" -> "159998"
+        if not re.fullmatch(r"\d{6}", code) or code in seen:
             continue
-        if parsed:
-            rows = parsed
-            break
+        seen.add(code)
+        name = str(row.get(name_col, "")).strip() if name_col is not None else ""
+        rows.append({"symbol": code, "name": name})
 
-    total = len(rows)
-    if total == 0:
-        detail = "；".join(errors) if errors else "所有 akshare ETF 接口均不可用"
-        raise MarketDataError(f"akshare ETF 列表获取失败: {detail}")
+    if not rows:
+        raise MarketDataError("新浪 ETF 列表无有效代码 (fund_etf_category_sina)")
 
     return _cap_etf_rows(rows, max_universe, seed)
 
@@ -794,7 +768,7 @@ def fetch_etf_universe_at(
 ) -> tuple[list[dict[str, str]], str]:
     """拉取 asof 时点存在的全市场 ETF 池，避开幸存者偏差。
 
-    先取当前全量 ETF 列表（``fetch_etf_universe``，多源备用链），再按
+    先取当前全量 ETF 列表（``fetch_etf_universe``，仅新浪），再按
     ``filter_etf_symbols_at`` 的 K 线覆盖判定其在 asof 时点是否已上市，
     **最后**才用 ``max_universe`` 做数量封顶。先 as-of 过滤再截断，可避免
     先按 max_universe 截断导致老 ETF 落在截断窗口之外被误丢。
@@ -827,7 +801,7 @@ def fetch_a_share_valuation_snapshot(symbol: str) -> dict[str, float] | None:
     """
     code = normalize_a_share_symbol(symbol)
     try:
-        valuation = AStockDataSDK().get_snapshot(code).get("valuation")
+        valuation = _a_stock_sdk().get_snapshot(code).get("valuation")
     except AStockDataError as e:
         raise MarketDataError(f"a_stock_data 估值不可用: {e}") from e
     except (ValueError, KeyError, TypeError) as e:

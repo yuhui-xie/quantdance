@@ -57,8 +57,10 @@ K 线不足 ``max(trend_exit_slope_days, trend_exit_ma_days)`` 根、面板缺�
 足够收盘价时**无法判定 → 按持有处理**（与 RSRS 门控「None 放行」同一约定）。默认关闭，
 向后兼容。
 
-两个使用注意（详见 ``docs/etf-rotation-strategy.md`` §2.4）：检查日会在 ``rebalances``
-里留下周期记录（即使当日无成交），报告的周期表/热力图列与调仓次数随之增加；``top_n>1``
+两个使用注意（详见 ``docs/etf-rotation-strategy.md`` §2.4）：检查日**只在当天真正卖出时**
+才在 ``rebalances`` 里留下周期记录——零成交的检查日经 :func:`etf_rotation_check_days`
+（``CrossSectionStrategySpec.check_days``）声明后不再记录，避免报告多出成串的空白调仓
+周期；``top_n>1``
 且 ``rebalance_mode="full"``（默认）时，部分退出会触发整仓等权重建（幸存者被卖出再买回），
 需要 ``rebalance_mode="incremental"`` 才能只交易差异。跨 53 周的 ISO 年份（如 2020）
 相邻检查点可能间隔 3 个自然周，沿用 ``_weekly_trading_days`` 的偶数周锚定口径。
@@ -563,16 +565,17 @@ def select_trend_exit(
     return survivors, details
 
 
-def etf_rotation_decision_dates(
+def _etf_rotation_schedule(
     calendar: Sequence[str],
     ctx: CrossSectionContext,
     params: EtfRotationParams,
-) -> list[str]:
-    """决策日 = 周期调仓日 ∪ 双周趋势退出检查日（后者仅 trend_exit_check=True 时追加）。
+) -> tuple[list[str], list[str]]:
+    """拆出 (周期调仓日, 双周趋势退出检查日)；关闭退出检查时检查日为空。
 
     检查日锚定每 ``trend_exit_check_weeks`` 个 **ISO 周**的**最后一个交易日**，复用统一的
     ``decision_dates_by_frequency``（与 ``biweekly`` 频率同一口径），与回测起始日解耦。
-    决策日归属表挂到 ``ctx.cache``，供 :func:`select_etf_rotation` 区分调用哪种语义。
+    ``etf_rotation_decision_dates`` 与 ``etf_rotation_check_days`` 共用本函数，使
+    「决策日 = 调仓日 ∪ 检查日」和「哪些日子只检查不换仓」两个口径恒一致。
     """
     rebalance = periodic_decision_dates(calendar, ctx, params)
     checks: list[str] = []
@@ -582,11 +585,24 @@ def etf_rotation_decision_dates(
             frequency="weekly",
             every_n=max(1, int(params.trend_exit_check_weeks)),
         )
-        # 跳过首个调仓日【之前】的检查点：那时还没有持仓，检查无意义；且引擎对
-        # 「day in targets」无条件记一条 rebalance，会在报告里留下一个领先的空周期。
+        # 跳过首个调仓日【之前】的检查点：那时还没有持仓，检查无意义（引擎现在也会因其
+        # 零成交而不记 rebalance 行，早退掉只是少几行空转的进度输出）。
         first = min(rebalance) if rebalance else ""
         if first:
             checks = [day for day in checks if day > first]
+    return rebalance, checks
+
+
+def etf_rotation_decision_dates(
+    calendar: Sequence[str],
+    ctx: CrossSectionContext,
+    params: EtfRotationParams,
+) -> list[str]:
+    """决策日 = 周期调仓日 ∪ 双周趋势退出检查日（后者仅 trend_exit_check=True 时追加）。
+
+    决策日归属表挂到 ``ctx.cache``，供 :func:`select_etf_rotation` 区分调用哪种语义。
+    """
+    rebalance, checks = _etf_rotation_schedule(calendar, ctx, params)
     # cache 跨决策日保留（runner 复用同一 context），select 据此路由。关闭时 checks 为空，
     # 路由分支永不命中 ⇒ 与历史行为完全一致。
     ctx.cache[SCHEDULE_CACHE_KEY] = {
@@ -594,6 +610,21 @@ def etf_rotation_decision_dates(
         "checks": set(checks),
     }
     return sorted(set(rebalance) | set(checks))
+
+
+def etf_rotation_check_days(
+    calendar: Sequence[str],
+    ctx: CrossSectionContext,
+    params: EtfRotationParams,
+) -> set[str]:
+    """仅作趋势退出检查、不换仓的决策日（供 ``CrossSectionStrategySpec.check_days``）。
+
+    取 ``checks - rebalance``：调仓日即使同时命中检查点，``select`` 也走全量选股分支
+    （见 :func:`select_etf_rotation` 的路由条件），故不该被当作检查日。引擎据此在检查日
+    零成交时不记 ``rebalances`` 行。
+    """
+    rebalance, checks = _etf_rotation_schedule(calendar, ctx, params)
+    return set(checks) - set(rebalance)
 
 
 def select_etf_rotation(
@@ -873,6 +904,7 @@ STRATEGY = CrossSectionStrategySpec(
     params_model=EtfRotationParams,
     select=select_etf_rotation,
     decision_dates=etf_rotation_decision_dates,
+    check_days=etf_rotation_check_days,
     default_universe="etf_core",
     requires_symbols=False,
     needs_fundamentals=False,

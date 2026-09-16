@@ -523,6 +523,13 @@ def run_cross_section_backtest(
         rebalance_mode=getattr(request, "rebalance_mode", "full"),
         execution_timing=execution_timing,
         open_panel=open_panel,
+        # 策略可声明「只检查不换仓」的决策日：这些日子若当天零成交，引擎不记 rebalance
+        # 行（避免报告出现空白的调仓周期）。未声明 ⇒ None ⇒ 全部决策日都记录。
+        check_only_days=(
+            spec.check_days(close_panel.index.tolist(), context, params)
+            if spec.check_days
+            else None
+        ),
     )
     latest = decision_dates[-1]
     warnings = list(spec.warnings)

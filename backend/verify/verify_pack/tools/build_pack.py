@@ -276,8 +276,12 @@ cmp out/_pack/result_main_exit_on_pinned.json out/_pack/rerun.json && echo "本�
 
 - `main_exit_on` 与 `dynamic_exit_on` 的检查日（`source=trend_exit`）只对**当前持仓**做退出判定，
   不补位；因此 `n_candidates` 等于当时持仓数，而不是月度决策日那样的全池候选数。
-- 检查日即使什么都没成交也会在 `rebalances` 里留一行（区间收益仍由 equity 正确计算），
-  所以 `main_exit_on` 的 `rebalances` 数（248）远多于不开启退出的版本。
+- 检查日**只在当天真正卖出时**才在 `rebalances` 里留一行（经
+  `CrossSectionStrategySpec.check_days` 声明，零成交不记），否则一年会多出二十来条空白的
+  调仓周期。触发退出的检查日仍会留行，所以 `main_exit_on` 的 `rebalances` 数仍多于不开启
+  退出的版本。`equity` / `trades` / `metrics` 不受影响，这是纯报告层口径。
+  **注**：提交在仓库里的 `_stage/` 快照生成于旧口径（检查日一律留行，`main_exit_on` 为
+  248 行），用新代码重跑会得到 95 行；跨机比对时该条数差异属预期。
 """
 
 
