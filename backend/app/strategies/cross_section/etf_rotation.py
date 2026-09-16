@@ -57,6 +57,14 @@ K 线不足 ``max(trend_exit_slope_days, trend_exit_ma_days)`` 根、面板缺�
 足够收盘价时**无法判定 → 按持有处理**（与 RSRS 门控「None 放行」同一约定）。默认关闭，
 向后兼容。
 
+可选**空仓兜底：持有黄金**：``hold_gold_when_flat=True`` 时，月度调仓日选出**空仓**（无候选
+通过过滤，或已选出的 top-N 全被 RSRS 门控否决）改持黄金 ETF ``518880``，而非留现金。
+黄金**不参与打分排序**、不进决策日池落盘，但会作为正常持仓写回当前持仓缓存——故双周检查日
+按同一套 40 日规则判定它，而不是无条件清仓；``rotate_threshold<1.0`` 时它也可能被惰性保留。
+仅在月度调仓日生效，双周趋势退出检查日卖出的仓位仍按原口径留现金。面板不含 518880 时直接报
+``ValueError``（不静默退回现金）；注意 TDX 源对 518880 只给 800 根 K 线（2023-06-02 起），
+更早的空仓月份无行情可成交、仍是现金。默认关闭，向后兼容。
+
 两个使用注意（详见 ``docs/etf-rotation-strategy.md`` §2.4）：检查日**只在当天真正卖出时**
 才在 ``rebalances`` 里留下周期记录——零成交的检查日经 :func:`etf_rotation_check_days`
 （``CrossSectionStrategySpec.check_days``）声明后不再记录，避免报告多出成串的空白调仓
@@ -105,6 +113,12 @@ CACHE_KEY = "etf_rotation_prev_holdings"
 # ctx.cache 中保存本次回测的决策日表：{"rebalance": {月度调仓日}, "checks": {双周检查日}}。
 # select() 据此区分「调仓日」与「仅检查日」，见 select_etf_rotation 顶部路由。
 SCHEDULE_CACHE_KEY = "etf_rotation_schedule"
+
+# 空仓兜底标的：华安黄金 ETF。hold_gold_when_flat=True 时，月度调仓日选出空仓
+# （无候选通过过滤，或已选出的 top-N 全被 rsrs_gate 否决）改持它，而非留现金。
+GOLD_FALLBACK_SYMBOL = "159934"
+# 面板缺名称时的占位（names 由 universe 解析结果提供；symbols 手填时可能没有名称）。
+GOLD_FALLBACK_NAME = "黄金ETF"
 
 
 def annualized_volatility(closes: np.ndarray, lookback: int) -> float | None:
@@ -322,6 +336,24 @@ class EtfRotationParams(DecisionFrequencyParams):
         description=(
             "检查频率：每 N 个 ISO 周的最后一个交易日检查一次（2=双周，默认）。"
             "锚定偶数 ISO 周，与回测起始日无关。仅 trend_exit_check=True 时生效。"
+        ),
+    )
+
+    # ---- 空仓兜底：持有黄金（可选，默认关闭）----
+    # 与 require_positive_score / rsrs_gate 的"空仓留现金"是替代关系：开启后那些原本
+    # 留现金的月度调仓日改持黄金 ETF，把现金拖累换成黄金的收益/波动。
+    hold_gold_when_flat: bool = Field(
+        False,
+        description=(
+            "开启后，月度调仓日选出【空仓】时（无候选通过过滤，或已选出的 top-N 全被 "
+            "rsrs_gate 否决）改持黄金 ETF（518880）而非留现金。黄金不参与打分排序，仅作"
+            "兜底；但会被当作正常持仓写回当前持仓缓存，故双周检查日按同一套 40 日规则"
+            "判定它（斜率≤0 且跌破均线才卖），而不是无条件清仓。由此在 "
+            "rotate_threshold<1.0（惰性开启）时，黄金也可能像其它持仓一样被惰性保留。"
+            "仅月度调仓日生效；双周趋势退出检查日卖出的仓位仍按原口径留现金。面板不含 "
+            "518880 时报错（不静默退回现金）。需要覆盖 2023-06 之前的历史时注意："
+            "TDX 源对 518880 只提供 800 根 K 线（自 2023-06-02 起），更早的空仓月份"
+            "因无行情可成交而仍是现金。默认关闭，向后兼容。"
         ),
     )
 
@@ -627,6 +659,56 @@ def etf_rotation_check_days(
     return set(checks) - set(rebalance)
 
 
+def _gold_fallback_detail(
+    asof: str,
+    ctx: CrossSectionContext,
+    rank: int,
+) -> dict[str, Any]:
+    """兜底持仓在选股表里的行：带 ``role`` 标记，便于在报告/JSON 里一眼认出是兜底而非选股。"""
+    payload = ctx.panel.get(GOLD_FALLBACK_SYMBOL) or {}
+    value_df = payload.get("value")
+    close: float | None = None
+    if value_df is not None and not value_df.empty:
+        history = price_history(value_df, asof)
+        if len(history):
+            close = float(history["close"].iloc[-1])
+    return {
+        "symbol": GOLD_FALLBACK_SYMBOL,
+        "name": ctx.names.get(GOLD_FALLBACK_SYMBOL) or GOLD_FALLBACK_NAME,
+        "asof": str(asof)[:10],
+        "close": close,
+        # 字符串标记：报告只透传数值字段，故它不会多出一列，但 JSON 里可据此判定该行
+        # 来自兜底而非打分选出。
+        "role": "gold_fallback",
+        "selected": True,
+        "rank": rank,
+    }
+
+
+def _with_gold_when_flat(
+    selected: list[str],
+    details: list[dict[str, Any]],
+    asof: str,
+    ctx: CrossSectionContext,
+    params: EtfRotationParams,
+) -> tuple[list[str], list[dict[str, Any]]]:
+    """本轮选出为空且开启 ``hold_gold_when_flat`` 时，改持黄金 ETF。
+
+    黄金同时写回 ``CACHE_KEY``（当前持仓缓存），让双周检查日把它**当作正常持仓**判定——
+    否则检查日读到"当前持仓为空"会直接输出空目标，把刚买入的黄金无条件清掉（这属于没有
+    任何规则支持的清仓）。写回后黄金走与其它持仓相同的退出规则：40 日斜率≤0 且跌破
+    40 日均线才卖。副作用是黄金也会进入月度轮动惰性的"当前持仓"比较，见
+    ``hold_gold_when_flat`` 的参数说明。调用点覆盖三处空仓出口：动态池发现为空、无候选、
+    以及已选出的 top-N 全被 ``rsrs_gate`` 否决。
+    """
+    if selected or not params.hold_gold_when_flat:
+        return selected, details
+    details = list(details)
+    details.append(_gold_fallback_detail(asof, ctx, len(details) + 1))
+    ctx.cache[CACHE_KEY] = [GOLD_FALLBACK_SYMBOL]
+    return [GOLD_FALLBACK_SYMBOL], details
+
+
 def select_etf_rotation(
     asof: str,
     ctx: CrossSectionContext,
@@ -647,6 +729,16 @@ def select_etf_rotation(
             pending.discard(asof_key)
             schedule["checks"] = pending
             return select_trend_exit(asof_key, ctx, params)
+
+    # 空仓兜底的前置校验：早失败早报错，免得跑到第一次空仓才说池里没有黄金——那时用户
+    # 已经等完整个载入过程。缺标的时不做静默降级（退化成留现金等于偷偷改口径）。
+    if params.hold_gold_when_flat and GOLD_FALLBACK_SYMBOL not in ctx.panel:
+        raise ValueError(
+            "hold_gold_when_flat=True 需要面板含黄金 ETF"
+            f" {GOLD_FALLBACK_SYMBOL}（华安黄金ETF），但本次股票池/面板中没有它。"
+            "请把它加入 universe/symbols（如 default_universe=etf_core 已含），"
+            "或关闭 hold_gold_when_flat。"
+        )
 
     candidates: list[dict[str, Any]] = []
     # 打分需至少 max(slope_days, 短窗) 根 K 线；量价综合开启时还须近+基线窗足额；
@@ -687,7 +779,7 @@ def select_etf_rotation(
         # 空池也要登记：这正是调参时最需要看到的诊断信息（该日为何无标的可买）。
         record_decision_pool(ctx, asof, pool_members, source="pool_discovery")
         if not pool_members:
-            return [], []
+            return _with_gold_when_flat([], [], asof, ctx, params)
 
     for symbol, payload in ctx.panel.items():
         if pool_members is not None and symbol not in pool_members:
@@ -803,7 +895,7 @@ def select_etf_rotation(
         )
 
     if not candidates:
-        return [], []
+        return _with_gold_when_flat([], [], asof, ctx, params)
     # 基线分：长窗斜率 z。short_term_damp_coef>0 时扣减 短窗斜率 z × 系数，压制近期斜率
     # 远强于长期（短期过热）的追高；amount_surge_damp_coef>0 时再扣减 量价综合 z × 系数，
     # 压制近期异常放量。z 均为当日池内横截面（均值0、标准差1）。
@@ -888,7 +980,9 @@ def select_etf_rotation(
     selected_set = set(selected)
     for item in candidates:
         item["selected"] = item["symbol"] in selected_set
-    return selected, candidates
+    # 空仓出口：候选全被 require_positive_score 滤掉、或选出的 top-N 全被 rsrs_gate 否决
+    # （两者都会走到这里），开启兜底时改持黄金。
+    return _with_gold_when_flat(selected, candidates, asof, ctx, params)
 
 
 STRATEGY = CrossSectionStrategySpec(
@@ -898,8 +992,9 @@ STRATEGY = CrossSectionStrategySpec(
         "在 ETF 池（默认 config/etf_core_pool.json 精选池）中选择归一化收盘价回归"
         "斜率（×R²）横截面 z 值最强的标的，每月首个交易日等权调仓；可选叠加原始趋势/"
         "波动率/近期涨幅过滤、得分>0 现金规则、短期过热/近期异常放量（量价综合）两类"
-        "压制项，选出后按 RSRS(z(beta)×R²×beta) 阈值否决买入的 RSRS 门控，以及月度调仓"
-        "之间按双周检查 40 日斜率≤0 且跌破 40 日均线即卖出的双周趋势退出"
+        "压制项，选出后按 RSRS(z(beta)×R²×beta) 阈值否决买入的 RSRS 门控，月度调仓"
+        "之间按双周检查 40 日斜率≤0 且跌破 40 日均线即卖出的双周趋势退出，以及月度调仓日"
+        "选出空仓时改持黄金 ETF(518880) 的空仓兜底"
     ),
     params_model=EtfRotationParams,
     select=select_etf_rotation,
