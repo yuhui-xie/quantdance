@@ -87,8 +87,13 @@ def _a_stock_sdk() -> AStockDataSDK:
     即使 K 线完全命中本地缓存，每次取数仍白付一次建连开销。
 
     实测（1668 只 ETF 的 as-of 扫描路径）：每次新建约 0.32s，其中 0.28s 是建连、
-    真正的缓存读只有约 0.02s。逐票新建把整轮扫描拖到约 11 分钟。纯脚本、单线程，
-    共享实例无并发问题。
+    真正的缓存读只有约 0.02s。逐票新建把整轮扫描拖到约 11 分钟。
+
+    ⚠ 这个实例是**跨线程共享**的：横截面面板加载（`cross_section_runner._load_panel`）
+    经 `fetch_a_share_daily` 用它跑 6~8 线程。早先这里写的是「纯脚本、单线程，共享实例
+    无并发问题」，是错的——mootdx 的 `TdxHq_API` 默认 `lock=None`（`heartbeat=False`），
+    多线程在同一 socket 上会请求/响应交错。现在由 `MootdxMarketSDK._create_client`
+    统一补齐 `TdxHq_API.lock`，把同一 client 上的单次调用串行成单通道。
     """
     global _A_STOCK_SDK
     if _A_STOCK_SDK is None:

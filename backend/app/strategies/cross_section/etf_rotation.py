@@ -57,13 +57,30 @@ K 线不足 ``max(trend_exit_slope_days, trend_exit_ma_days)`` 根、面板缺�
 足够收盘价时**无法判定 → 按持有处理**（与 RSRS 门控「None 放行」同一约定）。默认关闭，
 向后兼容。
 
-可选**空仓兜底：持有黄金**：``hold_gold_when_flat=True`` 时，月度调仓日选出**空仓**（无候选
-通过过滤，或已选出的 top-N 全被 RSRS 门控否决）改持黄金 ETF ``518880``，而非留现金。
-黄金**不参与打分排序**、不进决策日池落盘，但会作为正常持仓写回当前持仓缓存——故双周检查日
-按同一套 40 日规则判定它，而不是无条件清仓；``rotate_threshold<1.0`` 时它也可能被惰性保留。
-仅在月度调仓日生效，双周趋势退出检查日卖出的仓位仍按原口径留现金。面板不含 518880 时直接报
-``ValueError``（不静默退回现金）；注意 TDX 源对 518880 只给 800 根 K 线（2023-06-02 起），
-更早的空仓月份无行情可成交、仍是现金。默认关闭，向后兼容。
+可选**空仓兜底：持有黄金**：``hold_gold_when_flat=True`` 时，月度调仓日【原本已选出 top-N、
+但全被 RSRS 门控否决】改持黄金 ETF ``518880``，而非留现金。触发口**只有这一个**：无候选
+通过过滤、动态池为空等其它空仓场景仍留现金——那些是「市场上没有值得买的东西」，与「唯一该
+买的东西这轮被 RSRS 挡下」不是一回事。
+
+黄金还要**自身全部通过**六条门槛才真正生效，任一条不过就仍留现金（不降级、不放宽）：
+
+1. ``rsrs_gate=True``（前置校验已保证）；
+2. 该 ``asof`` 可交易（未停牌、未涨跌停，``asof_tradeable_row`` 口径）；
+3. 四道绝对过滤全过（``absolute_filter_failure``：原始趋势 / 年化波动率 / 近期涨幅 / 总涨幅，
+   与候选路径共用同一实现）；
+4. 自身近 ``gold_trend_days``（默认 60）日归一化收盘价回归斜率 > 0（黄金专有、恒开的门槛，
+   与只在 ``require_raw_trend=True`` 时生效的 ``raw_trend_days`` 是两个独立口径）；
+5. 成交额可用（``amount`` 列存在且窗口内有正成交额）；
+6. 自身 RSRS 可算（非 None）且 ``> rsrs_threshold``。
+
+不过时按原口径留现金，并把未通过项写到 stderr 与选股表的诊断行（``gold_blocked_by`` 等
+字符串字段只在 JSON 里可见，报告只透传数值字段），以便区分「策略判定不触发」与「代码没跑到」。
+
+黄金**不参与打分排序**、不进决策日池落盘，但生效时会作为正常持仓写回当前持仓缓存——故双周
+检查日按同一套 40 日规则判定它，而不是无条件清仓；``rotate_threshold<1.0`` 时它也可能被惰性
+保留。仅在月度调仓日生效，双周趋势退出检查日卖出的仓位仍按原口径留现金。面板不含 518880、
+或未同时打开 ``rsrs_gate`` 时直接报 ``ValueError``（不静默退回现金）；注意 TDX 源对 518880
+只给 800 根 K 线（2023-06-02 起），更早的空仓月份无行情可成交、仍是现金。默认关闭，向后兼容。
 
 两个使用注意（详见 ``docs/etf-rotation-strategy.md`` §2.4）：检查日**只在当天真正卖出时**
 才在 ``rebalances`` 里留下周期记录——零成交的检查日经 :func:`etf_rotation_check_days`
@@ -76,6 +93,7 @@ K 线不足 ``max(trend_exit_slope_days, trend_exit_ma_days)`` 根、面板缺�
 
 from __future__ import annotations
 
+import sys
 from typing import Any, Literal, Sequence
 
 import numpy as np
@@ -114,9 +132,9 @@ CACHE_KEY = "etf_rotation_prev_holdings"
 # select() 据此区分「调仓日」与「仅检查日」，见 select_etf_rotation 顶部路由。
 SCHEDULE_CACHE_KEY = "etf_rotation_schedule"
 
-# 空仓兜底标的：华安黄金 ETF。hold_gold_when_flat=True 时，月度调仓日选出空仓
-# （无候选通过过滤，或已选出的 top-N 全被 rsrs_gate 否决）改持它，而非留现金。
-GOLD_FALLBACK_SYMBOL = "159934"
+# 空仓兜底标的：华安黄金 ETF。hold_gold_when_flat=True 时，月度调仓日若「有候选但全被
+# rsrs_gate 否决」改持它，而非留现金（严格口径见模块 docstring）。
+GOLD_FALLBACK_SYMBOL = "518880"
 # 面板缺名称时的占位（names 由 universe 解析结果提供；symbols 手填时可能没有名称）。
 GOLD_FALLBACK_NAME = "黄金ETF"
 
@@ -340,20 +358,37 @@ class EtfRotationParams(DecisionFrequencyParams):
     )
 
     # ---- 空仓兜底：持有黄金（可选，默认关闭）----
-    # 与 require_positive_score / rsrs_gate 的"空仓留现金"是替代关系：开启后那些原本
-    # 留现金的月度调仓日改持黄金 ETF，把现金拖累换成黄金的收益/波动。
+    # 与 rsrs_gate 的"空仓留现金"是替代关系：开启后，原本会因 RSRS 门控而留现金的
+    # 月度调仓日改持黄金 ETF（仅这一类空仓；无候选/空池仍留现金）。
     hold_gold_when_flat: bool = Field(
         False,
         description=(
-            "开启后，月度调仓日选出【空仓】时（无候选通过过滤，或已选出的 top-N 全被 "
-            "rsrs_gate 否决）改持黄金 ETF（518880）而非留现金。黄金不参与打分排序，仅作"
-            "兜底；但会被当作正常持仓写回当前持仓缓存，故双周检查日按同一套 40 日规则"
-            "判定它（斜率≤0 且跌破均线才卖），而不是无条件清仓。由此在 "
-            "rotate_threshold<1.0（惰性开启）时，黄金也可能像其它持仓一样被惰性保留。"
-            "仅月度调仓日生效；双周趋势退出检查日卖出的仓位仍按原口径留现金。面板不含 "
-            "518880 时报错（不静默退回现金）。需要覆盖 2023-06 之前的历史时注意："
-            "TDX 源对 518880 只提供 800 根 K 线（自 2023-06-02 起），更早的空仓月份"
-            "因无行情可成交而仍是现金。默认关闭，向后兼容。"
+            "开启后，月度调仓日【原本选出了 top-N、但全被 rsrs_gate 否决】时改持黄金 ETF"
+            "（518880）而非留现金。无候选通过过滤、动态池为空等其它空仓场景**仍留现金**——"
+            "那些是「市场上没有值得买的东西」，与「唯一该买的东西这轮被 RSRS 挡下」不是一回事。"
+            "黄金还要**自身全部通过**六条门槛才生效：asof 可交易（未停牌/未涨跌停）、四道"
+            "绝对过滤（原始趋势/年化波动率/近期涨幅/总涨幅）、近 gold_trend_days(60) 日"
+            "回归斜率>0、成交额可用、自身 RSRS 可算且>rsrs_threshold；任一条不过仍留现金，"
+            "并把原因写到 stderr 与选股表的诊断行（不静默降级）。黄金不参与打分排序；生效时"
+            "会被当作正常持仓写回当前持仓缓存，故双周检查日按同一套 40 日规则判定它（斜率≤0"
+            " 且跌破均线才卖），而不是无条件清仓。由此在 rotate_threshold<1.0（惰性开启）时，"
+            "黄金也可能像其它持仓一样被惰性保留。仅月度调仓日生效；双周趋势退出检查日卖出的"
+            "仓位仍按原口径留现金。面板不含 518880、或未同时打开 rsrs_gate 时报错（不静默"
+            "退回现金）。需要覆盖 2023-06 之前的历史时注意：TDX 源对 518880 只提供 800 根"
+            " K 线（自 2023-06-02 起），更早的空仓月份因无行情可成交而仍是现金。"
+            "默认关闭，向后兼容。"
+        ),
+    )
+    gold_trend_days: int = Field(
+        60,
+        ge=2,
+        le=504,
+        description=(
+            "空仓兜底专有的黄金自身趋势门槛回看交易日数（默认 60）：近 gold_trend_days 根"
+            "收盘价按首值归一化后的回归斜率必须>0，才允许空仓月改持黄金。与 raw_trend_days"
+            " 是两个独立口径——后者是候选标的的通用门槛、只在 require_raw_trend=True 时"
+            "生效；本项是黄金独有的、恒开的门槛，这样黄金的合格性不会随用户对其它标的的"
+            "调参而漂移。仅 hold_gold_when_flat=True 时生效。"
         ),
     )
 
@@ -659,30 +694,154 @@ def etf_rotation_check_days(
     return set(checks) - set(rebalance)
 
 
+def absolute_filter_failure(
+    params: EtfRotationParams,
+    closes: np.ndarray,
+    n_bars: int,
+) -> str | None:
+    """按固定顺序逐条跑四道**绝对**过滤，返回第一条未通过的名字；全通过返回 ``None``。
+
+    顺序与候选路径完全一致：``require_raw_trend`` → ``max_annualized_vol`` →
+    ``max_recent_gain_pct`` → ``max_gain_pct``（"未通过项"因此是稳定的、可稽核的）。
+
+    ``n_bars`` 由调用方显式传入，**不要**在函数内用 ``len(closes)`` 重算：候选路径里
+    两者本就相等，但黄金路径要沿用同一套门槛，把口径固定成一个入参比依赖"隐式相等"更
+    可靠。
+
+    成交额（``amount_surge_damp_coef``）与 RSRS 门控**不在这里**：它们在候选路径上分别
+    属于打分阶段与"选出之后再否决"，不是同一类"绝对政策过滤"，塞进来会改变候选行为。
+    """
+    if params.require_raw_trend:
+        if n_bars < params.raw_trend_days:
+            return "require_raw_trend"
+        raw_slope = slope_momentum(closes, params.raw_trend_days)
+        # slope_momentum = 10000×斜率×R²，R²≥0，故符号即回归斜率符号
+        if raw_slope is None or not np.isfinite(raw_slope) or raw_slope <= 0:
+            return "require_raw_trend"
+    if params.max_annualized_vol is not None:
+        if n_bars < params.vol_lookback + 1:
+            return "max_annualized_vol"
+        vol = annualized_volatility(closes, params.vol_lookback)
+        if vol is None or vol > params.max_annualized_vol:
+            return "max_annualized_vol"
+    if params.max_recent_gain_pct is not None:
+        if n_bars < params.recent_gain_days + 1:
+            return "max_recent_gain_pct"
+        gain = recent_gain(closes, params.recent_gain_days)
+        if gain is None or gain * 100.0 > params.max_recent_gain_pct:
+            return "max_recent_gain_pct"
+    if params.max_gain_pct is not None:
+        if n_bars < params.gain_days + 1:
+            return "max_gain_pct"
+        gain = recent_gain(closes, params.gain_days)
+        if gain is None or gain * 100.0 > params.max_gain_pct:
+            return "max_gain_pct"
+    return None
+
+
+def _gold_fallback_check(
+    asof: str,
+    ctx: CrossSectionContext,
+    params: EtfRotationParams,
+) -> tuple[bool, str | None, dict[str, Any]]:
+    """黄金能否接替这个空仓月：返回 ``(是否合格, 未通过项, 诊断值)``。
+
+    黄金必须**全部**通过下面六条门槛——它是"空仓月改持黄金"这一判断的完整依据，
+    任何一条不过就仍然留现金（不降级、不放宽）：
+
+    1. ``rsrs_gate=True``（前置校验已保证，见 ``select_etf_rotation``）；
+    2. ``asof_tradeable_row`` 非 None：复用它，``exclude_limit`` / ``exclude_suspended`` /
+       ``limit_pct_threshold`` 也是"政策"，且这是候选路径真正先过的第一道闸；
+    3. :func:`absolute_filter_failure` 全过：原始趋势 / 年化波动率 / 近期涨幅 / 总涨幅；
+    4. 黄金自身近 ``gold_trend_days`` 日回归斜率 > 0（``slope_momentum`` 口径）；
+    5. 成交额可用（``amount_history`` 非 None，即 amount 列存在且窗口内有正成交额）；
+    6. 黄金自身 RSRS 可算（非 None）且 ``> rsrs_threshold``。
+
+    第 4 条与候选路径的 ``require_raw_trend`` 是**两个独立口径**：后者按
+    ``raw_trend_days``（默认 40）且只在开关打开时才查，前者是黄金专有的 60 日门槛、
+    恒开——用它把"黄金自身处在上行趋势"这件事独立钉住，不随用户对其它标的的调参而漂移。
+    """
+    payload = ctx.panel.get(GOLD_FALLBACK_SYMBOL) or {}
+    value_df = payload.get("value")
+    diag: dict[str, Any] = {}
+    if value_df is None or value_df.empty:
+        return False, "no_data", diag
+
+    row = asof_tradeable_row(
+        value_df,
+        asof,
+        exclude_suspended=params.exclude_suspended,
+        exclude_limit=params.exclude_limit,
+        limit_pct_threshold=params.limit_pct_threshold,
+    )
+    if row is None:
+        return False, "not_tradeable", diag
+
+    history = price_history(value_df, asof)
+    closes = history["close"].astype(float).to_numpy()
+    n_bars = len(closes)
+    diag["n_bars"] = n_bars
+    diag["close"] = float(closes[-1]) if n_bars else None
+
+    failed = absolute_filter_failure(params, closes, n_bars)
+    if failed is not None:
+        return False, failed, diag
+
+    if n_bars < params.gold_trend_days:
+        return False, "gold_trend_days", diag
+    gold_slope = slope_momentum(closes, params.gold_trend_days)
+    diag["gold_slope"] = gold_slope
+    if gold_slope is None or not np.isfinite(gold_slope) or gold_slope <= 0:
+        return False, "gold_trend_not_positive", diag
+
+    if amount_history(value_df, asof) is None:
+        return False, "amount_unavailable", diag
+
+    rsrs_value = rsrs(
+        history,
+        regression_days=params.rsrs_regression_days,
+        zscore_days=params.rsrs_zscore_days,
+    )
+    diag["gold_rsrs"] = rsrs_value.value if rsrs_value is not None else None
+    if rsrs_value is None or not float(rsrs_value.value) > params.rsrs_threshold:
+        return False, "gold_rsrs_not_passing", diag
+
+    return True, None, diag
+
+
 def _gold_fallback_detail(
     asof: str,
     ctx: CrossSectionContext,
     rank: int,
+    *,
+    selected: bool,
+    flat_reason: str,
+    gold_blocked_by: str | None,
+    diagnostic: dict[str, Any],
 ) -> dict[str, Any]:
-    """兜底持仓在选股表里的行：带 ``role`` 标记，便于在报告/JSON 里一眼认出是兜底而非选股。"""
-    payload = ctx.panel.get(GOLD_FALLBACK_SYMBOL) or {}
-    value_df = payload.get("value")
-    close: float | None = None
-    if value_df is not None and not value_df.empty:
-        history = price_history(value_df, asof)
-        if len(history):
-            close = float(history["close"].iloc[-1])
-    return {
+    """空仓兜底在选股表里的诊断行：带 ``role`` 标记，一眼认出它来自兜底而非打分选出。
+
+    ``flat_reason`` / ``gold_blocked_by`` 是**字符串**字段。``shared_report_model`` 的
+    通用指标透传只收 ``_nf()`` 能转成 float 的字段，故它们不会让 HTML 报告多出一列
+    （报告里的 ``selected`` 也由 ``targets`` 重算），但在结果 JSON 的 ``selection`` 里
+    可稽核——用来区分"策略判定不触发"与"代码没跑到"。
+
+    黄金**未**通过门槛时也留一行（``selected=False`` + ``gold_blocked_by``）：否则那份
+    JSON 只能看出"这轮空仓"，看不出兜底为什么不生效。
+    """
+    row = {
         "symbol": GOLD_FALLBACK_SYMBOL,
         "name": ctx.names.get(GOLD_FALLBACK_SYMBOL) or GOLD_FALLBACK_NAME,
         "asof": str(asof)[:10],
-        "close": close,
-        # 字符串标记：报告只透传数值字段，故它不会多出一列，但 JSON 里可据此判定该行
-        # 来自兜底而非打分选出。
         "role": "gold_fallback",
-        "selected": True,
+        "flat_reason": flat_reason,
+        "selected": selected,
         "rank": rank,
     }
+    row.update(diagnostic)
+    if gold_blocked_by is not None:
+        row["gold_blocked_by"] = gold_blocked_by
+    return row
 
 
 def _with_gold_when_flat(
@@ -691,20 +850,47 @@ def _with_gold_when_flat(
     asof: str,
     ctx: CrossSectionContext,
     params: EtfRotationParams,
+    *,
+    flat_reason: str,
 ) -> tuple[list[str], list[dict[str, Any]]]:
-    """本轮选出为空且开启 ``hold_gold_when_flat`` 时，改持黄金 ETF。
+    """本轮"有候选但全被 RSRS 门控否决"且开启 ``hold_gold_when_flat`` 时，改持黄金 ETF。
+
+    **只在 RSRS 否决出口触发**：无候选 / 动态池为空等其它空仓场景仍然留现金——那些是
+    "市场上没有值得买的东西"，与"唯一该买的东西这轮被 RSRS 挡下"是两回事，后者才需要
+    一个低相关资产过渡。
 
     黄金同时写回 ``CACHE_KEY``（当前持仓缓存），让双周检查日把它**当作正常持仓**判定——
     否则检查日读到"当前持仓为空"会直接输出空目标，把刚买入的黄金无条件清掉（这属于没有
     任何规则支持的清仓）。写回后黄金走与其它持仓相同的退出规则：40 日斜率≤0 且跌破
     40 日均线才卖。副作用是黄金也会进入月度轮动惰性的"当前持仓"比较，见
-    ``hold_gold_when_flat`` 的参数说明。调用点覆盖三处空仓出口：动态池发现为空、无候选、
-    以及已选出的 top-N 全被 ``rsrs_gate`` 否决。
+    ``hold_gold_when_flat`` 的参数说明。
+
+    黄金自身六条门槛不过时按原口径留现金（不降级、不放宽），同时打一行 stderr 并把原因
+    写进诊断行——空仓月只有个位数，不会刷屏。
     """
     if selected or not params.hold_gold_when_flat:
         return selected, details
+    ok, blocked_by, diagnostic = _gold_fallback_check(asof, ctx, params)
     details = list(details)
-    details.append(_gold_fallback_detail(asof, ctx, len(details) + 1))
+    details.append(
+        _gold_fallback_detail(
+            asof,
+            ctx,
+            len(details) + 1,
+            selected=ok,
+            flat_reason=flat_reason,
+            gold_blocked_by=blocked_by,
+            diagnostic=diagnostic,
+        )
+    )
+    if not ok:
+        print(
+            f"[etf_rotation] {str(asof)[:10]} 空仓兜底未生效："
+            f"黄金 {GOLD_FALLBACK_SYMBOL} 未通过 {blocked_by}",
+            file=sys.stderr,
+            flush=True,
+        )
+        return selected, details
     ctx.cache[CACHE_KEY] = [GOLD_FALLBACK_SYMBOL]
     return [GOLD_FALLBACK_SYMBOL], details
 
@@ -732,13 +918,22 @@ def select_etf_rotation(
 
     # 空仓兜底的前置校验：早失败早报错，免得跑到第一次空仓才说池里没有黄金——那时用户
     # 已经等完整个载入过程。缺标的时不做静默降级（退化成留现金等于偷偷改口径）。
-    if params.hold_gold_when_flat and GOLD_FALLBACK_SYMBOL not in ctx.panel:
-        raise ValueError(
-            "hold_gold_when_flat=True 需要面板含黄金 ETF"
-            f" {GOLD_FALLBACK_SYMBOL}（华安黄金ETF），但本次股票池/面板中没有它。"
-            "请把它加入 universe/symbols（如 default_universe=etf_core 已含），"
-            "或关闭 hold_gold_when_flat。"
-        )
+    if params.hold_gold_when_flat:
+        if GOLD_FALLBACK_SYMBOL not in ctx.panel:
+            raise ValueError(
+                "hold_gold_when_flat=True 需要面板含黄金 ETF"
+                f" {GOLD_FALLBACK_SYMBOL}（华安黄金ETF），但本次股票池/面板中没有它。"
+                "请把它加入 universe/symbols（如 default_universe=etf_core 已含），"
+                "或关闭 hold_gold_when_flat。"
+            )
+        # 黄金兜底的触发场景就是"top-N 被 RSRS 门控否决"，本身还要查黄金的 RSRS——
+        # 关掉 rsrs_gate 时这个参数永远静默不生效，不如直接报错。
+        if not params.rsrs_gate:
+            raise ValueError(
+                "hold_gold_when_flat=True 需要 rsrs_gate=True：兜底只在"
+                "「已选出的 top-N 全被 RSRS 门控否决」时触发，且黄金自身也要通过"
+                " RSRS 门槛。请同时打开 rsrs_gate，或关闭 hold_gold_when_flat。"
+            )
 
     candidates: list[dict[str, Any]] = []
     # 打分需至少 max(slope_days, 短窗) 根 K 线；量价综合开启时还须近+基线窗足额；
@@ -779,7 +974,8 @@ def select_etf_rotation(
         # 空池也要登记：这正是调参时最需要看到的诊断信息（该日为何无标的可买）。
         record_decision_pool(ctx, asof, pool_members, source="pool_discovery")
         if not pool_members:
-            return _with_gold_when_flat([], [], asof, ctx, params)
+            # 动态池为空：没有可买的东西，与"唯一该买的被 RSRS 挡下"不同，仍留现金。
+            return [], []
 
     for symbol, payload in ctx.panel.items():
         if pool_members is not None and symbol not in pool_members:
@@ -807,32 +1003,10 @@ def select_etf_rotation(
         n_bars = len(closes)
 
         # ---- 绝对趋势/风险/过热过滤（逐条可选）----
-        # 只使用调仓日及之前的收盘价，不使用未来数据。
-        if params.require_raw_trend:
-            if n_bars < params.raw_trend_days:
-                continue
-            raw_slope = slope_momentum(closes, params.raw_trend_days)
-            # slope_momentum = 10000×斜率×R²，R²≥0，故符号即回归斜率符号
-            if raw_slope is None or not np.isfinite(raw_slope) or raw_slope <= 0:
-                continue
-        if params.max_annualized_vol is not None:
-            if n_bars < params.vol_lookback + 1:
-                continue
-            vol = annualized_volatility(closes, params.vol_lookback)
-            if vol is None or vol > params.max_annualized_vol:
-                continue
-        if params.max_recent_gain_pct is not None:
-            if n_bars < params.recent_gain_days + 1:
-                continue
-            gain = recent_gain(closes, params.recent_gain_days)
-            if gain is None or gain * 100.0 > params.max_recent_gain_pct:
-                continue
-        if params.max_gain_pct is not None:
-            if n_bars < params.gain_days + 1:
-                continue
-            gain = recent_gain(closes, params.gain_days)
-            if gain is None or gain * 100.0 > params.max_gain_pct:
-                continue
+        # 只使用调仓日及之前的收盘价，不使用未来数据。四道门槛与黄金兜底共用同一实现
+        # （`absolute_filter_failure`），避免"同一套政策两处各写一遍、改了一处漏另一处"。
+        if absolute_filter_failure(params, closes, n_bars) is not None:
+            continue
 
         # 打分生值：长/短窗归一化收盘价回归斜率×R²（生值保留量级，可超 1，供核查）
         slope_raw = slope_momentum(closes, params.slope_days)
@@ -895,7 +1069,8 @@ def select_etf_rotation(
         )
 
     if not candidates:
-        return _with_gold_when_flat([], [], asof, ctx, params)
+        # 无候选通过过滤：同样是"没有可买的东西"，仍留现金（不触发黄金兜底）。
+        return [], []
     # 基线分：长窗斜率 z。short_term_damp_coef>0 时扣减 短窗斜率 z × 系数，压制近期斜率
     # 远强于长期（短期过热）的追高；amount_surge_damp_coef>0 时再扣减 量价综合 z × 系数，
     # 压制近期异常放量。z 均为当日池内横截面（均值0、标准差1）。
@@ -963,6 +1138,7 @@ def select_etf_rotation(
     # 是"选出之后再否决"而非"候选过滤"：被否决的名额不顺位递补给下一名，而是留现金
     # （top_n=1 时该调仓日即空仓）。rsrs 为 None（K 线不足/缺 high-low 列）时按放行处理。
     # 门控结果写回轮动惰性缓存，让下个决策日的"当前持仓"= 本轮真实买入的标的。
+    rsrs_rejected_all = False
     if params.rsrs_gate:
         by_symbol = {c["symbol"]: c for c in candidates}
         for cand in candidates:
@@ -974,15 +1150,22 @@ def select_etf_rotation(
             if by_symbol.get(symbol, {}).get("rsrs_pass", True)
         ]
         if len(allowed) != len(selected):
+            # 走到这里时 `candidates` 非空 ⇒ `selected` 至少有一员（轮动惰性只会替换不会
+            # 清空），故 allowed 为空 ⟺ 选出的 top-N 被门控**全部**否决。
+            rsrs_rejected_all = not allowed
             selected = allowed
             ctx.cache[CACHE_KEY] = list(selected)
 
     selected_set = set(selected)
     for item in candidates:
         item["selected"] = item["symbol"] in selected_set
-    # 空仓出口：候选全被 require_positive_score 滤掉、或选出的 top-N 全被 rsrs_gate 否决
-    # （两者都会走到这里），开启兜底时改持黄金。
-    return _with_gold_when_flat(selected, candidates, asof, ctx, params)
+    # 空仓兜底唯一的触发口：「本月选出了 top-N，但全被 RSRS 门控否决」。无候选 / 动态池
+    # 为空在前面就已提前返回（留现金），不会走到这里。
+    if not rsrs_rejected_all:
+        return selected, candidates
+    return _with_gold_when_flat(
+        selected, candidates, asof, ctx, params, flat_reason="rsrs_rejected_all"
+    )
 
 
 STRATEGY = CrossSectionStrategySpec(
@@ -994,7 +1177,8 @@ STRATEGY = CrossSectionStrategySpec(
         "波动率/近期涨幅过滤、得分>0 现金规则、短期过热/近期异常放量（量价综合）两类"
         "压制项，选出后按 RSRS(z(beta)×R²×beta) 阈值否决买入的 RSRS 门控，月度调仓"
         "之间按双周检查 40 日斜率≤0 且跌破 40 日均线即卖出的双周趋势退出，以及月度调仓日"
-        "选出空仓时改持黄金 ETF(518880) 的空仓兜底"
+        "选出的 top-N 被 RSRS 门控全数否决、且黄金 ETF(518880) 自身通过六条门槛时改持黄金的"
+        "空仓兜底"
     ),
     params_model=EtfRotationParams,
     select=select_etf_rotation,

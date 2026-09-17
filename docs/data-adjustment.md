@@ -123,6 +123,36 @@ adj      = (preclose.next / close).fillna(1)[::-1].cumprod()   # 最新一根因
   `same_day_close` / `next_day_close`。**不做静默降级**（降级成收盘价成交等于偷偷改掉成交时点）。
   若要支持次日开盘成交，需为基本面分支额外接入 TDX 前复权日线的 `open`。
 
+### 盘中未收盘的当日 bar 被当日线（已修复，v6→v7）
+
+- **现象**：TDX 在交易时段内会把**当日尚未收盘**的日线 bar 当作最后一根返回——`datetime`
+  已记成该日 15:00，OHLC 却是**此刻**的快照。于是同一个"今天"，10:00 跑与 16:00 跑会得到
+  两个不同的"今日收盘价"，进而读出两份不同的打分 / 选股 / 回测结果。
+- **为什么缓存救不了**：`AStockDataSDK._cache_is_fresh` 只看 `cached_at == 今天`，盘中写下的
+  那份缓存当天一直算"新鲜"，早上那根半日 bar 会被一路当晚间收盘价复用；`shared_report_model`
+  里裸读缓存文件的 `_read_stale_day_klines` 同样只校验 `version`/`adjust`，救不了。
+- **另一个放大器**：`_write_klines_cache` 的 `same_era` merge 会把**旧行复活**——只改"丢弃
+  盘中 bar"的逻辑而不升版本号，今天那根半日 bar 会原样留在 merged 结果里，修复等于没做。
+- **修复**（三处，共用 `app/data_sources/trading_session.py` 的单一时间口径）：
+  1. **取数侧**：`MootdxMarketSDK._load_klines` 在 `period == "day"` 时，若最后一根的
+     `datetime` 是**今天且此刻早于 `SESSION_BAR_FINAL`（15:05）**，直接丢弃再送前复权。
+     `week` / `month` 不处理——"今天 + 未过收盘"对周线/月线不是有效的完整性判据
+     （周三盘后那根周线仍不完整），且本仓库没有 `day` 以外的调用方。
+  2. **缓存侧**：写入时新增布尔标记 `written_in_session`（写这一刻是否早于当日收盘）；
+     `_cache_is_fresh` 追加判据 `not (written_in_session and now >= SESSION_BAR_FINAL)`
+     ⇒ 盘中写的缓存到盘后判 stale，重取一次拿到完整 bar，之后当日不再重取。假日/周末盘后
+     不会反复重取（那时写入 `written_in_session=False`）。universe 缓存不带该标记，行为不变。
+  3. **版本号**：`_KLINE_CACHE_VERSION` **v6→v7**，让旧缓存（可能含半日 bar，且会被
+     `same_era` merge 复活）整体作废重建。`_read_stale_day_klines` 因为本就校验 `version`，
+     会随之一并拒读旧文件。
+- **时间口径**：`SESSION_BAR_FINAL = 15:05`（本地墙钟）——沪深收盘集合竞价 14:57-15:00，
+  TDX 侧定稿还要一两分钟，留出余量，取数侧与缓存侧共用这一个常量。本项目所有时间判据一律为
+  **本地墙钟**，与 `AStockDataSDK._today()`、缓存 `cached_at` 同一口钟，不做任何时区转换。
+  **不引入交易日历**：判据只依赖"bar 日期 == 今天"，非交易日 TDX 根本不会给出今天的 bar，
+  自然不命中。
+- **已知行为变化**：盘中跑 `screen` / `pick` 时 asof 会从今天退到上一交易日；`end=今天` 的
+  `ic_analysis` 区间可能因此变空而抛 `MarketDataError`（原先靠那根半日 bar 撑着）。
+
 ## 缓存失效约定
 
 K 线缓存（`backend/data/a_stock_data/klines/`）带格式版本 `version` 字段与复权标记 `adjust`：
@@ -141,6 +171,10 @@ K 线缓存（`backend/data/a_stock_data/klines/`）带格式版本 `version` �
 丢弃旧行时 `requested_count` 一并重置为本次拉取量，避免虚高的计数让
 `_cached_klines` 的 `requested_count < count` 守卫误判缓存够用。
 
+**版本号当前值：`_KLINE_CACHE_VERSION = 7`**（v5→v6 除权记录取数失败 / v6→v7 盘中半日 bar，
+见上文）。升级会触发全量 K 线缓存重建（数千标的走网络，一次性代价），所以 v7 与数据源
+并发修复一并落地。
+
 ## 其他注意事项
 
 - **pandas 3.0 兼容垫片**：mootdx 0.11.x 的前复权与除权数据处理仍用 `fillna(method=...)`，
@@ -152,7 +186,8 @@ K 线缓存（`backend/data/a_stock_data/klines/`）带格式版本 `version` �
 
 ## 相关代码
 
-- `app/data_sources/mootdx_market_sdk.py`：`_forward_adjust_bars` / `_align_xdxr_to_bars` / `_get_xdxr_info` / `get_klines`
+- `app/data_sources/mootdx_market_sdk.py`：`_forward_adjust_bars` / `_align_xdxr_to_bars` / `_get_xdxr_info` / `get_klines` / `_load_klines`（盘中半日 bar 丢弃）
+- `app/data_sources/trading_session.py`：`SESSION_BAR_FINAL` / `is_before_bar_final` / `is_incomplete_bar`（取数与缓存共用的时间口径）
 - `app/data_sources/a_stock_data.py`：`_KLINE_CACHE_VERSION` / `_cached_klines` / `_write_klines_cache`
 - `app/data_sources/em_fundamentals.py`：`_forward_adjusted_close`（`close_qfq` 的还原式）
 - `app/strategies/cross_section/value_bars.py`：`ValueBars.close`（不复权）/ `ValueBars.close_qfq`（前复权）

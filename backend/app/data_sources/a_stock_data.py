@@ -18,6 +18,7 @@ from app.data_sources.mootdx_market_sdk import (
     MootdxTrade,
     _KLINE_ADJUST,
 )
+from app.data_sources.trading_session import is_before_bar_final
 from app.data_sources.tencent_finance_sdk import (
     TencentFinanceError,
     TencentFinanceSDK,
@@ -33,7 +34,12 @@ from app.data_sources.tencent_finance_sdk import (
 # v5→v6：除权记录日期对齐到「该日或之后的第一个交易日」。旧实现按日期直接 join，
 # 除权日非交易日（周末/节假日/停牌）的记录被静默丢弃，如 159922 的折算记录在周日
 # 2024-12-01，导致 2024-12-02 留下 -60% 虚假断层且此前历史价格高估 2.5 倍，必须重建。
-_KLINE_CACHE_VERSION = 6
+# v6→v7：盘中不得把当日未收盘的半日 bar 当日线（取数侧已丢弃，见
+# app/data_sources/trading_session.py）。旧缓存里可能就躺着这么一根半日 bar，而
+# `_write_klines_cache` 的 same_era merge 会把它原样「复活」成本版本的行，只改丢弃
+# 逻辑不升版本是洗不掉的；顺带让 `shared_report_model._read_stale_day_klines` 的裸读
+# （它本就校验 version）自动拒读旧文件。
+_KLINE_CACHE_VERSION = 7
 
 
 class AStockDataError(Exception):
@@ -158,7 +164,15 @@ class AStockDataSDK:
         if not isinstance(payload, dict):
             return False
         cached_at = payload.get("cached_at")
-        return isinstance(cached_at, str) and cached_at[:10] == AStockDataSDK._today()
+        if not (isinstance(cached_at, str) and cached_at[:10] == AStockDataSDK._today()):
+            return False
+        # 盘中写的 K 线缓存，其「今天」的数据只到写入那一刻为止（取数侧已把未收盘的
+        # 半日 bar 丢掉，所以缓存里**没有**今天这根）。过了收盘定稿时刻它就只覆盖到
+        # 昨天，必须重取一次才能拿到当日完整 bar；取到后写入的 `written_in_session`
+        # 为 False，当天不再重取。universe 等其它缓存不带这个标记，判据不变。
+        if payload.get("written_in_session") and not is_before_bar_final():
+            return False
+        return True
 
     @staticmethod
     def _normalize_cache_rows(rows: object) -> list[dict[str, object]]:
@@ -271,6 +285,9 @@ class AStockDataSDK:
                 "version": _KLINE_CACHE_VERSION,
                 "adjust": _KLINE_ADJUST,
                 "cached_at": self._today(),
+                # 写这一刻是否早于当日收盘定稿：盘中写的缓存到盘后要判 stale 重取一次
+                # （见 `_cache_is_fresh`）。universe 等其它缓存不带这个标记。
+                "written_in_session": is_before_bar_final(),
                 "rows": merged_rows,
             },
             "klines",

@@ -13,6 +13,7 @@ import os
 import re
 import socket
 import sys
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -21,6 +22,8 @@ from pathlib import Path
 from typing import Any, Callable, Iterator, Literal, TypedDict
 
 import pandas as pd
+
+from app.data_sources.trading_session import is_incomplete_bar
 
 # ---------------------------------------------------------------------------
 # pandas 3.0 移除了 DataFrame/Series.fillna(method=...)，而 mootdx 0.11.x 的
@@ -181,6 +184,14 @@ _KLINE_ADJUST = "qfq"
 # `Quotes.factory` 就可能建连超时（节点抖动 / 限制连入），所以选点不是一个「选出
 # 唯一答案」的函数，而是一串按优先级排好的候选（见 `_candidate_nodes`），由
 # `_connect_node` 一路试到建连成功为止。
+#
+# 并发：选点在建进程里是**全局**的，但取数路径是多线程的（横截面面板加载、
+# 报告补齐 K 线都是 6~8 线程，每个线程各自建 SDK）。没有串行化时，一次运行会看到
+# N 个线程各自「全量扫描一遍 → 各自把 BESTIP 写一遍」，扫描结果互相覆盖，还会争抢
+# 同一个固定 tmp 文件写坏节点缓存；更麻烦的是 mootdx 的 `BaseQuotes.__init__` 会
+# `config.setup()` 重读磁盘配置，把别的线程刚写好的 BESTIP 打回僵尸节点。
+# 应对见 `_NODE_LOCK` / `_RESOLVED_NODE`：选点整体串行，进程内记住已解析的节点；
+# 真正取数的并发安全（同一 socket 上不得交错请求）在 `_create_client` 里补锁。
 # ---------------------------------------------------------------------------
 _PROBE_MARKET = 1  # 探活标的：长历史个股，任何可用节点都必有数据
 _PROBE_CODE = "600519"
@@ -197,6 +208,60 @@ _NODE_SCAN_LIMIT = 40  # 单次扫描最多数据探活多少个候选
 _NODE_RECHECK_SECONDS = 60.0  # 运行中复检节点的最小间隔
 _NODE_CONNECT_TIMEOUT = 5  # 建连超时；失败要尽快换下一个候选
 _NODE_READ_TIMEOUT = 15  # 建连后的收发超时（mootdx StdQuotes 的默认值）
+_NODE_SCAN_FAIL_SECONDS = 30.0  # 全量扫描一无所获后，多久内不再重扫
+
+# ---------------------------------------------------------------------------
+# 选点的进程内共享状态（见模块顶部「TDX 行情节点选择」末段的并发说明）。
+#
+# `_NODE_LOCK` 用 RLock：`_connect_node` 持锁期间会经 `_candidate_nodes` 调到
+# `_publish_node` / `_write_cached_node`，这两个函数自己也进同一把锁。
+#
+# `_RESOLVED_NODE` 存 `(节点, monotonic 时间戳)` **一个元组整体赋值**——分两次写会让
+# 别处读到「新节点配旧时间」的半更新状态。它唯一的失效钩子是 `_node_seems_dead()`
+# 返回 True（那才是数据探活级的死亡判决）；磁盘缓存已有 6h TTL，这里**不再加**
+# 进程内 TTL，否则只会让 N 个线程在 TTL 到期时周期性一起惊群。
+# ---------------------------------------------------------------------------
+_NODE_LOCK = threading.RLock()
+_RESOLVED_NODE: tuple[tuple[str, int], float] | None = None
+# 全量扫描一无所获的时间点（monotonic）；None 表示没有失败记录。
+_NODE_SCAN_FAILED_AT: float | None = None
+
+
+def _resolved_node() -> tuple[str, int] | None:
+    """进程内记住的可用节点；没有则 None。"""
+    entry = _RESOLVED_NODE
+    return entry[0] if entry is not None else None
+
+
+def _remember_node(node: tuple[str, int]) -> None:
+    """记住刚建连成功的节点（整体赋值，见上）。"""
+    global _RESOLVED_NODE
+    _RESOLVED_NODE = (node, time.monotonic())
+
+
+def _forget_resolved_node(node: tuple[str, int]) -> None:
+    """节点被判定死亡时清掉记忆，让下一次选点重新解析。"""
+    global _RESOLVED_NODE
+    entry = _RESOLVED_NODE
+    if entry is not None and entry[0] == node:
+        _RESOLVED_NODE = None
+
+
+def _scan_recently_failed() -> bool:
+    """全量扫描是否刚刚一无所获：网络整体不通时避免 N 个线程依次各扫一遍。"""
+    if _NODE_SCAN_FAILED_AT is None:
+        return False
+    return time.monotonic() - _NODE_SCAN_FAILED_AT < _NODE_SCAN_FAIL_SECONDS
+
+
+def _mark_scan_failed() -> None:
+    global _NODE_SCAN_FAILED_AT
+    _NODE_SCAN_FAILED_AT = time.monotonic()
+
+
+def _mark_scan_ok() -> None:
+    global _NODE_SCAN_FAILED_AT
+    _NODE_SCAN_FAILED_AT = None
 
 
 def _node_cache_path() -> Path:
@@ -251,6 +316,11 @@ def _read_cached_node() -> tuple[str, int] | None:
 
 
 def _write_cached_node(ip: str, port: int, *, rtt_ms: float | None = None) -> None:
+    """把选中节点写进磁盘缓存（供其它进程复用，带 TTL）。
+
+    tmp 名带 pid + 线程 id：所有 SDK 共用同一路径，固定名在多线程下会互相覆盖、
+    写出半截 JSON 再被 `replace` 成「合法但内容错乱」的节点缓存。
+    """
     path = _node_cache_path()
     payload = {
         "type": "tdx_node",
@@ -260,15 +330,19 @@ def _write_cached_node(ip: str, port: int, *, rtt_ms: float | None = None) -> No
         "validated_at": time.time(),
         "validated_on": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
     }
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(path.suffix + ".tmp")
-        tmp.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-        )
-        tmp.replace(path)
-    except OSError:
-        return
+    with _NODE_LOCK:
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_name(
+                f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp"
+            )
+            tmp.write_text(
+                json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            tmp.replace(path)
+        except OSError:
+            return
 
 
 def _publish_node(ip: str, port: int) -> None:
@@ -279,32 +353,40 @@ def _publish_node(ip: str, port: int) -> None:
     僵尸节点上 `xdxr` 返回空表，`_get_xdxr_info` 会把它当成「无除权记录」，于是原始
     未复权价被当作 qfq 静默写进缓存（正是该函数注释里警告的失效模式）。写 BESTIP
     等价于 mootdx `bestip -w` 的落盘动作，只是判据从「TCP 通」换成了「真的能回 K 线」。
+
+    全程持 `_NODE_LOCK`：这份配置是**进程外**共享的全局状态，多线程同时「读-改-写」
+    会互相丢更新；落盘还必须原子（tmp + replace），因为别的线程/进程会同时读它，
+    torn read 会让 mootdx 把 BESTIP 打回僵尸节点。
     """
     try:
         from mootdx import config as mootdx_config
     except Exception:  # pragma: no cover - mootdx 缺失时不阻断（本模块其它路径会给错）
         return
-    try:
-        bestip = dict(mootdx_config.get("BESTIP") or {})
-        if list(bestip.get("HQ") or []) == [ip, int(port)]:
+    with _NODE_LOCK:
+        try:
+            bestip = dict(mootdx_config.get("BESTIP") or {})
+            if list(bestip.get("HQ") or []) == [ip, int(port)]:
+                return
+            bestip["HQ"] = [ip, int(port)]
+            mootdx_config.set("BESTIP", bestip)
+        except Exception:  # pragma: no cover - 内存写入失败不该影响取数
             return
-        bestip["HQ"] = [ip, int(port)]
-        mootdx_config.set("BESTIP", bestip)
-    except Exception:  # pragma: no cover - 内存写入失败不该影响取数
-        return
 
-    # 落盘：让其它进程/其它 mootdx 用法也脱离僵尸节点。
-    try:
-        path = Path(mootdx_config.CONF)
-        payload = json.loads(path.read_text(encoding="utf-8"))
-        if not isinstance(payload, dict):
+        # 落盘：让其它进程/其它 mootdx 用法也脱离僵尸节点。
+        try:
+            path = Path(mootdx_config.CONF)
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(payload, dict):
+                return
+            payload.setdefault("BESTIP", {})["HQ"] = [ip, int(port)]
+            tmp = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+            tmp.write_text(
+                json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            tmp.replace(path)
+        except Exception:  # pragma: no cover - 配置落盘失败不影响本次运行
             return
-        payload.setdefault("BESTIP", {})["HQ"] = [ip, int(port)]
-        path.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-        )
-    except Exception:  # pragma: no cover - 配置落盘失败不影响本次运行
-        return
 
 
 def _builtin_nodes() -> list[tuple[str, int]]:
@@ -405,7 +487,12 @@ def _scan_nodes(*, quiet: bool) -> Iterator[tuple[tuple[str, int], float | None]
 
     惰性很关键：探活只证明「刚才能取到数」，调用方还得自己建连。第一个探活通过的
     节点可能偏偏建连超时，此时应当继续消费下一个，而不是让整次运行失败。
+
+    刚扫过且一无所获时直接不扫（见 `_scan_recently_failed`）：网络整体不通的情况下，
+    N 个线程会依次各扫一遍 40 个节点，把一个必然失败的运行拖成 N 倍时长。
     """
+    if _scan_recently_failed():
+        return
     candidates = _builtin_nodes()
     if not candidates:
         return
@@ -490,13 +577,23 @@ def _candidate_nodes(
                 _publish_node(*cached)
                 yield cached
 
+    scan_produced = False
     for node, rtt in _scan_nodes(quiet=quiet):
-        if node in seen or node in skipped:
+        if node in skipped:
+            scan_produced = True  # 扫描确实有产出，只是全被 skip 掉
+            continue
+        if node in seen:
             continue
         seen.add(node)
         _publish_node(*node)
         _write_cached_node(*node, rtt_ms=rtt)
+        scan_produced = True
         yield node
+    # 循环跑到底说明扫描被完全消费（有可用节点时调用方早就 return 了）。
+    if scan_produced:
+        _mark_scan_ok()
+    else:
+        _mark_scan_failed()
 
 
 def _to_float(value: Any) -> float | None:
@@ -588,27 +685,60 @@ class MootdxMarketSDK:
 
         探活只管「能不能回 K 线」，建连可能单独失败（节点抖动/限制连入），所以不能
         在第 1 个候选上一次性押注——否则就是 `init_error` 直接终止整轮取数。
+
+        并发下选点整体串行（`_NODE_LOCK`），并优先复用进程内已解析的节点：锁外先试
+        一次，失败或不可用再进锁，锁内还要**再检查一次**——别的线程可能刚刚解析出了
+        一个可用节点。锁内二次检查的判据是「记忆节点不在 `skip` 里」而不是「记忆节点
+        存在」：`_reseat_node` 传的 `skip=(self._node,)` 在多线程下会让每个线程都以为
+        自己该换点，只看「存在」就会串行触发 N 次全量扫描。
+
+        显式 `node=` / `_NODE_ENV` / `force=True` 一律不进快速路径：前者是僵尸节点的
+        逃生通道，必须真的按指定节点重连；后者（`_reseat_node`）本来就要求换点。
         """
         blocked = (self._node,) if (skip and self._node) else ()
-        last_error: MootdxMarketError | None = None
-        for candidate in _candidate_nodes(
-            explicit, force=force, quiet=quiet, skip=blocked
-        ):
+        pinned = explicit is not None or bool(os.getenv(_NODE_ENV))
+
+        def try_reuse() -> tuple[str, int] | None:
+            """复用进程内记忆节点；不可用返回 None（无记忆也算 None）。"""
+            memo = _resolved_node()
+            if memo is None or memo in blocked:
+                return None
             try:
-                client = self._create_client(candidate)
-            except MootdxMarketError as exc:
-                last_error = exc
-                if not quiet:
-                    print(
-                        f"[tdx] 节点 {candidate[0]}:{candidate[1]} 探活通过但建连失败"
-                        f"（{exc}），换下一个",
-                        file=sys.stderr,
-                        flush=True,
-                    )
-                continue
-            self._swap_client(candidate, client)
-            _announce_node(candidate, quiet=quiet)
+                client = self._create_client(memo)
+            except MootdxMarketError:
+                _forget_resolved_node(memo)
+                return None
+            self._swap_client(memo, client)
+            _announce_node(memo, quiet=quiet)
+            return memo
+
+        if not pinned and not force and try_reuse() is not None:
             return
+
+        last_error: MootdxMarketError | None = None
+        with _NODE_LOCK:
+            if not pinned and try_reuse() is not None:
+                return
+            for candidate in _candidate_nodes(
+                explicit, force=force, quiet=quiet, skip=blocked
+            ):
+                try:
+                    client = self._create_client(candidate)
+                except MootdxMarketError as exc:
+                    last_error = exc
+                    if not quiet:
+                        print(
+                            f"[tdx] 节点 {candidate[0]}:{candidate[1]} 探活通过但建连失败"
+                            f"（{exc}），换下一个",
+                            file=sys.stderr,
+                            flush=True,
+                        )
+                    continue
+                self._swap_client(candidate, client)
+                _remember_node(candidate)
+                _mark_scan_ok()
+                _announce_node(candidate, quiet=quiet)
+                return
 
         if last_error is not None:
             raise MootdxMarketError(
@@ -638,6 +768,9 @@ class MootdxMarketSDK:
         """空结果是否该归咎于节点：用探活标的复检（带最小间隔，避免逐票都去探）。
 
         返回 False 表示「节点没问题，空结果就是这个标的本身没数据」。
+
+        判定为死亡时顺带清掉进程内记忆的节点——这是 `_RESOLVED_NODE` 唯一的失效钩子
+        （磁盘缓存另有 6h TTL，但进程内不加 TTL，避免多线程周期性一起重扫）。
         """
         if self._node is None:
             return False
@@ -647,6 +780,7 @@ class MootdxMarketSDK:
         if _node_has_data(*self._node):
             self._node_ok_until = now + _NODE_RECHECK_SECONDS
             return False
+        _forget_resolved_node(self._node)
         return True
 
     def _reseat_node(self) -> bool:
@@ -714,6 +848,19 @@ class MootdxMarketSDK:
         同时把建连超时压到 5s（tdxpy 自己的默认值，mootdx 把它放宽到了 15s）：建连
         失败要尽快换下一个候选。`connect()` 的 `time_out` 会被 `settimeout` 一直沿用到
         后续收发，所以连上之后再调回常规值，避免大页取数被误判成超时。
+
+        两处并发相关的设置（详见模块顶部「TDX 行情节点选择」末段）：
+
+        - `auto_retry=False`：mootdx 默认开启的自动重试会在 `with self.lock` **之外**
+          `disconnect()` + `connect()`，一个线程的失败会拆掉别的线程正在用的 socket；
+          重连统一交回本模块自己的 `_node_seems_dead` / `_reseat_node`。
+        - 补齐 `TdxHq_API.lock`：mootdx 构造 `TdxHq_API` 只传 `heartbeat`（默认 False），
+          而 tdxpy 的锁是 `(multithread or heartbeat) and Lock() or None`，于是同一
+          client 被多线程调用时请求/响应会在同一 socket 上交错。这里显式补一把锁把
+          单次调用串行成单通道——**前提正是 `heartbeat=False`**，两者必须一起看。
+          注意别赋到 `client.client.client`（那是 socket 对象），`lock` 在 `TdxHq_API` 上。
+          探活用的临时 `TdxHq_API`（`_node_has_data`）是单线程独占的，不加锁，
+          否则全量扫描会被串行化。
         """
         try:
             from mootdx.quotes import Quotes  # type: ignore[import-not-found]
@@ -723,7 +870,10 @@ class MootdxMarketSDK:
         ip, port = node
         try:
             client = Quotes.factory(
-                market="std", server=(ip, int(port)), timeout=_NODE_CONNECT_TIMEOUT
+                market="std",
+                server=(ip, int(port)),
+                timeout=_NODE_CONNECT_TIMEOUT,
+                auto_retry=False,
             )
         except Exception as exc:
             raise MootdxMarketError(
@@ -746,6 +896,8 @@ class MootdxMarketSDK:
         # 变了就跳过（退化成 tdxpy 自己的默认 5s，不会更糟）。
         try:
             client.client.client.settimeout(_NODE_READ_TIMEOUT)
+            if client.client.lock is None:
+                client.client.lock = threading.Lock()
         except Exception:  # pragma: no cover - 仅在 tdxpy 内部结构变化时触发
             pass
         return client
@@ -882,7 +1034,17 @@ class MootdxMarketSDK:
         period: Literal["day", "week", "month", "1m", "5m", "15m", "30m", "60m"],
         count: int,
     ) -> list[MootdxKlineBar]:
-        """按当前 client 拉取并前复权；不做节点复检（由 :meth:`get_klines` 负责）。"""
+        """按当前 client 拉取并前复权；不做节点复检（由 :meth:`get_klines` 负责）。
+
+        ``period="day"`` 时丢弃**当日尚未收盘**的最后一根 bar：TDX 在交易时段内会把
+        当天未收盘的日线 bar 当作最后一根返回（datetime 记为该日 15:00，OHLC 是此刻
+        快照）。留着它，等于把一根随时在变的半日 bar 当「今日收盘价」写进缓存，同一天
+        早晚各跑一次会得到不同结果（详见 :mod:`app.data_sources.trading_session`）。
+
+        ``week`` / ``month`` **不做这个处理**：「bar 日期 == 今天」根本不是周线/月线是否
+        完整的好判据——周三盘后那根周线同样没走完，而周三的日线已经定稿。本仓库没有
+        任何调用方使用 day 以外的 period，等真有需求再单独设计判据。
+        """
         norm = self._parse_symbol(symbol)
         category = self.map_period(period)
 
@@ -956,6 +1118,10 @@ class MootdxMarketSDK:
                 seen.add(key)
                 all_bars.append(bar)
         raw_bars = all_bars[-count:]
+        # 丢弃当日未收盘的半日 bar。必须在 `_forward_adjust_bars` **之前**：前复权因子
+        # 以最新一根 K 线为 1 向前累乘，拿一根盘中快照当锚点会把整段历史价格算歪。
+        if period == "day" and raw_bars and is_incomplete_bar(raw_bars[-1]["datetime"]):
+            raw_bars = raw_bars[:-1]
         return self._forward_adjust_bars(norm.symbol, raw_bars)
 
     def _get_xdxr_info(self, symbol: str) -> pd.DataFrame | None:

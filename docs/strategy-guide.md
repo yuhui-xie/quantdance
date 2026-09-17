@@ -78,7 +78,7 @@ python -m app.script backtest --mode universe --universe hs300 \
 | `symbols` | 显式股票列表；非空时覆盖 `universe` |
 | `max_universe` | 股票池上限（组合请求 1~10000）；超出时截取或按 `seed` 抽样；全 A 约设 `6000` |
 | `seed` | 抽样随机种子，便于复现 |
-| `start_date` / `end_date` | 回测区间；`screen` 时 `end_date` 为截面日 |
+| `start_date` / `end_date` | 回测区间；`screen` 时 `end_date` 为截面日。⚠ **盘中（本地墙钟早于 15:05）当日那根未收盘的日线 bar 会被丢弃**，因此 `screen`/`pick` 的截面日、以及 `end_date=今天` 的区间实际只到上一交易日——避免用半日 bar 当收盘价（见 `data-adjustment.md`「盘中未收盘的当日 bar 被当日线」） |
 | `initial_cash` | 初始资金（元） |
 | `commission` | 佣金费率 |
 | `min_commission` | 单笔最低佣金（元） |
