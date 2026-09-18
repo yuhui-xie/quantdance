@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Callable, Mapping
@@ -208,13 +209,19 @@ def _load_panel(
             return symbol, value.dropna(subset=["date", "close"])
 
         total = len(symbols)
+        # 单票失败不再无声吞掉：这只票会**凭空从面板里消失**，回测结果随之改变却没有任何
+        # 提示——这正是取数侧换点竞态（`MootdxMarketSDK._swap_client` 拆掉在途 socket）
+        # 一度被掩盖的原因。仍不中断整批（单票失败不该炸掉整轮回测），但必须落一行 stderr。
+        failures: list[tuple[str, str]] = []
         with ThreadPoolExecutor(max_workers=min(request.max_workers, len(symbols))) as pool:
-            futures = [pool.submit(load_daily, symbol) for symbol in symbols]
+            futures = {pool.submit(load_daily, symbol): symbol for symbol in symbols}
             # 失败/空数据也要计入进度，否则进度条会卡在未完成状态。
             for done, future in enumerate(as_completed(futures), start=1):
                 try:
                     symbol, value = future.result()
-                except (MarketDataError, ValueError):
+                except (MarketDataError, ValueError) as exc:
+                    # 失败时拿不到返回值，用提交时的映射还原是哪只票。
+                    failures.append((futures[future], f"{type(exc).__name__}: {exc}"))
                     if progress is not None:
                         progress(done, total, "", "load")
                     continue
@@ -222,6 +229,13 @@ def _load_panel(
                     panel[symbol] = {"value": value}
                 if progress is not None:
                     progress(done, total, symbol, "load")
+        if failures:
+            for failed_symbol, message in failures:
+                print(
+                    f"[cross_section] 标的 {failed_symbol} 行情加载失败，已从面板剔除: {message}",
+                    file=sys.stderr,
+                    flush=True,
+                )
         if not panel:
             raise MarketDataError("未能加载任何日线行情数据")
         return panel

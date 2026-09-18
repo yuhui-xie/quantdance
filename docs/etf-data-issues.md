@@ -91,9 +91,50 @@ akshare ETF 列表中存在、但 **mootdx/TDX 无任何 K 线数据** 的标的
 （见 `market_data.py` 约定）。属于**数据覆盖缺口**，与本次复权断层无关，后续可考虑
 接入腾讯/东财作为 ETF 备用行情源。
 
+## 后续补充（2026-09）：多线程共享行情 SDK 的并发缺陷
+
+**症状**：同一份输入、同一条配方，多线程回测的收益会在 **297% / 414% / 887% / 914%** 之间跳动；
+关掉多线程（`--max-workers 1`）后稳定在 1725.52%。**旧的多线程基线是被竞态污染的，不能当对照目标。**
+
+**根因**（三条，都指向「一个 `MootdxMarketSDK` 实例被 6~8 个线程共享」）：
+
+1. **取数中途被换点拆掉 socket**。`_load_klines` 攒分页的整个循环里，每一页都**重读** `self.client`，
+   而另一线程的 `_connect_node` 锁外快速路径会调 `_swap_client` → `close()` 旧 client。
+   两者并发时，一次逻辑取数的不同分页落在两个不同 socket 上，旧 client 被关后仍在它上面翻页的
+   线程直接抛异常。**这一条是收益跳动的来源。**
+2. **tdxpy 的 `lock` 是 `None`**。mootdx 构造 `TdxHq_API` 只传 `heartbeat`（本仓库默认 False），
+   而 `BaseSocketClient.__init__` 的锁只在 `multithread or heartbeat` 时才建 ⇒ 同一 client 被
+   多线程并发调用时请求/响应会**交错**。
+3. **tdxpy 自己的重试在锁外重连**（`auto_retry=True`）：一个线程的失败会 `disconnect()`/`connect()`
+   掉别的线程正在用的 socket（断连风暴）。
+
+`market_data.py` 原先那句「纯脚本、单线程，共享实例无并发问题」的注释是错的 —— `market_data._a_stock_sdk()`
+**一直是**进程内单例，`cross_section_runner._load_panel` 的 6~8 线程池早就共享同一个 client。
+
+**修复**（`mootdx_market_sdk.py` / `market_data.py` / `a_stock_data.py` / `cross_section_runner.py`）：
+
+- 引入 `self._client_lock`（RLock）：`_load_klines` **整轮分页**持锁并把 client 绑成局部值，
+  `_swap_client` 只改引用；`_node_seems_dead` 的探活走**临时连接**、不占锁，避免一次往返堵住所有线程。
+  锁序恒为 `_NODE_LOCK` → `_client_lock`，单向无环。
+- `_create_client`：`auto_retry=False`（重连交回本项目的 `_node_seems_dead` / `_reseat_node`），
+  并在构造后给 `TdxHq_API` 补锁（前提是 `heartbeat=False`）。
+- `market_data._a_stock_sdk()` 改为双重检查加锁的单例。
+- `cross_section_runner._load_panel` 不再**无声剔除**加载失败的标的，逐只打 stderr。
+
+**验证**：
+
+| 探针 | 修复前 | 修复后 |
+|------|--------|--------|
+| `out/_pack/race_probe.py`（注入假 client，确定性复现） | 复现成功 3/3（`A: ['A','A']` + `B: ['B']`） | 通过 5/5（`A: ['A','A','A']`，`B: []`） |
+| `out/_pack/concurrency_probe.py` | — | 总体 PASS（失败上报可见；4 轮 × 8 线程行数稳定） |
+
+**注意**：「同一配方跑 3 次结果一致」**不能**证明没有这个 bug —— 节点健康时 `_reseat_node`
+根本不触发，`_swap_client` 从不在取数中途被调用。必须用注入 client 的探针制造换点窗口才能复现。
+
 ## 相关代码
 
 - `app/data_sources/mootdx_market_sdk.py`：`_forward_adjust_bars` / `_get_xdxr_info` / `get_klines`
+- `app/data_sources/mootdx_market_sdk.py`：`_client_lock` / `_load_klines` / `_swap_client` / `_node_seems_dead`（并发）
 - `app/data_sources/a_stock_data.py`：`_KLINE_CACHE_VERSION` / 缓存读写
 - `tests/test_a_stock_data_sdk.py`：`test_get_xdxr_info_converts_category11_suogu`、
   `test_forward_adjust_smoothes_etf_split_category11`、`test_forward_adjust_smoothes_etf_consolidation`

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import os
+import sys
+import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Literal, TypedDict
@@ -208,15 +210,29 @@ class AStockDataSDK:
         return data if isinstance(data, dict) else None
 
     def _write_cache(self, payload: dict[str, object], *parts: str) -> None:
+        """原子写一份缓存；失败**不抛异常，但必须出声**。
+
+        tmp 名带 pid + 线程 id：固定名（原先的 ``<path>.tmp``）在多线程/多进程同时写
+        同一标的下会互相覆盖同一份 tmp，再把**混合内容** replace 到正式文件上——正式文件
+        本身不会撕裂（``replace`` 是原子的），但会被塞进另一份 payload 的残片。
+        这与 `mootdx_market_sdk._write_cached_node` 是同一类问题，修法保持一致。
+
+        失败只打一行 stderr 后返回：缓存写不进去是**性能**问题（下次重取），不是数据
+        问题，不该让整轮回测炸掉；但静默返回会让「缓存一直没落盘、每轮都在重取」这种
+        情况完全不可见，所以不能一声不吭（CLAUDE.md「不静默降级」）。
+        """
         if not self.cache_enabled:
             return
         path = self._cache_path(*parts)
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
-            tmp = path.with_suffix(path.suffix + ".tmp")
+            tmp = path.with_suffix(
+                f"{path.suffix}.{os.getpid()}.{threading.get_ident()}.tmp"
+            )
             tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
             tmp.replace(path)
-        except OSError:
+        except OSError as exc:
+            print(f"[a_stock_data] 缓存写入失败（不影响本次结果）: {path} — {exc}", file=sys.stderr, flush=True)
             return
 
     def _cached_klines(

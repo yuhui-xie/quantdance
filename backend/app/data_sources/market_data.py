@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import random
 import re
+import threading
 from datetime import date, datetime
 from typing import Any, Literal
 
@@ -76,6 +77,7 @@ def _a_stock_data_bars_to_ohlcv(rows: list[MarketKlineBar]) -> pd.DataFrame:
 
 
 _A_STOCK_SDK: AStockDataSDK | None = None
+_A_STOCK_SDK_LOCK = threading.Lock()
 
 
 def _a_stock_sdk() -> AStockDataSDK:
@@ -93,11 +95,18 @@ def _a_stock_sdk() -> AStockDataSDK:
     经 `fetch_a_share_daily` 用它跑 6~8 线程。早先这里写的是「纯脚本、单线程，共享实例
     无并发问题」，是错的——mootdx 的 `TdxHq_API` 默认 `lock=None`（`heartbeat=False`），
     多线程在同一 socket 上会请求/响应交错。现在由 `MootdxMarketSDK._create_client`
-    统一补齐 `TdxHq_API.lock`，把同一 client 上的单次调用串行成单通道。
+    统一补齐 `TdxHq_API.lock`，把同一 client 上的单次调用串行成单通道；「整轮取数」与
+    「换点」的互斥由 `MootdxMarketSDK._client_lock` 保证。
+
+    **构造必须加锁**：原先的裸 `if _A_STOCK_SDK is None` 是 check-then-set，6~8 个线程
+    首轮会各自看到 `None` 并各建一个 SDK——每个都要跑一遍选点建连（含可能的全量节点扫描），
+    而且被丢弃的那几个连接不会有人 close。双重检查避免重复构造。
     """
     global _A_STOCK_SDK
     if _A_STOCK_SDK is None:
-        _A_STOCK_SDK = AStockDataSDK()
+        with _A_STOCK_SDK_LOCK:
+            if _A_STOCK_SDK is None:
+                _A_STOCK_SDK = AStockDataSDK()
     return _A_STOCK_SDK
 
 

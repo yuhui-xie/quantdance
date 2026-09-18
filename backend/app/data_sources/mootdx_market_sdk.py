@@ -16,6 +16,7 @@ import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -660,6 +661,12 @@ class MootdxMarketSDK:
         self._node: tuple[str, int] | None = None
         self._node_ok_until = 0.0
         self.client: Any = None
+        # 保护「取数中」与「换点中」互斥（见 `_load_klines` / `_swap_client`）。用 RLock：
+        # `get_klines` 会在锁外串起 `_load_klines` → `_node_seems_dead` → `_reseat_node`
+        # 三个步骤，将来若有嵌套调用不必再改锁的类型。
+        # 锁序恒为 `_NODE_LOCK` → `self._client_lock`（`_connect_node` 持前者时调
+        # `_swap_client` 取后者），反向从不发生，故无环。
+        self._client_lock = threading.RLock()
         if client is not None:
             self.client = client
             return
@@ -752,11 +759,22 @@ class MootdxMarketSDK:
         )
 
     def _swap_client(self, node: tuple[str, int], client: Any) -> None:
-        """换到新节点：关掉旧连接，避免换点/重扫时泄漏 socket。"""
-        previous = self.client
-        self._node = node
-        self.client = client
-        self._node_ok_until = time.monotonic() + _NODE_RECHECK_SECONDS
+        """换到新节点：关掉旧连接，避免换点/重扫时泄漏 socket。
+
+        必须持 `self._client_lock`：`close()` 会拆掉旧 socket，而别的线程可能正拿着这个
+        旧 client 在翻页（见 `_load_klines`）。同一把锁保证「换点」与「整轮取数」互斥——
+        换点只会挑在两次取数之间发生，不会切进一次取数的中间。
+
+        锁序：`_connect_node` 是持 `_NODE_LOCK` 调本方法的，故恒为
+        `_NODE_LOCK` → `_client_lock`，反向从不发生。
+        """
+        with self._client_lock:
+            previous = self.client
+            self._node = node
+            self.client = client
+            self._node_ok_until = time.monotonic() + _NODE_RECHECK_SECONDS
+        # close 放在锁外：旧 client 此刻已无人引用，关连接可能阻塞（TCP 半开），
+        # 不该把等待时间算进临界区。
         close = getattr(previous, "close", None)
         if callable(close):
             try:
@@ -772,15 +790,19 @@ class MootdxMarketSDK:
         判定为死亡时顺带清掉进程内记忆的节点——这是 `_RESOLVED_NODE` 唯一的失效钩子
         （磁盘缓存另有 6h TTL，但进程内不加 TTL，避免多线程周期性一起重扫）。
         """
-        if self._node is None:
+        with self._client_lock:
+            node = self._node
+            if node is None:
+                return False
+            if time.monotonic() < self._node_ok_until:
+                return False
+        # 探活走独立连接（`_node_has_data` 自建临时 TdxHq_API），不占 `_client_lock`——
+        # 否则一次探活的往返会把所有线程的取数堵在锁外。`node` 已抓成局部值，不受换点影响。
+        if _node_has_data(*node):
+            with self._client_lock:
+                self._node_ok_until = time.monotonic() + _NODE_RECHECK_SECONDS
             return False
-        now = time.monotonic()
-        if now < self._node_ok_until:
-            return False
-        if _node_has_data(*self._node):
-            self._node_ok_until = now + _NODE_RECHECK_SECONDS
-            return False
-        _forget_resolved_node(self._node)
+        _forget_resolved_node(node)
         return True
 
     def _reseat_node(self) -> bool:
@@ -902,27 +924,40 @@ class MootdxMarketSDK:
             pass
         return client
 
+    @contextmanager
+    def _bound_client(self) -> Iterator[Any]:
+        """在 `self._client_lock` 内绑定当前 client，供**一次**调用使用。
+
+        所有经 `self.client` 发出的请求都要走这里：换点（`_swap_client`）持同一把锁
+        关旧 socket，不绑锁就可能在本调用进行中被拆掉连接。持锁区间只是单次请求，
+        而单 socket 本就被 tdxpy 的 per-call 锁串行化，故无额外代价。
+        """
+        with self._client_lock:
+            yield self.client
+
     def _call_first(self, names: tuple[str, ...], *args: Any, **kwargs: Any) -> Any:
-        for name in names:
-            method = getattr(self.client, name, None)
-            if callable(method):
-                try:
-                    return method(*args, **kwargs)
-                except TypeError:
-                    continue
+        with self._bound_client() as client:
+            for name in names:
+                method = getattr(client, name, None)
+                if callable(method):
+                    try:
+                        return method(*args, **kwargs)
+                    except TypeError:
+                        continue
         raise MootdxMarketError("method_not_found", f"客户端不支持方法: {', '.join(names)}")
 
     def get_quote(self, symbol: str) -> MootdxQuote:
         norm = self._parse_symbol(symbol)
         try:
-            method = getattr(self.client, "quotes", None)
-            if callable(method):
-                raw = method(norm.symbol)
-            else:
-                raw = self._call_first(
-                    ("get_security_quotes", "get_quote"),
-                    [(norm.market, norm.code)],
-                )
+            with self._bound_client() as client:
+                method = getattr(client, "quotes", None)
+                if callable(method):
+                    raw = method(norm.symbol)
+                else:
+                    raw = self._call_first(
+                        ("get_security_quotes", "get_quote"),
+                        [(norm.market, norm.code)],
+                    )
         except MootdxMarketError:
             raise
         except Exception as exc:
@@ -948,26 +983,27 @@ class MootdxMarketSDK:
 
     def _stock_records_for_market(self, market: int) -> list[dict[str, Any]]:
         try:
-            method = getattr(self.client, "stocks", None)
-            if callable(method):
-                for kwargs in ({"market": market}, {}):
-                    try:
-                        raw = method(**kwargs)
-                        return _to_records(raw, label="股票列表", symbol="")
-                    except TypeError:
-                        continue
+            with self._bound_client() as client:
+                method = getattr(client, "stocks", None)
+                if callable(method):
+                    for kwargs in ({"market": market}, {}):
+                        try:
+                            raw = method(**kwargs)
+                            return _to_records(raw, label="股票列表", symbol="")
+                        except TypeError:
+                            continue
 
-            method = getattr(self.client, "get_security_list", None)
-            if callable(method):
-                for args in ((market, 0), (market,)):
-                    try:
-                        raw = method(*args)
-                        return _to_records(raw, label="股票列表", symbol="")
-                    except TypeError:
-                        continue
+                method = getattr(client, "get_security_list", None)
+                if callable(method):
+                    for args in ((market, 0), (market,)):
+                        try:
+                            raw = method(*args)
+                            return _to_records(raw, label="股票列表", symbol="")
+                        except TypeError:
+                            continue
 
-            raw = self._call_first(("stocks", "get_security_list"), market)
-            return _to_records(raw, label="股票列表", symbol="")
+                raw = self._call_first(("stocks", "get_security_list"), market)
+                return _to_records(raw, label="股票列表", symbol="")
         except MootdxMarketError:
             raise
         except Exception as exc:
@@ -1036,6 +1072,15 @@ class MootdxMarketSDK:
     ) -> list[MootdxKlineBar]:
         """按当前 client 拉取并前复权；不做节点复检（由 :meth:`get_klines` 负责）。
 
+        **整轮翻页持 `self._client_lock`，并把 client 抓成局部引用**：本方法和
+        `_swap_client` 天生是一对竞争——前者翻页期间后者可能换点并 close 旧 socket。
+        `fetch_page` 原先每页现读 `self.client`，一次 5000 根（7 页）的取数因此会**跨两个
+        socket**：拼出来的序列前半来自旧节点、后半来自新节点；若旧 socket 恰好被 close，
+        则直接抛 `source_error`。上游 `cross_section_runner._load_panel` 对这种失败是
+        「跳过该标的」，于是表现成**某只票凭空从面板里消失、回测结果变了却不报错**。
+        本方法自身在单实例内是串行的，共享实例（`market_data._a_stock_sdk()` 的单例）
+        下同样安全。
+
         ``period="day"`` 时丢弃**当日尚未收盘**的最后一根 bar：TDX 在交易时段内会把
         当天未收盘的日线 bar 当作最后一根返回（datetime 记为该日 15:00，OHLC 是此刻
         快照）。留着它，等于把一根随时在变的半日 bar 当「今日收盘价」写进缓存，同一天
@@ -1048,65 +1093,72 @@ class MootdxMarketSDK:
         norm = self._parse_symbol(symbol)
         category = self.map_period(period)
 
-        def fetch_page(start_offset: int) -> list[MootdxKlineBar]:
-            try:
-                method = getattr(self.client, "bars", None)
-                if callable(method):
-                    try:
-                        raw = method(
+        # 整轮翻页持 `self._client_lock`，并在锁内抓一次 `client` 局部引用交给闭包：
+        # 换点（`_swap_client`）必须拿到同一把锁才能换掉并 close 旧 client，于是
+        # 「一次逻辑取数的不同分页落在两个 socket 上」不再可能。代价可忽略——单 socket
+        # 本就被 per-call 锁串行化，这里只是把串行区间从「单页」放大到「整轮」。
+        with self._client_lock:
+            client = self.client
+
+            def fetch_page(start_offset: int) -> list[MootdxKlineBar]:
+                try:
+                    method = getattr(client, "bars", None)
+                    if callable(method):
+                        try:
+                            raw = method(
+                                norm.code,
+                                frequency=category,
+                                start=start_offset,
+                                offset=_KLINE_PAGE_SIZE,
+                            )
+                        except TypeError:
+                            raw = method(
+                                category, norm.market, norm.code, start_offset, _KLINE_PAGE_SIZE
+                            )
+                    else:
+                        raw = self._call_first(
+                            ("get_security_bars", "get_kline"),
+                            category,
+                            norm.market,
                             norm.code,
-                            frequency=category,
-                            start=start_offset,
-                            offset=_KLINE_PAGE_SIZE,
+                            start_offset,
+                            _KLINE_PAGE_SIZE,
                         )
-                    except TypeError:
-                        raw = method(
-                            category, norm.market, norm.code, start_offset, _KLINE_PAGE_SIZE
+                except MootdxMarketError:
+                    raise
+                except Exception as exc:
+                    raise MootdxMarketError(
+                        "source_error", f"获取 K 线失败: {exc}", symbol=norm.symbol, cause=exc
+                    ) from exc
+
+                bars: list[MootdxKlineBar] = []
+                for item in _to_records(raw, label="K 线", symbol=norm.symbol):
+                    bars.append(
+                        MootdxKlineBar(
+                            datetime=self._parse_datetime(_pick(item, ("datetime", "date"))),
+                            open=_to_float(_pick(item, ("open",))),
+                            high=_to_float(_pick(item, ("high",))),
+                            low=_to_float(_pick(item, ("low",))),
+                            close=_to_float(_pick(item, ("close",))),
+                            volume=_to_int(_pick(item, ("vol", "volume"))),
+                            amount=_to_float(_pick(item, ("amount",))),
                         )
-                else:
-                    raw = self._call_first(
-                        ("get_security_bars", "get_kline"),
-                        category,
-                        norm.market,
-                        norm.code,
-                        start_offset,
-                        _KLINE_PAGE_SIZE,
                     )
-            except MootdxMarketError:
-                raise
-            except Exception as exc:
-                raise MootdxMarketError(
-                    "source_error", f"获取 K 线失败: {exc}", symbol=norm.symbol, cause=exc
-                ) from exc
+                return bars
 
-            bars: list[MootdxKlineBar] = []
-            for item in _to_records(raw, label="K 线", symbol=norm.symbol):
-                bars.append(
-                    MootdxKlineBar(
-                        datetime=self._parse_datetime(_pick(item, ("datetime", "date"))),
-                        open=_to_float(_pick(item, ("open",))),
-                        high=_to_float(_pick(item, ("high",))),
-                        low=_to_float(_pick(item, ("low",))),
-                        close=_to_float(_pick(item, ("close",))),
-                        volume=_to_int(_pick(item, ("vol", "volume"))),
-                        amount=_to_float(_pick(item, ("amount",))),
-                    )
-                )
-            return bars
-
-        # start 递增得到的是更新的历史，需先取完再从旧到新拼接。
-        pages: list[list[MootdxKlineBar]] = []
-        start_offset = 0
-        fetched = 0
-        while fetched < count:
-            page = fetch_page(start_offset)
-            if not page:
-                break
-            pages.append(page)
-            fetched += len(page)
-            if len(page) < _KLINE_PAGE_SIZE:
-                break  # 已到历史起点，无更早数据
-            start_offset += _KLINE_PAGE_SIZE
+            # start 递增得到的是更新的历史，需先取完再从旧到新拼接。
+            pages: list[list[MootdxKlineBar]] = []
+            start_offset = 0
+            fetched = 0
+            while fetched < count:
+                page = fetch_page(start_offset)
+                if not page:
+                    break
+                pages.append(page)
+                fetched += len(page)
+                if len(page) < _KLINE_PAGE_SIZE:
+                    break  # 已到历史起点，无更早数据
+                start_offset += _KLINE_PAGE_SIZE
 
         all_bars: list[MootdxKlineBar] = []
         seen: set[str] = set()
@@ -1254,11 +1306,12 @@ class MootdxMarketSDK:
     def get_orderbook(self, symbol: str) -> MootdxOrderBook:
         norm = self._parse_symbol(symbol)
         try:
-            method = getattr(self.client, "quotes", None)
-            if callable(method):
-                raw = method(norm.symbol)
-            else:
-                raw = self._call_first(("get_security_quotes",), [(norm.market, norm.code)])
+            with self._bound_client() as client:
+                method = getattr(client, "quotes", None)
+                if callable(method):
+                    raw = method(norm.symbol)
+                else:
+                    raw = self._call_first(("get_security_quotes",), [(norm.market, norm.code)])
         except MootdxMarketError:
             raise
         except Exception as exc:
@@ -1288,17 +1341,18 @@ class MootdxMarketSDK:
     def get_trades(self, symbol: str, *, count: int = 200) -> list[MootdxTrade]:
         norm = self._parse_symbol(symbol)
         try:
-            method = getattr(self.client, "transaction", None)
-            if callable(method):
-                raw = method(norm.code, start=0, offset=count)
-            else:
-                raw = self._call_first(
-                    ("get_transaction_data", "get_trades"),
-                    norm.market,
-                    norm.code,
-                    0,
-                    count,
-                )
+            with self._bound_client() as client:
+                method = getattr(client, "transaction", None)
+                if callable(method):
+                    raw = method(norm.code, start=0, offset=count)
+                else:
+                    raw = self._call_first(
+                        ("get_transaction_data", "get_trades"),
+                        norm.market,
+                        norm.code,
+                        0,
+                        count,
+                    )
         except MootdxMarketError:
             raise
         except Exception as exc:
