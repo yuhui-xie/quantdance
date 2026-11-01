@@ -86,13 +86,16 @@ def _load_panel(
     end: str | None,
     limit: int | None,
     max_workers: int,
+    data_source: str = "a_stock_data",
 ) -> dict[str, pd.DataFrame]:
     """并行拉取每只股票日线，返回 {symbol: DatetimeIndex 索引的 OHLCV DataFrame}。"""
     panel: dict[str, pd.DataFrame] = {}
 
     def load_one(symbol: str) -> tuple[str, pd.DataFrame] | None:
         try:
-            df = fetch_a_share_daily(symbol, start=start, end=end, limit=limit)
+            df = fetch_a_share_daily(
+                symbol, start=start, end=end, limit=limit, data_source=data_source
+            )
         except (MarketDataError, ValueError):
             return None
         if df is None or df.empty:
@@ -159,6 +162,7 @@ def compute_factor_ic(
     min_cs: int = 10,
     factors: list[str] | None = None,
     max_workers: int = 8,
+    data_source: str = "a_stock_data",
 ) -> dict:
     """计算一组因子在多个持有期下的 RankIC 及汇总统计。
 
@@ -171,7 +175,12 @@ def compute_factor_ic(
         raise ValueError("股票池为空")
     factor_names = _validate_factors(factors)
     panel = _load_panel(
-        symbols, start=start, end=end, limit=limit, max_workers=max_workers
+        symbols,
+        start=start,
+        end=end,
+        limit=limit,
+        max_workers=max_workers,
+        data_source=data_source,
     )
     loaded_symbols = list(panel)
 

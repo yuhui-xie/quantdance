@@ -469,9 +469,12 @@ def run_screen(req: ScreenRequest) -> ScreenResponse:
                     sym,
                     start=req.start_date.strip(),
                     end=req.end_date.strip(),
+                    data_source=req.data_source,
                 )
             else:
-                df = fetch_a_share_daily(sym, limit=max(bars, min_need))
+                df = fetch_a_share_daily(
+                    sym, limit=max(bars, min_need), data_source=req.data_source
+                )
         except (MarketDataError, ValueError):
             failed += 1
             continue

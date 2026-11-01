@@ -29,6 +29,10 @@ python -m app.script screen --preset momentum --top-k 10 --json
 python -m app.script pick --strategy etf_rotation --asof 2024-05-06 --universe etf_asof --top-n 5
 python -m app.script correlation --universe etf_core          # 池内标的日收益率相关矩阵
 python -m app.script stock-search 贵州茅台
+python -m app.script dataset --status                         # quantdb 数据集本地镜像状态
+python -m app.script dataset --list-tables                    # 数据集内全部表（26 张）
+python -m app.script dataset --describe valuation             # 某张表的列结构
+python -m app.script dataset --read valuation --symbols 600519 --start-date 2026-09-01 --columns symbol time pe_ttm pb
 ```
 
 `pick` 是横截面策略的「按日期挑标的」快捷命令：以 `--asof` 为截面日解析当时已存在的股票池、运行策略 `select()`，默认把完整排序候选（含 selected 标记）落盘为 `out/pick_<strategy>_<asof>.json`。示例：
@@ -83,6 +87,8 @@ python -m app.script pick --strategy etf_rotation --asof 2024-05-06 --symbols 51
 - `app/data_sources/market_data.py`：`fetch_a_share_daily`（返回 `DatetimeIndex` 索引的 OHLCV DataFrame，前复权）、`fetch_*_universe`（指数成分股，用 akshare）。**行情失败会直接抛 `MarketDataError`，不会回退到合成/其他源。**
 - `app/data_sources/em_fundamentals.py` / `financial_reports.py`：横截面策略的基本面面板与财报面板。
 - 缓存：K 线与股票池按日新鲜度缓存到 `backend/data/a_stock_data/`，可用环境变量 `QUANTDANCE_A_STOCK_DATA_CACHE`（`0` 关闭）与 `QUANTDANCE_A_STOCK_DATA_CACHE_DIR` 控制。K 线缓存带 `version`/`adjust` 标记，前复权实现有破坏性变更时递增 `_KLINE_CACHE_VERSION` 以整体重建（见 `docs/data-adjustment.md`）。
+- `app/data_sources/quantdb.py`：ModelScope QuantDB 数据集接入（`--data-source quantdb`）。按交易日分区，缺的分区按需从 ModelScope 下载到 `backend/data/quantdb/`（`QUANTDANCE_QUANTDB_DIR` 可覆盖），并按 sha256 增量更新；按标的读取走按 symbol 排序的派生索引。股票用 `daily_forward`（前复权），ETF 只有不复权日线（会打 stderr 告警）。股票池列表、估值/财务面板、换手率仍走原有来源。见 `docs/quantdb-data-source.md`。
+  数据集另有财务/估值/技术指标/ML 宽表等 26 张表，经 `TABLE_SPECS` 注册（`daily` 按日分区、`per_symbol` 逐股文件、`single` 整目录），用 `dataset --list-tables/--describe/--read` 或 `get_store().read_table(name, start=..., symbols=..., columns=...)` 访问，**不接入主流程**。注意各表 `close` 口径不同（前/后/不复权）。见 `docs/quantdb-dataset-access.md`。
 
 ### 股票池与选股
 

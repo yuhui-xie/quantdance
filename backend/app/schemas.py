@@ -46,7 +46,13 @@ class FundamentalFilterRule(BaseModel):
 
 class BacktestRequest(BaseModel):
     mode: Literal["single", "universe", "screen", "per_stock"] = "single"
-    data_source: Literal["a_stock_data"] = "a_stock_data"
+    data_source: Literal["a_stock_data", "quantdb"] = Field(
+        "a_stock_data",
+        description=(
+            "日线数据源：a_stock_data=mootdx 前复权（默认）；"
+            "quantdb=ModelScope QuantDB 数据集本地镜像（股票前复权，ETF 不复权）"
+        ),
+    )
     strategy_id: str = "ma_crossover"
     initial_cash: float = Field(100_000, ge=1000)
     commission: float = Field(0.0003, ge=0, le=0.05)
@@ -278,6 +284,10 @@ class ScreenRequest(BaseModel):
         "dividend_tilt",
     ] = "momentum"
     top_k: int = Field(20, ge=1, le=100)
+    data_source: Literal["a_stock_data", "quantdb"] = Field(
+        "a_stock_data",
+        description="日线数据源：a_stock_data=前复权（默认）；quantdb=数据集镜像",
+    )
     max_universe: int = Field(200, ge=1, le=500)
     start_date: str | None = Field(None, description="与 end_date 成对，YYYY-MM-DD")
     end_date: str | None = Field(None, description="与 start_date 成对")

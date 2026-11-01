@@ -450,6 +450,8 @@ def _resolve_screen_body(args: argparse.Namespace) -> ScreenRequest:
         cli_map["end_date"] = args.end_date
     if args.bars is not None:
         cli_map["bars"] = args.bars
+    if args.data_source is not None:
+        cli_map["data_source"] = args.data_source
     if args.random_seed:
         cli_map["seed"] = None
     elif args.seed is not None:
@@ -588,6 +590,7 @@ def _cmd_pick(args: argparse.Namespace) -> int:
         "max_workers": args.max_workers or 8,
         "use_cache": not args.no_cache,
         "force_refresh": args.force_refresh,
+        "data_source": args.data_source or "a_stock_data",
     }
     # asof 可选：提供则锁定截面日；省略则留空，由 screen 自动取最新可用交易日。
     if asof:
@@ -649,7 +652,11 @@ def _cmd_correlation(args: argparse.Namespace) -> int:
         sym = r["symbol"]
         try:
             df = fetch_a_share_daily(
-                sym, start=args.start_date, end=args.end_date, limit=5000
+                sym,
+                start=args.start_date,
+                end=args.end_date,
+                limit=5000,
+                data_source=args.data_source,
             )
         except MarketDataError:
             skipped.append(sym)
@@ -851,6 +858,7 @@ def _resolve_factor_ic_body(args: argparse.Namespace) -> dict[str, Any]:
         "min_cs",
         "factors",
         "max_workers",
+        "data_source",
     ):
         value = getattr(args, key, None)
         if value is not None:
@@ -870,6 +878,7 @@ def _resolve_factor_ic_body(args: argparse.Namespace) -> dict[str, Any]:
         "min_cs": int(base.get("min_cs", 10)),
         "factors": base.get("factors"),
         "max_workers": int(base.get("max_workers", 8)),
+        "data_source": base.get("data_source", "a_stock_data"),
     }
     if body["horizons"] and all(h >= 1 for h in body["horizons"]):
         pass
@@ -942,6 +951,7 @@ def _cmd_factor_ic(args: argparse.Namespace) -> int:
         min_cs=body["min_cs"],
         factors=body["factors"],
         max_workers=body["max_workers"],
+        data_source=body["data_source"],
     )
     out["universe_note"] = note
 
@@ -985,6 +995,202 @@ def _cmd_factor_ic(args: argparse.Namespace) -> int:
         print(f"交互报告已保存: {report_path}")
         _open_file_with_default_app(report_path)
     return 0
+
+
+def _cmd_dataset(args: argparse.Namespace) -> int:
+    """quantdb 数据集：镜像管理（状态/同步/更新）+ 通用表访问（列表/结构/读取）。"""
+    from app.data_sources.quantdb import QuantDBError, TABLE_SPECS, get_store
+
+    def mb(value: int) -> str:
+        return f"{value / 1024 / 1024:.1f} MB"
+
+    store = get_store()
+    try:
+        if args.list_tables:
+            return _dataset_list_tables(store, args)
+        if args.describe:
+            return _dataset_describe(store, args)
+        if args.read:
+            return _dataset_read(store, args)
+
+        if args.update:
+            if args.start_date or args.end_date:
+                raise ValueError("--update 不接受 --start-date/--end-date；如需补区间用 --sync")
+            reports = store.update(all_partitions=args.all_partitions)
+        elif args.sync:
+            tables = args.tables or list(TABLE_SPECS)
+            reports = []
+            for table in tables:
+                kwargs: dict[str, Any] = {"all_partitions": args.all_partitions}
+                if args.start_date:
+                    kwargs["start"] = args.start_date
+                if args.end_date:
+                    kwargs["end"] = args.end_date
+                if args.symbols:
+                    kwargs["symbols"] = args.symbols
+                reports.append(store.sync(table, **kwargs))
+        else:
+            reports = []
+    except QuantDBError as exc:
+        raise MarketDataError(f"quantdb 数据集操作失败: {exc}") from exc
+
+    status = store.status()
+    payload = {"status": status, "reports": reports}
+    if args.output is not None or args.json:
+        _write_json(payload, output=args.output, as_json=args.json)
+
+    if not args.json:
+        print(f"数据集: {status['repo']}")
+        print(f"本地镜像: {status['root']}（{mb(status['disk_bytes'])}）")
+        print(
+            f"revision: {status['revision'] or '-'} | 上次检查: {status['checked_at'] or '-'}"
+            f" | 检查间隔: {status['check_hours']}h"
+        )
+        for table, info in status["tables"].items():
+            idx = info["index"]
+            mirrored = info["mirrored_partitions"]
+            remote = info["remote_partitions"]
+            unit = "分区" if info["layout"] == "daily" else "文件"
+            span = f"{info['first']}~{info['last']}" if info["first"] else "无"
+            index_desc = (
+                f"索引 {idx['partitions']} 分区 / {idx['rows']} 行" if idx["exists"] else "索引未建"
+            )
+            if info.get("checked"):
+                head = f"镜像 {mirrored}/{remote} {unit} {span}"
+            else:
+                head = f"镜像 {mirrored} {unit}（远端未检查）"
+            print(f"  {table:<20} {head} {mb(info['mirror_bytes'])} | {index_desc}")
+        for report in reports:
+            span = (
+                f"（{report['first']}~{report['last']}）" if report.get("first") else ""
+            )
+            print(
+                f"  [{report['table']}] 请求 {report['requested']} 个，"
+                f"新下载 {report['downloaded']} 个{span}"
+            )
+    return 0
+
+
+def _dataset_list_tables(store: Any, args: argparse.Namespace) -> int:
+    items = store.list_tables()
+    if args.json:
+        _write_json({"tables": items}, output=args.output, as_json=True)
+        return 0
+    print(f"{'表名':<20} {'布局':<11} {'远端':>6} {'镜像':>6}  说明")
+    for item in items:
+        remote = f"{item['remote_files']}份" if item["checked"] else "未检查"
+        mirrored = f"{item['mirrored_files']}份" if item["mirrored_files"] else "-"
+        span = f"{item['first']}~{item['last']}" if item["first"] else ""
+        print(
+            f"{item['table']:<20} {item['layout']:<11} {remote:>6} {mirrored:>6}  "
+            f"{item['note']} {span}".rstrip()
+        )
+    print("\n读取示例: python -m app.script dataset --read valuation --symbols 600519 "
+          "--start-date 2026-09-01 --columns symbol time pe_ttm pb")
+    return 0
+
+
+def _dataset_describe(store: Any, args: argparse.Namespace) -> int:
+    info = store.describe_table(args.describe, symbol=args.sample_symbol)
+    if args.json or args.output is not None:
+        _write_json(info, output=args.output, as_json=args.json)
+        return 0
+    print(f"表: {info['table']}（{info['path']}，{info['layout']}）")
+    print(f"说明: {info['note']}")
+    print(f"样本文件: {info['sample_file']}（{info['rows_in_sample']} 行）")
+    print(f"列数: {len(info['columns'])}")
+    for col in info["columns"]:
+        print(f"  {col['name']:<32} {col['type']}")
+    import pandas as pd
+
+    print("\n前几行:")
+    print(pd.DataFrame(info["preview"]).to_string(max_cols=10))
+    return 0
+
+
+def _dataset_read(store: Any, args: argparse.Namespace) -> int:
+    frame = store.read_table(
+        args.read,
+        start=args.start_date,
+        end=args.end_date,
+        symbols=args.symbols,
+        columns=args.columns,
+        limit=args.limit,
+    )
+    if args.output is not None:
+        suffix = args.output.suffix.lower()
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        if suffix == ".parquet":
+            frame.to_parquet(args.output, index=False)
+        elif suffix == ".json":
+            frame.to_json(args.output, orient="records", force_ascii=False, date_format="iso")
+        else:
+            frame.to_csv(args.output, index=False, encoding="utf-8-sig")
+        print(f"已写入 {args.output.resolve()}（{len(frame)} 行 × {frame.shape[1]} 列）")
+        return 0
+    if args.json:
+        print(frame.to_json(orient="records", force_ascii=False, date_format="iso"))
+        return 0
+    print(f"{args.read}: {len(frame)} 行 × {frame.shape[1]} 列")
+    print("列: " + ", ".join(map(str, frame.columns)))
+    if len(frame):
+        print(frame.head(args.head).to_string(max_cols=12))
+    if len(frame) > args.head:
+        print(f"…（仅显示前 {args.head} 行；--output FILE.csv/.parquet/.json 保存全部）")
+    return 0
+
+
+def _build_dataset_cmd(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+    from app.data_sources.quantdb import TABLE_SPECS
+
+    p = sub.add_parser(
+        "dataset",
+        help="quantdb 数据集：镜像管理（状态/同步/更新）与通用表访问（列表/结构/读取）",
+    )
+    p.set_defaults(handler=_cmd_dataset)
+    action = p.add_mutually_exclusive_group()
+    action.add_argument(
+        "--status", action="store_true", help="查看镜像与索引状态（不带动作时默认）"
+    )
+    action.add_argument(
+        "--sync",
+        action="store_true",
+        help="按 --start-date/--end-date（或 --symbols / --all）补齐本地镜像",
+    )
+    action.add_argument(
+        "--update",
+        action="store_true",
+        help="强制检查远端 revision，增量补齐已镜像区间的新增/改写分区",
+    )
+    action.add_argument(
+        "--list-tables", dest="list_tables", action="store_true",
+        help="列出数据集内全部可访问的表与本地镜像情况",
+    )
+    action.add_argument(
+        "--describe", metavar="TABLE", help="查看某张表的列结构（下载一个样本文件）",
+    )
+    action.add_argument(
+        "--read", metavar="TABLE", help="读取某张表（可配 --start-date/--symbols/--columns/--limit）",
+    )
+    p.add_argument(
+        "--all",
+        action="store_true",
+        dest="all_partitions",
+        help="全量镜像（配合 --sync/--update；逐股文件表即全部文件）",
+    )
+    p.add_argument(
+        "--tables", nargs="+", choices=tuple(TABLE_SPECS),
+        help=f"限定数据表（默认全部: {', '.join(TABLE_SPECS)}）",
+    )
+    p.add_argument("--start-date", dest="start_date", help="YYYY-MM-DD")
+    p.add_argument("--end-date", dest="end_date", help="YYYY-MM-DD")
+    p.add_argument("--symbols", nargs="+", help="标的代码（逐股表按它下载/读取；如 600519 000001.SZ）")
+    p.add_argument("--columns", nargs="+", help="只返回这些列（--read）")
+    p.add_argument("--limit", type=int, help="--read：日表取最近 N 个交易日分区，逐股表取每只最近 N 行")
+    p.add_argument("--head", type=int, default=8, help="--read 控制台预览行数（默认 8）")
+    p.add_argument("--sample-symbol", dest="sample_symbol", help="--describe 逐股表时指定样本标的")
+    p.add_argument("--json", action="store_true", help="以 JSON 打印状态与同步结果")
+    p.add_argument("--output", type=Path, metavar="FILE", help="结果落盘：.json/.csv/.parquet")
 
 
 def _build_backtest_cmd(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
@@ -1034,8 +1240,12 @@ def _build_backtest_cmd(sub: argparse._SubParsersAction[argparse.ArgumentParser]
     p.add_argument("--strategy", "-s", dest="strategy_id")
     p.add_argument(
         "--data-source",
-        choices=("a_stock_data",),
+        choices=("a_stock_data", "quantdb"),
         dest="data_source",
+        help=(
+            "日线数据源：a_stock_data=mootdx 前复权（默认）；"
+            "quantdb=ModelScope QuantDB 数据集（缺失分区按需下载）"
+        ),
     )
     p.add_argument("--bars", type=int)
     p.add_argument("--initial-cash", type=float)
@@ -1168,6 +1378,12 @@ def _build_screen_cmd(sub: argparse._SubParsersAction[argparse.ArgumentParser]) 
     p.add_argument("--start-date", dest="start_date")
     p.add_argument("--end-date", dest="end_date")
     p.add_argument("--bars", type=int)
+    p.add_argument(
+        "--data-source",
+        choices=("a_stock_data", "quantdb"),
+        dest="data_source",
+        help="日线数据源（默认 a_stock_data；quantdb 使用数据集本地镜像）",
+    )
     p.add_argument("--seed", type=int)
     p.add_argument("--random-seed", action="store_true")
 
@@ -1201,6 +1417,12 @@ def _build_pick_cmd(sub: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     p.add_argument("--params", help="策略专属参数 JSON，如 '{\"min_r2\":0.5}'")
     p.add_argument("--no-cache", action="store_true", dest="no_cache")
     p.add_argument("--force-refresh", action="store_true", dest="force_refresh")
+    p.add_argument(
+        "--data-source",
+        choices=("a_stock_data", "quantdb"),
+        dest="data_source",
+        help="日线数据源（默认 a_stock_data；quantdb 使用数据集本地镜像）",
+    )
     p.add_argument("--json", action="store_true", help="同时把完整 JSON 打印到 stdout")
     p.add_argument(
         "--output",
@@ -1227,6 +1449,13 @@ def _build_correlation_cmd(sub: argparse._SubParsersAction[argparse.ArgumentPars
     p.add_argument("--end-date", dest="end_date", help="结束日期 YYYY-MM-DD（默认取共同历史终点）")
     p.add_argument("--top-pairs", type=int, dest="top_pairs", default=5, help="最相关/最独立配对数量（默认 5）")
     p.add_argument("--no-cache", action="store_true", dest="no_cache")
+    p.add_argument(
+        "--data-source",
+        choices=("a_stock_data", "quantdb"),
+        dest="data_source",
+        default="a_stock_data",
+        help="日线数据源（默认 a_stock_data；quantdb 使用数据集本地镜像）",
+    )
     p.add_argument("--json", action="store_true", help="同时把完整 JSON 打印到 stdout")
     p.add_argument("--output", type=Path, metavar="FILE.json", help="JSON 落盘路径（默认 out/correlation.json）")
 
@@ -1294,6 +1523,12 @@ def _build_factor_ic_cmd(sub: argparse._SubParsersAction[argparse.ArgumentParser
     )
     p.add_argument("--list-factors", action="store_true", help="列出全部可用因子")
     p.add_argument("--max-workers", type=int, dest="max_workers")
+    p.add_argument(
+        "--data-source",
+        choices=("a_stock_data", "quantdb"),
+        dest="data_source",
+        help="日线数据源（默认 a_stock_data；quantdb 使用数据集本地镜像）",
+    )
     p.add_argument("--json", action="store_true")
     p.add_argument("--output", type=Path, metavar="FILE.json")
     p.add_argument(
@@ -1316,6 +1551,7 @@ def build_parser() -> argparse.ArgumentParser:
     _build_stock_search_cmd(sub)
     _build_chip_dist_cmd(sub)
     _build_factor_ic_cmd(sub)
+    _build_dataset_cmd(sub)
     return p
 
 

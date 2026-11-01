@@ -137,15 +137,23 @@ def fetch_a_share_daily(
     start: str | date | datetime | None = None,
     end: str | date | datetime | None = None,
     limit: int | None = None,
-    data_source: Literal["a_stock_data"] = "a_stock_data",
+    data_source: Literal["a_stock_data", "quantdb"] = "a_stock_data",
 ) -> pd.DataFrame:
     """
-    拉取 A 股前复权日线，索引为 DatetimeIndex，列为 open/high/low/close/volume，
+    拉取 A 股日线，索引为 DatetimeIndex，列为 open/high/low/close/volume，
     若源数据含成交额则额外带 amount。
+
+    数据源：
+    - ``a_stock_data``（默认）：mootdx 行情 + 本地前复权，股票/ETF 统一前复权；
+    - ``quantdb``：ModelScope QuantDB 数据集本地镜像（缺失时自动按需下载）。
+      股票走 ``daily_forward``（等比前复权）；ETF 只有不复权日线，见
+      :mod:`app.data_sources.quantdb`。
 
     若同时提供 start 与 end，则取该区间全部 K 线；否则使用 limit 取最近 limit 条交易日。
     """
     code = normalize_a_share_symbol(symbol)
+    if data_source == "quantdb":
+        return _quantdb_daily(code, start=start, end=end, limit=limit)
     if data_source != "a_stock_data":
         raise ValueError(f"不支持的数据源: {data_source}")
 
@@ -158,6 +166,25 @@ def fetch_a_share_daily(
         return _a_stock_data_hist(code, count=limit)
 
     raise ValueError("请同时提供 start 与 end，或提供 limit")
+
+
+def _quantdb_daily(
+    code: str,
+    *,
+    start: str | date | datetime | None,
+    end: str | date | datetime | None,
+    limit: int | None,
+) -> pd.DataFrame:
+    """quantdb 数据源读日线；数据集错误统一转成 MarketDataError（CLI 退出码 3）。"""
+    from app.data_sources.quantdb import QuantDBError, get_store
+
+    try:
+        out = get_store().read_daily(code, start=start, end=end, limit=limit)
+    except QuantDBError as exc:
+        raise MarketDataError(f"quantdb 行情不可用: {exc}") from exc
+    if out.empty:
+        raise MarketDataError(f"quantdb 未获取到 {code} 的日线数据")
+    return out
 
 
 def fetch_a_share_universe(
