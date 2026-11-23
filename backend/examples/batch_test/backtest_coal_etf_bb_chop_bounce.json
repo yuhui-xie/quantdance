@@ -1,0 +1,20 @@
+{
+  "data_source": "a_stock_data",
+  "strategy_id": "coal_etf_bb_chop_bounce",
+  "symbol": "515220",
+  "start_date": "2021-01-01",
+  "end_date": "2026-09-18",
+  "initial_cash": 100000,
+  "commission": 0.0003,
+  "strategy_params": {
+    "bb_period": 20,
+    "bb_num_std": 1.5,
+    "chop_period": 28,
+    "chop_threshold": 50.0,
+    "execute_next_day": true
+  },
+  "output_options": {
+    "json": false,
+    "report": "out\\backtest_coal_etf_bb_chop_bounce.html"
+  }
+}
