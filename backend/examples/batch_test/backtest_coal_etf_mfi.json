@@ -1,0 +1,19 @@
+{
+  "data_source": "a_stock_data",
+  "strategy_id": "coal_etf_mfi",
+  "symbol": "515220",
+  "start_date": "2021-01-01",
+  "end_date": "2026-09-18",
+  "initial_cash": 100000,
+  "commission": 0.0003,
+  "strategy_params": {
+    "mfi_period": 7,
+    "mfi_oversold": 20.0,
+    "mfi_overbought": 80.0,
+    "signal_mode": "level"
+  },
+  "output_options": {
+    "json": false,
+    "report": "out\\backtest_coal_etf_mfi.html"
+  }
+}

@@ -182,6 +182,8 @@ weekly/biweekly/monthly 均锚定日历周期而非回测起始日，回测结�
 | `higher_moment` | 高阶矩自适应 EMA | 分布形态 | [higher-moment-strategy.md](./higher-moment-strategy.md) |
 | `macd` | MACD 交叉 | 趋势跟随 | [macd-strategy.md](./macd-strategy.md) |
 | `bollinger_reversion` | 布林带均值回归 | 均值回归 | [bollinger-reversion-strategy.md](./bollinger-reversion-strategy.md) |
+| `coal_etf_bb_chop` | 煤炭ETF 周线布林+CHOP | 周线趋势/超跌 | [coal-etf-bb-chop-strategy.md](./coal-etf-bb-chop-strategy.md) |
+| `coal_etf_mfi` | 煤炭ETF 日线MFI | 日线超卖超买 | [coal-etf-mfi-strategy.md](./coal-etf-mfi-strategy.md) |
 | `donchian_breakout` | 唐奇安突破 | 趋势突破 | [donchian-breakout-strategy.md](./donchian-breakout-strategy.md) |
 | `rsi_reversal` | RSI 反转 | 振荡反转 | [rsi-reversal-strategy.md](./rsi-reversal-strategy.md) |
 | `stochastic_cross` | 随机指标交叉 | 振荡反转 | [stochastic-cross-strategy.md](./stochastic-cross-strategy.md) |
